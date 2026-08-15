@@ -212,6 +212,18 @@ class InputManager {
   // beginAsync() the task consumes this edge; poll isToggleSwitchOn() instead.
   bool wasToggleSwitchChanged() const { return toggleSwitchChangedEvent; }
 
+  // Touch INT line usable as a light-sleep wake source, or -1. A host can only
+  // wake from light sleep on a GPIO LEVEL (the edge detector is clock-gated
+  // while asleep), so this reports the pin ONLY once the driver has put the
+  // controller in a level-hold INT mode — the line then stays asserted from the
+  // report frame until the poll clears the status register, which a level wake
+  // cannot miss. -1 whenever that cannot be guaranteed (no touch, probe failed,
+  // FREEINK_GT911_INT_WAKE not built, or the controller refused the mode);
+  // callers must keep polling in that case.
+  int8_t touchWakeIrqPin() const;
+  // Asserted level of #touchWakeIrqPin (true = LOW).
+  bool touchWakeIrqActiveLow() const;
+
   // Optional board hook for buttons that aren't direct GPIOs — e.g. a key
   // behind an I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535). It
   // returns a (1<<BTN_*) bitmask that is OR'd into every update(); the board
@@ -354,6 +366,12 @@ class InputManager {
   void beginGt911();
   bool gt911ReadReg(uint16_t reg, uint8_t* buf, uint8_t len);
   void gt911ClearStatus();
+#if FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
+  bool gt911WriteReg(uint16_t reg, const uint8_t* buf, uint8_t len);
+  // Put the INT line in low-level hold mode so it can serve as a light-sleep
+  // wake source; sets touchWakeIrqUsable on success.
+  void gt911ConfigureIntWake();
+#endif  // FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
   void beginGslx680();
@@ -415,6 +433,7 @@ class InputManager {
   bool twoButtonLongPressActive;
 
   bool touchDataEnabled = false;         // I2C up, controller present
+  bool touchWakeIrqUsable = false;       // INT held in a level mode (touchWakeIrqPin)
   uint8_t gt911Addr = 0;                 // resolved GT911 address (0 until probed)
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
   unsigned long touchReadAt = 0;         // next scheduled I2C poll

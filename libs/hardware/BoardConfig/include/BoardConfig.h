@@ -250,6 +250,12 @@
 #ifndef FREEINK_TOUCH_TMA525C  // Onyx Picco
 #define FREEINK_TOUCH_TMA525C (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_PICCO))
 #endif
+// GT911 INT as a light-sleep wake source (InputManager::touchWakeIrqPin). OPT-IN
+// (default off), not board-derived. Inert unless FREEINK_TOUCH_GT911 is also set:
+// a build without the GT911 driver compiles none of it and the accessor reports -1.
+#ifndef FREEINK_GT911_INT_WAKE
+#define FREEINK_GT911_INT_WAKE 0
+#endif
 #ifndef FREEINK_CAP_FRONTLIGHT
 // EEGO A4's frontlight is an I2C LED driver (viaI2cLed), not LEDC PWM — the
 // FrontlightManager I2C backend drives it.
