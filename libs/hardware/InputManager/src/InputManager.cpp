@@ -731,8 +731,17 @@ int8_t InputManager::touchWakeIrqPin() const {
 #endif
 }
 
-// Only the GT911 low-level mode is programmed today, so the answer is constant.
-bool InputManager::touchWakeIrqActiveLow() const { return true; }
+bool InputManager::touchWakeIrqActiveLow() const {
+#if FREEINK_CAP_TOUCH
+  // The board profile owns the polarity. gt911ConfigureIntWake() refuses to
+  // mark the line usable unless the profile agrees with the low-level hold it
+  // programs, so a caller that armed on touchWakeIrqPin() cannot read a
+  // polarity the driver did not actually configure.
+  return BoardConfig::ACTIVE.touch.irqActiveLow;
+#else
+  return true;
+#endif
+}
 
 InputManager::TouchPoint InputManager::getTouchPoint() const { return touchPoint; }
 
@@ -1327,6 +1336,8 @@ bool InputManager::wasHomeKeyPressed() const { return touchHomeKeyEvent; }
 bool InputManager::wasHomeKeyTapped() const { return touchHomeKeyTapEvent; }
 
 bool InputManager::wasHomeKeyLongPressed() const { return touchHomeKeyLongEvent; }
+
+bool InputManager::isHomeKeyDown() const { return touchHomeKeyDown; }
 
 void InputManager::beginTouch() {
 #if FREEINK_CAP_TOUCH
@@ -2450,6 +2461,11 @@ constexpr uint8_t GT911_CONFIG_CHUNK = 64;  // Wire's buffer is 128 bytes
 constexpr uint16_t GT911_MODULE_SWITCH1_OFF = 0x804D - GT911_CONFIG_START;
 constexpr uint8_t GT911_INT_MODE_MASK = 0x03;
 constexpr uint8_t GT911_INT_LOW_LEVEL = 0x02;
+constexpr uint16_t GT911_CONFIG_FRESH = 0x8100;
+// The controller clears Config_Fresh when it has actually re-read the table.
+// Datasheet flows allow it a few ms; give it 100 ms before calling it refused.
+constexpr uint8_t GT911_FRESH_POLL_MS = 10;
+constexpr uint8_t GT911_FRESH_POLL_TRIES = 10;
 }  // namespace
 
 bool InputManager::gt911WriteReg(const uint16_t reg, const uint8_t* buf, const uint8_t len) {
@@ -2465,6 +2481,17 @@ bool InputManager::gt911WriteReg(const uint16_t reg, const uint8_t* buf, const u
 void InputManager::gt911ConfigureIntWake() {
   const auto& t = BoardConfig::ACTIVE.touch;
   if (gt911Addr == 0 || t.irq < 0) {
+    return;
+  }
+  if (!t.irqActiveLow) {
+    // Only the low-level hold is programmed below, i.e. an INT that asserts
+    // LOW. A profile that does not declare an active-low INT (false is also
+    // the value on profiles that never needed to set it) gives no basis for
+    // that, so fail closed rather than let a caller arm a high-level wake on a
+    // line that idles high (a permanent wake trigger).
+#ifdef TOUCH_PROBE_DEBUG
+    touchDebugPrintf("[touch] GT911 int-wake: profile does not declare an active-low INT\n");
+#endif
     return;
   }
 
@@ -2499,7 +2526,8 @@ void InputManager::gt911ConfigureIntWake() {
     // ambiguous about whether a table applied this way is also kept across a
     // reset, so nothing here relies on either outcome: beginGt911() re-reads
     // and, only if needed, re-applies the patch on every boot, and the mode is
-    // trusted only once the controller reports it back.
+    // trusted only after the controller has consumed the table and reports
+    // it back.
     sum = static_cast<uint8_t>(sum - cfg[0] - switch1 + patched);
     const uint8_t version = 0x00;
     const uint8_t tail[2] = {static_cast<uint8_t>(-sum), 0x01};  // Config_Chksum, Config_Fresh
@@ -2507,13 +2535,31 @@ void InputManager::gt911ConfigureIntWake() {
         !gt911WriteReg(0x80FF, tail, sizeof(tail))) {
       return;
     }
-    delay(10);  // controller re-reads the table on the Config_Fresh write
+
+    // Wait for the controller to CONSUME the table, not just to acknowledge
+    // the write: it clears Config_Fresh itself once it has re-read the block.
+    // The 0x804D read-back below cannot stand in for this — that register
+    // holds whatever was written to it whether or not the config was applied,
+    // so it only proves the I2C transfer landed. A fresh flag still set after
+    // the timeout means the panel refused the version-0x00 table.
+    bool consumed = false;
+    for (uint8_t tries = 0; !consumed && tries < GT911_FRESH_POLL_TRIES; ++tries) {
+      delay(GT911_FRESH_POLL_MS);
+      uint8_t fresh = 1;
+      consumed = gt911ReadReg(GT911_CONFIG_FRESH, &fresh, 1) && fresh == 0;
+    }
+    if (!consumed) {
+#ifdef TOUCH_PROBE_DEBUG
+      touchDebugPrintf("[touch] GT911 int-wake: Config_Fresh not cleared\n");
+#endif
+      return;
+    }
   }
 
   uint8_t readback = 0;
   if (!gt911ReadReg(0x804D, &readback, 1) || (readback & GT911_INT_MODE_MASK) != GT911_INT_LOW_LEVEL) {
-    // Some panels reject a version-0x00 config. Report the INT as unusable
-    // rather than arm a wake on a line that only pulses.
+    // Second guard, on top of the Config_Fresh clear above: the mode the
+    // controller now reports has to be the one asked for.
 #ifdef TOUCH_PROBE_DEBUG
     touchDebugPrintf("[touch] GT911 int-wake: mode not applied (0x%02X)\n", readback);
 #endif
@@ -2524,6 +2570,11 @@ void InputManager::gt911ConfigureIntWake() {
   // released between frames, so pull it up: an open-drain module then still
   // reads HIGH at idle and the level wake cannot false-trigger.
   pinMode(t.irq, INPUT_PULLUP);
+  // In low-level mode a pending report holds INT down until the status
+  // register is cleared, and re-reading the config table makes the controller
+  // latch one. Clear it so the line idles released and the app's first level
+  // wake is armed on a quiet pin instead of an already-asserted one.
+  gt911ClearStatus();
   touchWakeIrqUsable = true;
 #ifdef TOUCH_PROBE_DEBUG
   touchDebugPrintf("[touch] GT911 int-wake: INT=%d low-level hold\n", t.irq);
