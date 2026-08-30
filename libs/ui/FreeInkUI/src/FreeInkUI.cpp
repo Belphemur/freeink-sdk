@@ -50,11 +50,11 @@ StyleSet defaultListRowStyles() {
 
   styles.active = styles.selected;
 
-  // A disabled row must read as visually distinct: a faint gray band plus a
-  // dim (DarkGray) label. Both are dithered so the fill and text paths render
-  // gray instead of collapsing to the enabled row's white/black.
-  styles.disabled.background = Paint::dither(Color::LightGray);
-  styles.disabled.foreground = Paint::dither(Color::DarkGray);
+  // Keep the row background unchanged (white, like an enabled row). Only the
+  // label dims: the Dither foreground is threaded through textStyleWithForeground
+  // so the disabled text renders gray instead of solid black.
+  styles.disabled.background = Paint::solid(Color::White);
+  styles.disabled.foreground = Paint::dither(Color::LightGray);
   return styles;
 }
 
