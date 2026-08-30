@@ -201,6 +201,14 @@ class InputManager {
     s_sharedConfirmPowerShortPressEmitsPower = enabled;
   }
 
+  // When enabled, GT911 polling is throttled to GT911_LOW_POWER_POLL_MS instead
+  // of every main-loop iteration. Used while the SoC is in its 80 MHz
+  // power-saving reading mode to cut the ~20 I2C txn/s touch poll. Touch INT
+  // (GPIO10) still wakes the chip; this only slows the host-side poll cadence.
+  static void setLowPowerPolling(bool enabled) {
+    s_lowPowerPolling = enabled;
+  }
+
   // --- Optional background polling -------------------------------------------
   // Spawns a FreeRTOS task that samples the buttons every pollMs and latches
   // each press edge (a BTN_* index) into an internal queue. This decouples
@@ -366,6 +374,7 @@ class InputManager {
   uint8_t gt911Addr = 0;                 // resolved GT911 address (0 until probed)
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
   unsigned long touchReadAt = 0;         // next scheduled I2C poll
+  unsigned long lastGt911Poll = 0;       // last GT911 I2C poll timestamp (low-power throttle)
   unsigned long touchReleaseAt = 0;
   bool touchPressed = false;
   bool touchPressedEvent = false;
@@ -436,6 +445,12 @@ class InputManager {
   static constexpr uint8_t TOUCH_READ_COMMAND = 0x00;
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;
 
+  // Host-side GT911 poll cadence while in 80 MHz power-saving reading mode.
+  // Touch INT (GPIO10) still wakes the SoC; this only slows the I2C re-poll so
+  // we aren't hammering the bus ~20x/s when nothing is happening.
+  static constexpr unsigned long GT911_LOW_POWER_POLL_MS = 100;
+
   static const char* BUTTON_NAMES[];
   static bool s_sharedConfirmPowerShortPressEmitsPower;
+  static bool s_lowPowerPolling;
 };
