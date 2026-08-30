@@ -889,6 +889,14 @@ TextStyle textStyleWithForeground(TextStyle text, Paint foreground) {
   if (foreground.kind == PaintKind::Solid) {
     text.color = foreground.color;
     text.inverted = foreground.color == Color::White;
+  } else if (foreground.kind == PaintKind::Dither) {
+    // A dithered foreground (e.g. a disabled list row's dither(LightGray))
+    // must reach the renderer's dithered text path. Without this, the color
+    // stays at its default Black and the rasterizer takes the solid-black
+    // path, so a disabled row renders indistinguishable from an enabled one
+    // even though its resolved style carried a gray foreground.
+    text.color = foreground.color;
+    text.inverted = false;
   }
   return text;
 }
