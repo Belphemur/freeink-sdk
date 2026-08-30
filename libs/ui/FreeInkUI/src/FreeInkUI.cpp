@@ -50,8 +50,11 @@ StyleSet defaultListRowStyles() {
 
   styles.active = styles.selected;
 
-  styles.disabled.background = Paint::solid(Color::White);
-  styles.disabled.foreground = Paint::dither(Color::LightGray);
+  // A disabled row must read as visually distinct: a faint gray band plus a
+  // dim (DarkGray) label. Both are dithered so the fill and text paths render
+  // gray instead of collapsing to the enabled row's white/black.
+  styles.disabled.background = Paint::dither(Color::LightGray);
+  styles.disabled.foreground = Paint::dither(Color::DarkGray);
   return styles;
 }
 
@@ -889,6 +892,13 @@ TextStyle textStyleWithForeground(TextStyle text, Paint foreground) {
   if (foreground.kind == PaintKind::Solid) {
     text.color = foreground.color;
     text.inverted = foreground.color == Color::White;
+  } else if (foreground.kind == PaintKind::Dither) {
+    // A dithered foreground (the disabled-row style) must reach the renderer's
+    // dithered text path. Without this, color stays at its default Black and a
+    // disabled row renders indistinguishable from an enabled one (solid-black
+    // text) even though the row style resolved to a gray foreground.
+    text.color = foreground.color;
+    text.inverted = false;
   }
   return text;
 }
