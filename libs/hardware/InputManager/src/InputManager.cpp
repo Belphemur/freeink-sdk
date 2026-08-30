@@ -541,6 +541,7 @@ const char* InputManager::getButtonName(const uint8_t buttonIndex) {
 }
 
 bool InputManager::s_sharedConfirmPowerShortPressEmitsPower = false;
+bool InputManager::s_lowPowerPolling = false;
 
 bool InputManager::isPowerButtonPressed() const { return isPressed(BTN_POWER); }
 
@@ -1500,7 +1501,8 @@ bool InputManager::gslUploadFirmware() {
       ok = gslWrite(0xF0, &page, 1) && ok;
     } else {
       const uint8_t val[4] = {static_cast<uint8_t>(e.value & 0xFF), static_cast<uint8_t>((e.value >> 8) & 0xFF),
-                              static_cast<uint8_t>((e.value >> 16) & 0xFF), static_cast<uint8_t>((e.value >> 24) & 0xFF)};
+                              static_cast<uint8_t>((e.value >> 16) & 0xFF),
+                              static_cast<uint8_t>((e.value >> 24) & 0xFF)};
       ok = gslWrite(e.reg, val, 4) && ok;
     }
   }
@@ -2011,6 +2013,16 @@ void InputManager::pollFt6336u(const unsigned long now) {
 }
 
 void InputManager::pollGt911(const unsigned long now) {
+  // Low-power throttle: while the SoC is in its 80 MHz power-saving reading mode,
+  // don't hammer the touch I2C bus every main-loop iteration (~20 txn/s). The
+  // GT911 INT (GPIO10) still wakes the SoC on a real touch, so a slower host-side
+  // poll is safe. Skipped entirely when a finger is already down (touchPressed) so
+  // an in-progress gesture is never starved.
+  if (s_lowPowerPolling && !touchPressed && now - lastGt911Poll < GT911_LOW_POWER_POLL_MS) {
+    return;
+  }
+  lastGt911Poll = now;
+
   if (gt911Addr == 0) {
     return;
   }
