@@ -1565,12 +1565,12 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // retention path is dropped: this fork only deep-sleeps, and RC_FAST (~17.5 MHz) could
     // not reach 25 kHz at 10-bit — ledc_timer_config failed -> both channels unconfigured
     // -> light stays dark — which is what forced this profile down to 10 kHz). The timer
-    // now runs on the default AUTO clock (≥40 MHz), so the OEM 25 kHz / 10-bit is reachable
-    // again; 10 kHz / 10-bit is kept until the consumer-side profile bump restores it.
+    // now runs on the default AUTO clock (≥40 MHz), so the OEM 25 kHz / 10-bit is valid
+    // again and is restored here.
     // Both channels are active-HIGH (init drives the pin LOW = off, brightness raises duty).
     // GPIO8 is the hardware-confirmed cool channel and GPIO9 the warm channel;
     // FrontlightManager mixes them for color-temperature control.
-    {8, 10000, 10, true, 9},
+    {8, 25000, 10, true, 9},
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,  // panel mount transform pending hardware; native SSD1677 scan is 800x480 landscape
