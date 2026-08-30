@@ -52,7 +52,7 @@ keys of the X4 Pro plus the four bottom keys of the C3 X4:
 
 - **Two side keys (page turn):** Left = GPIO0 → up/previous, Right = GPIO7 →
   down/next. Power = GPIO3.
-- **Four bottom keys:** GPIO2 = Left, GPIO5 = Right, GPIO8 = Confirm, GPIO9 = Back.
+- **Four bottom keys:** GPIO5 = Left, GPIO2 = Right, GPIO8 = Confirm, GPIO9 = Back.
 
 Because the X4C is a buttons-only device (`InputStyle::DigitalButtons` +
 `NO_TOUCH`) with all six navigation actions mapped, a consumer UI that reads the

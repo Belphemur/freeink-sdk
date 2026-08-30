@@ -1669,7 +1669,8 @@ constexpr BoardProfile XTEINK_X4_CLASSIC = {
     //     the physical Confirm/Back keys act as Up/Down.
     //   * Power=GPIO3. (GPIO4 is a non-interrupt input, role PENDING — not a button.)
     // {back, confirm, left, right, up, down, power, powerActiveHigh}
-    {9, 8, 2, 5, 0, 7, 3, false},
+    // back=GPIO9, confirm=GPIO8, left=GPIO5, right=GPIO2 (all confirmed on hardware).
+    {9, 8, 5, 2, 0, 7, 3, false},
     PIN_UNASSIGNED,  // batteryAdc: uses the CW2017 gauge, not an ADC pin
     21,              // batteryChargeStatus: GPIO21 STAT (carried from X4 Pro), active-HIGH (tail)
     2.0f,
