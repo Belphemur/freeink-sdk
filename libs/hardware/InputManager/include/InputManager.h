@@ -205,9 +205,7 @@ class InputManager {
   // of every main-loop iteration. Used while the SoC is in its 80 MHz
   // power-saving reading mode to cut the ~20 I2C txn/s touch poll. Touch INT
   // (GPIO10) still wakes the chip; this only slows the host-side poll cadence.
-  static void setLowPowerPolling(bool enabled) {
-    s_lowPowerPolling = enabled;
-  }
+  static void setLowPowerPolling(bool enabled) { s_lowPowerPolling = enabled; }
 
   // --- Optional background polling -------------------------------------------
   // Spawns a FreeRTOS task that samples the buttons every pollMs and latches
