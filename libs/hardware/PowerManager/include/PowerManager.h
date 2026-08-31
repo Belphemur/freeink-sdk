@@ -55,6 +55,27 @@ class PowerManager {
 
   // Convenience: wait for release, arm the power-button wakeup, then deep sleep.
   [[noreturn]] static void deepSleepUntilPowerButton();
+
+  // Stock-parity shutdown-reason marker (evidence: xteink_app v7.4.4 RE,
+  // ghidra_poweroff_report.md — stock writes a magic + reason byte to RTC slow
+  // RAM before its power-off transaction and reads/clears it at boot).
+  enum ShutdownReason : uint8_t {
+    ShutdownNone = 0,
+    ShutdownUser = 1,     // power-button long press / short-press off
+    ShutdownAutoOff = 2,  // auto power off dwell timer elapsed
+    ShutdownLowBattery = 3,  // reserved
+  };
+
+  // Record WHY the device is powering off. Writes a magic word to RTC slow RAM
+  // (survives deep sleep and most resets) + the reason byte. Call BEFORE the
+  // deep-sleep sink. No-op on SoCs without RTC slow memory.
+  static void setShutdownReason(ShutdownReason reason);
+
+  // Read + clear the marker at boot. Returns (reason << 8) | 1 when a recorded
+  // shutdown is present (stock's convention), 0 when there is none (cold boot,
+  // previous wake was a normal sleep, or unsupported SoC). Idempotent: the
+  // cells are zeroed on read, so a second call returns 0.
+  static uint16_t takeShutdownReason();
 };
 
 }  // namespace freeink
