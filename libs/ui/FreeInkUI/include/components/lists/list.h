@@ -21,6 +21,10 @@ struct ListItem {
   // value string is ignored when set. Activation stays row-level via action.
   bool toggle = false;
   bool toggleChecked = false;
+  // Optional section heading drawn immediately before this selectable row.
+  // It shares the row's logical index and interaction value. Kept last so
+  // existing aggregate initializers remain source-compatible.
+  const char *sectionHeading = nullptr;
 };
 
 struct ListNav;
@@ -41,7 +45,9 @@ struct ListProps {
   // pin tens of KB of ListItems + label strings for rows that are never
   // drawn. list() only touches indexes in [topIndex, topIndex + visible],
   // so the caller must keep the window covering that range (refresh it after
-  // viewport changes, before list()). 0 = items is the full array.
+  // viewport changes, before list()). Set props.nav for a window whose top may
+  // enter the last fixed-height page; otherwise list() may clamp top below the
+  // supplied window. 0 = items is the full array.
   uint16_t itemsWindowFirst = 0;
   // Number of ListItems supplied in `items` when it is a virtual window.
   // Set this whenever itemsWindowFirst is non-zero (or the supplied array is
@@ -242,6 +248,8 @@ struct ListNav {
   }
 
   // Pull the viewport the minimal amount so the selection is visible.
+  // selected and top must both use absolute row indexes; callers that keep a
+  // focus sentinel in selected must translate before calling follow().
   void follow(const int count) {
     followPending = true; // confirmed (or corrected) by onListRendered()
     const uint16_t rows =
@@ -460,8 +468,26 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     } else if (labelLines > 1) {
       itemH = static_cast<int16_t>(rowH + labelLh * (labelLines - 1));
     }
-    if (static_cast<int16_t>(cursorY + itemH) > rowArea.bottom())
+    const bool hasSectionHeading = item.sectionHeading != nullptr && item.sectionHeading[0] != '\0';
+    const int16_t sectionPad = hasSectionHeading && i != top ? props.sectionGap : 0;
+    const int16_t sectionH =
+        hasSectionHeading ? static_cast<int16_t>(sectionPad + headerH + rowGap) : 0;
+    if (static_cast<int16_t>(cursorY + sectionH + itemH) > rowArea.bottom())
       break;
+    if (hasSectionHeading) {
+      cursorY = static_cast<int16_t>(cursorY + sectionPad);
+      Rect headerRow{static_cast<int16_t>(rowArea.x + sidePad), cursorY,
+                     static_cast<int16_t>(rowArea.width - sidePad * 2),
+                     headerLh};
+      frame.target().text(headerRow, item.sectionHeading, props.headerText);
+      if (props.headerUnderline) {
+        frame.target().fill(Rect{headerRow.x,
+                                 static_cast<int16_t>(cursorY + headerLh + 2),
+                                 headerRow.width, 1},
+                            Paint::solid(props.headerText.color));
+      }
+      cursorY = static_cast<int16_t>(cursorY + headerH + rowGap);
+    }
     ++drawnRows;
     ++consumedIndexes;
     if (props.selectedIndex == static_cast<int16_t>(i))
