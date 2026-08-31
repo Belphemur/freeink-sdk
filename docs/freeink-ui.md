@@ -803,13 +803,22 @@ keyboard.okAction = ActionKeyboardOk;
 freeink::ui::keyboard(ui, keyboardRect, keyboard);
 ```
 
-Built-in layout IDs are `QwertyEn`, `AzertyFr`, `QwertzDe`, and `SpanishEs`.
+Built-in layout IDs are `QwertyEn`, `AzertyFr`, `QwertzDe`, `SpanishEs`,
+`CyrillicRu`, `CyrillicUk`, `CyrillicBe`, `CyrillicKk`, and `HebrewIl`.
 Normal ASCII keys report their code point in `ActionEvent::value`; localized
 keys use stable non-ASCII values so firmware can map the selected key back to
 the active layout's UTF-8 output string. Visible glyph coverage depends on the
 active `DrawTarget` font asset, so devices shipping wider language support
 should include matching Noto Sans glyph ranges in their generated bitmap font or
 use a renderer with native text shaping.
+
+An app that reaches more than one script sets `builtinKeyboardLayout`'s
+`langKey` flag and a `KeyboardProps::langAction`, which puts a script-switch key
+in the bottom row. It draws a globe and takes no label of its own: which layout
+is active is already visible in the letter keys. The flag is off by default and
+the Latin layouts respect it, so a single-script keyboard renders without the
+key; the non-Latin layouts carry it either way, since a keyboard with no Latin
+letters cannot type a Wi-Fi password or a URL.
 
 Reader screens can register invisible tap zones over the page while drawing
 chrome separately:

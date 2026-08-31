@@ -41,7 +41,7 @@ enum class KeyboardLayoutId : uint8_t {
 };
 
 struct KeyboardKey {
-  const char* label = nullptr;   // UTF-8 visual label.
+  const char* label = nullptr;   // UTF-8 visual label; null on keys drawn as a glyph.
   const char* output = nullptr;  // UTF-8 text the app may insert for normal keys.
   KeyKind kind = KeyKind::Normal;
   State state = StateNormal;
@@ -80,10 +80,6 @@ struct KeyboardProps {
   const char* okLabel = nullptr;
   const char* shiftLabel = nullptr;
   const char* modeLabel = nullptr;
-  // KeyKind::Lang has no sensible table label: which layout is in use is the
-  // app's state, not the table's. Always supplied per frame; a Lang key with no
-  // label falls back to the table's, which the built-in tables leave as "EN".
-  const char* langLabel = nullptr;
   uint16_t inputMask = InputDefault;
   int16_t selectedIndex = -1;
   TextStyle labelText{};
@@ -533,11 +529,12 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     if (!key.enabled || key.kind == KeyKind::Disabled) state |= StateDisabled;
     const ActionId action = actionFor(key.kind);
     ButtonProps bp;
-    bp.label = (key.kind == KeyKind::Space || key.kind == KeyKind::Delete) ? nullptr : key.label;
+    bp.label = (key.kind == KeyKind::Space || key.kind == KeyKind::Delete || key.kind == KeyKind::Lang)
+                   ? nullptr
+                   : key.label;
     if (key.kind == KeyKind::Ok && props.okLabel) bp.label = props.okLabel;
     if (key.kind == KeyKind::Shift && props.shiftLabel) bp.label = props.shiftLabel;
     if (key.kind == KeyKind::Mode && props.modeLabel) bp.label = props.modeLabel;
-    if (key.kind == KeyKind::Lang && props.langLabel) bp.label = props.langLabel;
     bp.action = action;
     bp.value = key.value;
     bp.inputMask = props.inputMask;
@@ -550,13 +547,17 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     bp.enabled = key.enabled && key.kind != KeyKind::Disabled;
     button(frame, keyRect, bp);
 
-    if (key.kind == KeyKind::Delete) {
-      // Size the delete glyph from the label font so it reads at the same
-      // weight as neighboring key labels; the 16px source art carries ~3px of
-      // internal margin, so the box runs slightly over the line height. Snap
-      // to an integer multiple of the 16px source — non-integer nearest-
-      // neighbor scaling doubles some 1px rows of the mask and not others,
-      // which reads as a ragged upscale.
+    // Delete and the script switch carry a glyph instead of a word: both mean
+    // the same thing in every language, and the switch key in particular has
+    // no label the table could hold — which layout comes next is the app's
+    // state, not the table's.
+    if (key.kind == KeyKind::Delete || key.kind == KeyKind::Lang) {
+      // Size the glyph from the label font so it reads at the same weight as
+      // neighboring key labels; the source art carries ~3px of internal
+      // margin, so the box runs slightly over the line height. Snap to an
+      // integer multiple of 16 — non-integer nearest-neighbor scaling doubles
+      // some rows of the mask and not others, which reads as a ragged
+      // upscale.
       const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;
       const int16_t lh = frame.target().lineHeight(keyText.font);
       const int16_t desired = static_cast<int16_t>(lh + lh / 8);
@@ -565,8 +566,8 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       const int16_t maxSize = keyRect.height < keyRect.width ? keyRect.height : keyRect.width;
       while (iconSize > maxSize && iconSize > 16) iconSize = static_cast<int16_t>(iconSize - 16);
       if (iconSize > maxSize) iconSize = maxSize;
-      frame.target().bitmap(centeredRect(keyRect, Size{iconSize, iconSize}), lucideDeleteIcon16(),
-                            BitmapMode::Contain, ink);
+      const BitmapRef icon = key.kind == KeyKind::Delete ? lucideDeleteIcon16() : lucideGlobeIcon32();
+      frame.target().bitmap(centeredRect(keyRect, Size{iconSize, iconSize}), icon, BitmapMode::Contain, ink);
       return;
     }
 
@@ -585,10 +586,13 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     }
 
     if (key.kind != KeyKind::Space) return;
+    // Keys draw no background here, so the eye measures the gap between
+    // glyphs, not between key rects — a rule much shorter than its key reads
+    // as a hole beside its neighbours.
     const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;
     const int16_t cx = static_cast<int16_t>(keyRect.x + keyRect.width / 2);
     const int16_t cy = static_cast<int16_t>(keyRect.y + keyRect.height / 2);
-    const int16_t half = static_cast<int16_t>(keyRect.width * 3 / 10);
+    const int16_t half = static_cast<int16_t>(keyRect.width * 9 / 20);
     frame.target().line(Point{static_cast<int16_t>(cx - half), static_cast<int16_t>(cy + 3)},
                         Point{static_cast<int16_t>(cx + half), static_cast<int16_t>(cy + 3)}, 3, ink);
   };

@@ -465,17 +465,16 @@ static const KeyboardKey KK_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_K
 // there is one layer and no shift key, and its letters have no contextual
 // forms, so no shaping is needed at the table level.
 //
-// Five letters have a final form used at the end of a word. Four of them get
-// their own key, as on a physical Israeli keyboard (ן ם ך ץ). The fifth, ף,
-// does not fit the grid and long-presses off פ instead — the same
-// base-letter-holds-its-variant idea used for ё in Russian and ґ in Ukrainian.
+// All five final forms (ן ם ך ץ ף) get their own key. The top row drops the
+// geresh (') that a physical Israeli keyboard puts at its left end and shifts
+// one step left to free the slot; ' stays one tap away on the symbols layer.
 //
 // Right-to-left is handled downstream: the renderer bidi-reorders the text it
 // draws, so the keyboard only has to insert code points in logical order.
-static const KeyboardKey HE_ROW1[] = {K("/", "/", '/'),   K("'", "'", '\''), K("ק", "ק", 0x5E7),
-                                      K("ר", "ר", 0x5E8), K("א", "א", 0x5D0),  K("ט", "ט", 0x5D8),
-                                      K("ו", "ו", 0x5D5), K("ן", "ן", 0x5DF),  K("ם", "ם", 0x5DD),
-                                      KA("פ", "פ", 0x5E4, "ף")};
+static const KeyboardKey HE_ROW1[] = {K("/", "/", '/'),   K("ק", "ק", 0x5E7), K("ר", "ר", 0x5E8),
+                                      K("א", "א", 0x5D0), K("ט", "ט", 0x5D8), K("ו", "ו", 0x5D5),
+                                      K("ן", "ן", 0x5DF), K("ם", "ם", 0x5DD), K("פ", "פ", 0x5E4),
+                                      K("ף", "ף", 0x5E3)};
 static const KeyboardKey HE_ROW2[] = {K("ש", "ש", 0x5E9), K("ד", "ד", 0x5D3), K("ג", "ג", 0x5D2),
                                       K("כ", "כ", 0x5DB), K("ע", "ע", 0x5E2), K("י", "י", 0x5D9),
                                       K("ח", "ח", 0x5D7), K("ל", "ל", 0x5DC), K("ך", "ך", 0x5DA)};
@@ -489,11 +488,11 @@ static const KeyboardKey HE_ROW3[] = {K("ז", "ז", 0x5D6), K("ס", "ס", 0x5E1)
 // Bottom row carrying the script-switch key. Kept separate from EN_ROW4 so a
 // single-script build renders exactly as before — the key costs a slot in the
 // row, and there is no point spending it when there is nowhere to switch to.
-// Its "EN" label is a placeholder: the app overrides it per frame through
-// KeyboardProps::langLabel with the name of whatever layout comes next.
+// The key draws a globe glyph, so it carries no label, and one unit is all a
+// glyph needs; the rest of the row's ten units go to the space bar.
 static const KeyboardKey LANG_ROW4[] = {KS("?123", KeyKind::Mode, QWERTY_KEY_MODE, 2),
-                                        KS("EN", KeyKind::Lang, QWERTY_KEY_LANG, 2),
-                                        KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 4),
+                                        KS(nullptr, KeyKind::Lang, QWERTY_KEY_LANG, 1),
+                                        KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 5),
                                         KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
 
 static const KeyboardRow EN_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
