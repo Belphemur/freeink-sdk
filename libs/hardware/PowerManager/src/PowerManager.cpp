@@ -104,4 +104,41 @@ void PowerManager::deepSleepUntilPowerButton() {
   deepSleep();
 }
 
+// --- Stock-parity shutdown-reason RTC marker -------------------------------
+// xteink_app v7.4.4 writes magic 0x58435253 ("SRCX") at RTC slow RAM 0x50000004
+// and a u8 reason at 0x50000000 before its power-off commit; the wake boot reads
+// the magic, reports (reason << 8) | 1, and zeroes both cells (RE evidence:
+// ghidra_poweroff_report.md checkpoints 3-5, FINAL CONCLUSION). RTC slow RAM
+// survives deep sleep and most resets, which is exactly why stock uses it.
+#if SOC_RTC_SLOW_MEM_SUPPORTED
+namespace {
+constexpr uintptr_t kShutdownMagicAddr = 0x50000004;  // RTC slow RAM + 4
+constexpr uintptr_t kShutdownReasonAddr = 0x50000000;  // RTC slow RAM + 0
+constexpr uint32_t kShutdownMagic = 0x58435253u;  // "SRCX" little-endian
+}  // namespace
+
+void PowerManager::setShutdownReason(ShutdownReason reason) {
+  auto* magicCell = reinterpret_cast<volatile uint32_t*>(kShutdownMagicAddr);
+  auto* reasonCell = reinterpret_cast<volatile uint32_t*>(kShutdownReasonAddr);
+  // Reason first, magic last: a torn write (power cut mid-sequence) leaves NO
+  // magic, so the boot side never reports a half-written marker.
+  *reasonCell = static_cast<uint32_t>(reason) & 0xffu;
+  *magicCell = kShutdownMagic;
+}
+
+uint16_t PowerManager::takeShutdownReason() {
+  auto* magicCell = reinterpret_cast<volatile uint32_t*>(kShutdownMagicAddr);
+  auto* reasonCell = reinterpret_cast<volatile uint32_t*>(kShutdownReasonAddr);
+  if (*magicCell != kShutdownMagic) return 0;
+  const uint16_t result = static_cast<uint16_t>(((*reasonCell & 0xffu) << 8) | 1u);
+  // Clear both cells: the marker is consumed exactly once (stock behavior).
+  *reasonCell = 0;
+  *magicCell = 0;
+  return result;
+}
+#else   // !SOC_RTC_SLOW_MEM_SUPPORTED
+void PowerManager::setShutdownReason(ShutdownReason) {}
+uint16_t PowerManager::takeShutdownReason() { return 0; }
+#endif  // SOC_RTC_SLOW_MEM_SUPPORTED
+
 }  // namespace freeink
