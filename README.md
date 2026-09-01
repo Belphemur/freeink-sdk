@@ -122,6 +122,7 @@ so the SD manager itself stays device-agnostic.
 |---|---|---|---|---|
 | **Xteink X4** | ESP32-C3 | SSD1677 | 800×480 | B/W + 4-level grayscale |
 | **Xteink X3** | ESP32-C3 | UC8253 | 792×528 | B/W + 4-level grayscale; BQ27220 I²C battery gauge; shares the C3 binary with X4 |
+| **OnePage** | ESP32-C61 | SSD1677 | 800×480 | B/W + 4-level grayscale, 4-key front resistor ADC ladder + 3 side keys, shared SPI MicroSD with power gating, Wi-Fi 6 + BLE 5.4 wireless page-turner remote host |
 | **de-link** | ESP32-S3 | SSD1677 | 800×480 | B/W + grayscale, PWM frontlight, native 4-bit SDMMC SD |
 | **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 Spectra-6 color | native interrupted-refresh driver, optional M5GFX backend, built-in speaker (ES8311 codec + AW8737A amp), 2x RGB LEDs |
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 | B/W (90°-rotated framebuffer, full/fast LUTs), CHSC6x touch, PWM frontlight |
@@ -145,8 +146,8 @@ found so the caller can `display.setDisplayX3()`. Call it before
 profile. In builds without an Xteink profile the helpers compile to no-ops that
 return false without touching any pins, so an unconditional call is safe on
 every device. Devices on a different MCU build their own binary, selected with a
-`-DFREEINK_DEVICE_*` flag. A build targets exactly one of the three MCU families — ESP32-C3 (X3/X4),
-ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3), or classic ESP32 (M5Paper);
+`-DFREEINK_DEVICE_*` flag. A build targets exactly one of the four MCU families — ESP32-C3 (X3/X4),
+ESP32-C61 (OnePage), ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3), or classic ESP32 (M5Paper);
 `BoardConfig` rejects mixing families at compile time.
 
 #### Per-batch panel controllers (`applyXteinkDisplayController()`)
@@ -160,9 +161,7 @@ batch. `XteinkDetect` resolves which silicon a unit carries at boot:
 ```cpp
 #include <XteinkDetect.h>
 
-// Before FreeInkDisplay::begin() — promotes BoardConfig::ACTIVE.displayController
-// to the UltraChip sibling when this unit carries it, so begin() selects the
-// matching driver. No-op (returns false) on builds without a probe-capable device.
+// Detect and apply the display controller for this unit's batch:
 freeink::applyXteinkDisplayController();
 display.begin();
 ```
@@ -295,7 +294,18 @@ wasTouchReleased/getTouchPoint`; it delivers coordinates raw-panel-oriented and 
 app owns display-orientation mapping. GT911 additionally provides allocation-free
 multi-contact snapshots, completed 2-4 finger translation gestures, and completed
 two-finger rotations with a signed angle, center, and duration. The GT911 boards set
-their `TouchConfig` in the board profile (e.g. `BoardConfig::LILYGO_T5_PRO_GT911`).
+### OnePage Reader board support (ESP32-C61)
+
+The OnePage Reader is an open-hardware DIY e-reader built around the **ESP32-C61**
+RISC-V wireless SoC. Complete hardware specifications, pinout, power gating, and
+board profile details are documented in [docs/onepage-c61-support.md](docs/onepage-c61-support.md).
+
+Key characteristics:
+- **Display**: SSD1677 800×480 on SPI @ 20MHz.
+- **MicroSD**: SPI mode sharing the bus with EPD, powered via GPIO27 power rail.
+- **Input**: 4-key front resistor ADC ladder on GPIO4 (`OnePageAdcLadder`) + 3 discrete active-low side keys (`UP=6, DOWN=9, POWER=2`).
+- **Battery / Power**: ADC sampling on GPIO5 with charge-pause control on GPIO10 (`BAT_CHG_EN`).
+- **Bluetooth**: Wi-Fi 6 + BLE 5.4 with BLE HID Central / page-turner remote host support.
 
 ## Build composition — devices × capabilities
 
@@ -310,6 +320,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 |---|---|
 | `-DFREEINK_DEVICE_X4` | X4 only — links just SSD1677 (tightest) |
 | `-DFREEINK_DEVICE_X3 -DFREEINK_DEVICE_X4` | X3 **and** X4 in one C3 binary, runtime-selected via `setDisplayX3()` |
+| `-DFREEINK_DEVICE_ONEPAGE` | OnePage (C61, SSD1677 800×480 + 4-key ADC ladder + 3 side keys + shared SD) |
 | `-DFREEINK_DEVICE_DELINK` | de-link (S3, SSD1677 + frontlight) |
 | `-DFREEINK_DEVICE_M5` | M5 PaperColor (S3, ED2208 + color) |
 | `-DFREEINK_DEVICE_MURPHY` | Murphy M3 (S3, UC8253 + touch + frontlight) |

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <driver/gpio.h>
 #include <esp_sleep.h>
 #include <soc/soc_caps.h>
 
@@ -92,7 +93,9 @@ void PowerManager::powerDownRailsForSleep() {
 
 void PowerManager::deepSleep() {
   esp_sleep_config_gpio_isolate();
+#if !FREEINK_MCU_C61
   gpio_deep_sleep_hold_en();
+#endif
   esp_deep_sleep_start();
   while (true) {
   }  // esp_deep_sleep_start() does not return; satisfy [[noreturn]]
