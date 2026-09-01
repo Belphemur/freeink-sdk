@@ -1561,10 +1561,13 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // Frontlight: dual warm/cold LEDC PWM with color temperature (NVS lightWarmValue/
     // lightColdValue/lightCT/lightBri/lightOn). Recovered from the OEM LEDC init (IROM
     // 0x420a2130 → helper 0x420a20c0): two channels — GPIO8 on LEDC ch4 and GPIO9 on ch5 —
-    // The original bring-up dump used 10 kHz; stock 7.0.8 passes 25 kHz / 10-bit to
-    // the frontlight initializer on the same pins. Use that directly recovered value.
-    // Both channels are active-HIGH (init drives the pin LOW = off, brightness raises
-    // duty).
+    // The FREEINK_FRONTLIGHT_LS path no longer clocks the LEDC timer from RC_FAST (that
+    // retention path is dropped: this fork only deep-sleeps, and RC_FAST (~17.5 MHz) could
+    // not reach 25 kHz at 10-bit — ledc_timer_config failed -> both channels unconfigured
+    // -> light stays dark — which is what forced this profile down to 10 kHz). The timer
+    // now runs on the default AUTO clock (≥40 MHz), so the OEM 25 kHz / 10-bit is valid
+    // again and is restored here.
+    // Both channels are active-HIGH (init drives the pin LOW = off, brightness raises duty).
     // GPIO8 is the hardware-confirmed cool channel and GPIO9 the warm channel;
     // FrontlightManager mixes them for color-temperature control.
     {8, 25000, 10, true, 9},

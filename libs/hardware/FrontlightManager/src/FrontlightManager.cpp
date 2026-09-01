@@ -8,11 +8,6 @@
 #ifdef FREEINK_FRONTLIGHT_LS
 #include <driver/gpio.h>
 #include <driver/ledc.h>
-// esp_sleep_sub_mode_config lives in a private IDF header (no public API exists
-// for balancing the refcounted RC_FAST keep-on the LEDC driver takes for
-// KEEP_ALIVE channels — the driver manages it through this same header). Pinned
-// IDF 5.5; re-check on IDF bumps.
-#include <esp_private/esp_sleep_internal.h>
 #endif
 
 // Logging: use the firmware's Logging.h LOG_INF facility, NOT esp_log. The
@@ -79,30 +74,31 @@ uint32_t physicalDuty(uint32_t logicalDuty, uint32_t full, bool activeHigh) {
 }
 
 #ifdef FREEINK_FRONTLIGHT_LS
-// Light-sleep-surviving LEDC: clock the timer from RC_FAST (~17.5 MHz on the
-// S3 — the practical LEDC source that keeps running through light sleep at
-// near-zero extra sleep power; XTAL can also be kept up but costs far more in
-// sleep current), mark the
-// channels KEEP_ALIVE, and disable the GPIO sleep-isolation override on the
-// output pins (a documented gotcha: sleep entry reconfigures the pad and kills
-// the PWM even when the clock survives). RC_FAST at 10 kHz supports up to
-// 10-bit resolution (17.5 MHz / 10 kHz = 1750 >= 1024), so the board profiles'
-// full duty range — including setBrightnessLevel's level-1 minimum step — stays
-// expressible. Uses the IDF driver directly (fixed LEDC_TIMER_0 + the channel
-// ids below) because the Arduino helpers don't expose sleep_mode; safe here
-// because frontlight boards using this flag have no other LEDC consumer.
+// LEDC attach for light-sleep-flagged boards, with the RC_FAST retention path
+// dropped: this fork only deep-sleeps (it never light-sleeps — setPowerSaving
+// only scales the CPU), so LEDC_SLEEP_MODE_KEEP_ALIVE + RC_FAST bought nothing,
+// and RC_FAST (~17.5 MHz on the S3) cannot reach the board profile's 25 kHz at
+// 10-bit — ledc_timer_config() returned ESP_FAIL, which is what forced the X4
+// Pro profile down to 10 kHz. Leaving clk_cfg unset selects LEDC_AUTO_CLK: the
+// driver picks a clock that meets the requested freq × resolution (XTAL/APB,
+// both ≥ 40 MHz on the S3), so 25 kHz / 10-bit (div ≈ 1.56 at 40 MHz) is valid
+// again and the OEM profile value works unchanged. Channels use the default
+// sleep mode: the pad is isolated at deep sleep by
+// esp_sleep_config_gpio_isolate(), and park()'s pad-hold cuts the light anyway.
+// Still uses the IDF driver directly (fixed LEDC_TIMER_0 + the channel ids
+// below); safe here because frontlight boards using this flag have no other
+// LEDC consumer.
 bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
   ledc_timer_config_t timer = {};
   timer.speed_mode = LEDC_LOW_SPEED_MODE;
   timer.duty_resolution = static_cast<ledc_timer_bit_t>(bits);
   timer.timer_num = LEDC_TIMER_0;
   timer.freq_hz = freq;
-  timer.clk_cfg = LEDC_USE_RC_FAST_CLK;
-  if (ledc_timer_config(&timer) != ESP_OK) {
-    // freq/bits exceed RC_FAST — leave the light unconfigured rather than
-    // silently falling back to a clock that freezes in light sleep.
-    return false;
-  }
+  // No clk_cfg -> LEDC_AUTO_CLK: the driver picks a ≥40 MHz source (XTAL/APB on
+  // the S3), which supports the board's 25 kHz / 10-bit (div ≈ 1.56 at 40 MHz).
+  // RC_FAST (~17.5 MHz) cannot reach 25 kHz at 10-bit, which is what forced the
+  // profile down to 10 kHz under the old RC_FAST path.
+  if (ledc_timer_config(&timer) != ESP_OK) return false;
   ledc_channel_config_t chan = {};
   chan.gpio_num = gpio;
   chan.speed_mode = LEDC_LOW_SPEED_MODE;
@@ -111,9 +107,8 @@ bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
   chan.timer_sel = LEDC_TIMER_0;
   chan.duty = 0;
   chan.hpoint = 0;
-  chan.sleep_mode = LEDC_SLEEP_MODE_KEEP_ALIVE;
-  // ledc_channel_config() disables the pad's sleep-isolation override itself
-  // for KEEP_ALIVE channels (IDF 5.5), so no explicit gpio_sleep_sel_dis here.
+  // Default sleep_mode (NOT KEEP_ALIVE): the pad is isolated at deep sleep by
+  // esp_sleep_config_gpio_isolate(); the frontlight is cut by park()'s pad-hold.
   return ledc_channel_config(&chan) == ESP_OK;
 }
 void writeChannel(int8_t /*gpio*/, uint8_t ch, uint32_t duty) {
@@ -187,20 +182,9 @@ void FrontlightManager::begin() {
   }
   _lsParked = false;
   LOG_INF("FrontlightMgr", "begin: cleared any stale held pads");
-  // The FIRST successful KEEP_ALIVE channel config takes a single refcounted +1
-  // on the RC_FAST sleep sub-mode (esp_sleep_sub_mode_config; the driver's
-  // global-clock latch means later configs don't take another), which would
-  // keep RC_FAST — and the digital domain at its higher sleep bias — powered
-  // through every light-sleep window from boot, even with the light off.
-  // Balance it here and let apply() re-arm only while the light is actually
-  // lit. attachOk is true when ANY channel config succeeded (exactly the
-  // condition under which the driver's +1 was taken); the !_begun guard keeps a
-  // hypothetical second begin() from decrementing twice.
-  _lsAttachOk = attachOk;
-  _lsKeepAliveArmed = false;
-  if (attachOk && !_begun) {
-    esp_sleep_sub_mode_config(ESP_SLEEP_DIG_USE_RC_FAST_MODE, false);
-  }
+  // No RC_FAST sleep sub-mode bookkeeping any more: attachChannel() now runs on
+  // the default AUTO clock with the default channel sleep mode, so there is no
+  // refcounted RC_FAST keep-alive to balance (see attachChannel() above).
 #else
   (void)attachOk;
 #endif
@@ -329,9 +313,6 @@ void FrontlightManager::apply() {
     warmDuty = (totalDuty * _warmPercent + 50u) / 100u;
     coolDuty = totalDuty - warmDuty;
   }
-#ifdef FREEINK_FRONTLIGHT_LS
-  updateLsKeepAlive(totalDuty != 0);
-#endif
   writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(coolDuty, full, fl.activeHigh));
 
   if (dual) {
@@ -342,36 +323,20 @@ void FrontlightManager::apply() {
 }
 
 #ifdef FREEINK_FRONTLIGHT_LS
-void FrontlightManager::updateLsKeepAlive(const bool lit) {
-  // Refcounted, so strictly transition-edged: one +1 while lit, returned at 0.
-  // Skipped when the attach failed (see begin()) — the driver never took its
-  // +1 there, and RC_FAST keep-alive is moot without a working LS channel.
-  if (!_lsAttachOk || lit == _lsKeepAliveArmed) return;
-  esp_sleep_sub_mode_config(ESP_SLEEP_DIG_USE_RC_FAST_MODE, lit);
-  _lsKeepAliveArmed = lit;
-}
-
 void FrontlightManager::park() {
   // Frontlight leakage through deep sleep (Xteink X4 Pro — Mark31415,
-  // crosspoint-reader#3215). The channels are configured LEDC_SLEEP_MODE_KEEP_ALIVE
-  // so the PWM keeps driving GPIO8/9 (cool/warm) through light sleep; at deep
-  // sleep the panel rail is held up (PR #3215 holds power.latch0 / GPIO1 HIGH for
-  // fast-wake), so the frontlight driver IC stays powered and the KEEP_ALIVE pad
-  // keeps drawing quiescent + leakage current. Cut it at the source: drive both
-  // pads LOW (active-high frontlight -> LED off, no booster bias) and hold them
-  // LOW so the level survives deep sleep via gpio_deep_sleep_hold_en() (called by
-  // PowerManager::deepSleep()). The LEDC peripheral clock (RC_FAST) is also
-  // released so the driver's refcounted +1 is dropped and the clock can fully
-  // stop in deep sleep. releaseOnWake() must undo this before begin() re-attaches
-  // the LEDC channels on boot.
+  // crosspoint-reader#3215). At deep sleep the panel rail is held up (PR #3215
+  // holds power.latch0 / GPIO1 HIGH for fast-wake), so the frontlight driver IC
+  // stays powered and a driven pad keeps drawing quiescent + leakage current.
+  // Cut it at the source: drive both pads LOW (active-high frontlight -> LED
+  // off, no booster bias) and hold them LOW so the level survives deep sleep via
+  // gpio_deep_sleep_hold_en() (called by PowerManager::deepSleep()).
+  // releaseOnWake() must undo this before begin() re-attaches the LEDC channels
+  // on boot.
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   if (!_begun) return;
   LOG_INF("FrontlightMgr", "park: begun, driving pads LOW + hold");
-  // Return the LEDC driver's refcounted RC_FAST keep-alive it took at attach, if
-  // it is still armed (apply() re-arms only while lit; off()/setBrightness(0)
-  // returns it, but be safe if the light was parked while lit).
-  updateLsKeepAlive(false);
-  // Tear down the KEEP_ALIVE LEDC channels so the pads no longer answer to the
+  // Tear down the LEDC channels so the pads no longer answer to the
   // peripheral; the explicit GPIO hold below then owns the pad level.
   ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
   if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {

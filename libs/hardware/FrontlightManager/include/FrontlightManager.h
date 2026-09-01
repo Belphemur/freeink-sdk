@@ -36,9 +36,9 @@ class FrontlightManager {
   void on();
 
   // Cut frontlight leakage through deep sleep: drive the LED pads LOW and hold
-  // them (so the level survives deep sleep via gpio_deep_sleep_hold_en), and
-  // release the LEDC KEEP_ALIVE clock. Call from the consumer's sleep path just
-  // before deep sleep. Only meaningful on LEDC frontlights (no-op otherwise).
+  // them (so the level survives deep sleep via gpio_deep_sleep_hold_en). Call
+  // from the consumer's sleep path just before deep sleep. Only meaningful on
+  // LEDC frontlights (no-op otherwise).
   // releaseOnWake() must be called at boot before begin() re-attaches the
   // channels.
   // Implemented only under FREEINK_FRONTLIGHT_LS, so guard the declarations to
@@ -109,16 +109,7 @@ class FrontlightManager {
 #endif
 #endif
 #ifdef FREEINK_FRONTLIGHT_LS
-  // Keep RC_FAST powered through light sleep only while the light is actually
-  // lit. The LEDC driver's KEEP_ALIVE config pins RC_FAST (and the digital
-  // domain at its higher sleep bias) for every light-sleep window from boot;
-  // begin() cancels that via the refcounted sleep sub-mode API and apply()
-  // re-arms it on 0<->nonzero total-duty transitions, so dark idle sleeps at
-  // full depth.
-  void updateLsKeepAlive(bool lit);
-  bool _lsAttachOk = false;        // both channel attaches succeeded (refcount is balanced)
-  bool _lsKeepAliveArmed = false;  // our own +1 on the RC_FAST sleep sub-mode is active
-  bool _lsParked = false;          // park() has driven + held the frontlight pads LOW
+  bool _lsParked = false;  // park() has driven + held the frontlight pads LOW
 #endif
 
   bool _begun = false;
