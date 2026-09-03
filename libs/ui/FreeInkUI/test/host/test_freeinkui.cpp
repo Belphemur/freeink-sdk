@@ -996,6 +996,185 @@ void testListNavConvergesThroughRealList() {
   CHECK_EQ(nav.pageRows(), 6);
 }
 
+// A list whose count fits the FIXED-HEIGHT row estimate can still be clipped
+// once wrapped rows grow: 8 items with a 10-row estimate, but only 6 fit. The
+// pre-fix list() called that "no overflow" and pinned top at 0, so the clipped
+// tail was unreachable by swipe scrolling OR selection (the on-device File
+// Transfer menu at Large UI scale). Layout feedback must let the nav scroll.
+void testListNavScrollsClippedListWithinRowEstimate() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+
+  static const char kLongLabel[] =
+      "wrapping filename that is deliberately long enough to need a second "
+      "display line";
+  ListItem items[8]{};
+  for (int i = 0; i < 8; ++i) {
+    items[i].label = kLongLabel;
+    items[i].actionValue = static_cast<int16_t>(i);
+    items[i].enabled = true;
+  }
+
+  const Rect body{0, 0, 480, 200};
+  CHECK_EQ(listVisibleRows(body, 20, 0), 10); // estimate exceeds the 8 items
+
+  ListNav nav;
+  nav.reset(0);
+
+  // One build pass over `count` items, returning whether the given index
+  // registered a hit rect. Each pass starts with an empty op log so the
+  // scroll-indicator assertions below see only that pass.
+  const auto buildCount = [&](const uint16_t count, const int16_t wantIndex) {
+    draw.opCount = 0;
+    InteractionBuffer<32> interactions;
+    Frame<32> frame(draw, device, input, interactions);
+    ListProps props;
+    props.items = items;
+    props.count = count;
+    props.action = 7;
+    props.rowHeight = 20;
+    props.labelText.maxLines = 2;
+    nav.syncToProps(body, 20, 0, count, props);
+    list(frame, body, props);
+    for (size_t k = 0; k < interactions.count(); ++k) {
+      if (interactions.data()[k].value == wantIndex)
+        return true;
+    }
+    return false;
+  };
+  const auto build = [&](const int16_t wantIndex) {
+    return buildCount(8, wantIndex);
+  };
+  // The scroll track and its thumb are the only 3px-wide fills at the band's
+  // right edge (scrollIndicatorWidth 3, no inset).
+  const auto scrollFills = [&]() {
+    int found = 0;
+    for (size_t k = 0; k < draw.opCount; ++k) {
+      const auto& op = draw.ops[k];
+      if (op.kind == FakeDrawTarget::Op::Fill && op.rect.x == 477 &&
+          op.rect.width == 3)
+        ++found;
+    }
+    return found;
+  };
+  const auto hasFill = [&](const Rect want) {
+    for (size_t k = 0; k < draw.opCount; ++k) {
+      const auto& op = draw.ops[k];
+      if (op.kind == FakeDrawTarget::Op::Fill && op.rect.x == want.x &&
+          op.rect.y == want.y && op.rect.width == want.width &&
+          op.rect.height == want.height)
+        return true;
+    }
+    return false;
+  };
+
+  build(0);
+  CHECK_EQ(nav.drawnRows, 6); // wrapped rows fit 6 of the estimated 10
+  CHECK_EQ(nav.drawnCount, 8);
+  CHECK_EQ(scrollFills(), 0); // nothing measured yet: no indicator on pass 1
+  // The first build had no measured page size, so it could not know the list
+  // was clipped; it asks for one repaint (which shows the scroll indicator).
+  CHECK(nav.consumeRebuildNeeded());
+  build(0);
+  CHECK(!nav.rebuildNeeded); // and does not ask again
+  CHECK_EQ(scrollFills(), 2); // the rebuild paints the track and its thumb
+  // Thumb sized by the MEASURED page (6 of 8), not the 10-row estimate: the
+  // estimate would make drawListScrollIndicator() drop the indicator entirely.
+  CHECK(hasFill(Rect{477, 0, 3, 150})); // 200 * 6 / 8, at top 0
+
+  // Swipe scrolling reaches the clipped tail instead of snapping back to 0.
+  CHECK(nav.scrollBy(nav.pageRows(), 8));
+  CHECK_EQ(nav.top, 2); // 8 items - 6 measured rows
+  CHECK(build(7));      // the last item draws and takes touches
+  CHECK_EQ(nav.top, 2); // list() kept the scrolled viewport
+  CHECK(hasFill(Rect{477, 50, 3, 150})); // thumb tracked the viewport
+
+  // The measurement belongs to the row set it was taken on. A caller that
+  // reloads its data keeps the same nav, and 7 items that all fit must not
+  // inherit the clipped list's page size (phantom indicator, narrowed rows).
+  buildCount(7, 0);
+  CHECK_EQ(scrollFills(), 0);
+
+  // Every clamp has to agree about that. scrollBy() pages by the estimate for
+  // the new count too: if it kept the old measured page it would leave `top`
+  // at a viewport list() refuses to draw, and a caller that already built its
+  // virtual item window from that top renders nothing at all.
+  nav.drawnRows = 6; // as measured on the 8-item list above
+  nav.drawnCount = 8;
+  nav.visibleRows = 10;
+  nav.top = 2;
+  CHECK(nav.scrollBy(0, 7)); // clamps to the estimate: 7 - 10 -> 0
+  CHECK_EQ(nav.top, 0);
+  CHECK_EQ(nav.pageRowsFor(7), 10); // estimate, not the stale 6
+  CHECK_EQ(nav.pageRowsFor(8), 6);  // the count it was measured on
+
+  // Selecting the last item converges too, from a viewport at the top.
+  ListNav tail;
+  tail.reset(7);
+  nav = tail;
+  int passes = 0;
+  bool lastRegistered = false;
+  for (; passes < 8; ++passes) {
+    lastRegistered = build(7);
+    if (!nav.consumeRebuildNeeded())
+      break;
+  }
+  CHECK(lastRegistered);
+  CHECK(!nav.followPending);
+  CHECK(passes < 8);
+}
+
+// A nav list reserves the scroll strip even when it fits, so rows draw a few
+// pixels short of the band edge. The touch rect must still cover that strip
+// while no indicator sits in it: with a bezel inset the gap is wider than
+// ensureMinTouchRect's edge snap, so the rows would otherwise stop short of
+// the screen edge on exactly the recessed-panel devices.
+void testListNavFittingListKeepsFullWidthTouchRects() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  ListItem items[2]{};
+  for (int i = 0; i < 2; ++i) {
+    items[i].label = "row";
+    items[i].actionValue = static_cast<int16_t>(i);
+    items[i].enabled = true;
+  }
+
+  ListNav nav;
+  nav.reset(0);
+  ListProps props;
+  props.items = items;
+  props.count = 2;
+  props.action = 7;
+  props.rowHeight = 40;
+  props.scrollIndicatorInset = 7; // recessed panel: cut is 12, past the snap
+  const Rect body{0, 0, 480, 200};
+  nav.syncToProps(body, 40, 0, 2, props);
+  list(frame, body, props);
+
+  // Both rows fit, so no indicator is drawn and the strip is empty screen.
+  CHECK_EQ(nav.drawnRows, 2);
+  CHECK_EQ(interactions.count(), 2u);
+  for (size_t k = 0; k < interactions.count(); ++k) {
+    const Rect hit = interactions.data()[k].rect;
+    CHECK_EQ(hit.x, 0);
+    CHECK_EQ(hit.right(), 480); // reaches the band edge, strip included
+  }
+  // The row itself still stops short of the strip it reserved.
+  bool drewNarrowRow = false;
+  for (size_t k = 0; k < draw.opCount; ++k) {
+    const auto& op = draw.ops[k];
+    if (op.kind == FakeDrawTarget::Op::Fill && op.rect.height == 40 &&
+        op.rect.width == 468)
+      drewNarrowRow = true;
+  }
+  CHECK(drewNarrowRow);
+}
+
 void testListCanUseFullTitleWidthWithShortValue() {
   ListItem item{};
   item.label = "This filename is deliberately long enough to require a two-line wrapped title";
@@ -3642,6 +3821,8 @@ int main() {
   testListInlineSectionHeadingDoesNotOrphan();
   testListNavLayoutFeedback();
   testListNavConvergesThroughRealList();
+  testListNavScrollsClippedListWithinRowEstimate();
+  testListNavFittingListKeepsFullWidthTouchRects();
   testListCanUseFullTitleWidthWithShortValue();
   testListRtlMirrorsIconAndValueSides();
   testListRtlMirrorsToggleSide();
