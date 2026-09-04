@@ -1353,6 +1353,14 @@ void testProgressBarClamps() {
   props.value = 0;
   progressBar(frame2, Rect{0, 0, 200, 4}, props);
   CHECK_EQ(draw2.opCount, 1u);  // track only, no fill
+
+  FakeDrawTarget largeDraw;
+  Frame<4> largeFrame(largeDraw, device, input, interactions);
+  props.value = 5000000;
+  props.max = 10000000;
+  progressBar(largeFrame, Rect{0, 0, 700, 4}, props);
+  CHECK_EQ(largeDraw.opCount, 2u);
+  CHECK_EQ(largeDraw.ops[1].rect.width, 350);
 }
 
 void testBatteryIndicator() {
