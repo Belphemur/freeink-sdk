@@ -1773,6 +1773,47 @@ void testContentWidthTabBarLayout() {
   CHECK_EQ(interactions.route(tap).value, 20);
 }
 
+
+void testTabBarTrailingIndicatorLayout() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  TabItem tabs[2];
+  tabs[0].label = "Added";
+  tabs[0].selected = true;
+  tabs[0].indicator = TabIndicator::Down;
+  tabs[1].label = "Title";
+  TabBarProps bar;
+  bar.tabs = tabs;
+  bar.count = 2;
+  tabBar(frame, Rect{0, 0, 300, 40}, bar);
+
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Triangle), 1u);
+  const FakeDrawTarget::Op* label = nullptr;
+  const FakeDrawTarget::Op* indicator = nullptr;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (!label && draw.ops[i].kind == FakeDrawTarget::Op::Text)
+      label = &draw.ops[i];
+    if (!indicator && draw.ops[i].kind == FakeDrawTarget::Op::Triangle)
+      indicator = &draw.ops[i];
+  }
+  CHECK(label != nullptr);
+  CHECK(indicator != nullptr);
+  if (label && indicator) {
+    CHECK(indicator->rect.x > label->rect.right());
+    CHECK_EQ(indicator->color, Color::White);
+  }
+
+  FakeDrawTarget draw2;
+  Frame<8> frame2(draw2, device, input, interactions);
+  tabs[0].indicator = TabIndicator::Up;
+  tabBar(frame2, Rect{0, 0, 300, 40}, bar);
+  CHECK_EQ(draw2.countKind(FakeDrawTarget::Op::Triangle), 1u);
+}
+
 void testRoundedRaffSurfaces() {
   // Mirrors the retired RoundedRaffTheme: pill settings tabs with a bottom
   // divider, hug-content menu rows, and rounded keyboard keys — all from
@@ -3837,6 +3878,7 @@ int main() {
   testCrossInkReadingStatsSurfaces();
   testInteractionOverflowFlag();
   testContentWidthTabBarLayout();
+  testTabBarTrailingIndicatorLayout();
   testRoundedRaffSurfaces();
   testThemePrimitiveParity();
   testRotationAndBitmapSampling();
