@@ -87,11 +87,13 @@ const uint8_t kXtfPreBwMid[5][PREBW_LUT_LEN + 1] = {
 
 // Time-scaled view of kXtfPreBwMid, built at first use: every phase's frame
 // count is multiplied by FREEINK_UC8279X4_PRE_SPEED percent (round-half-up,
-// minimum 1) with NO charge repair — the stock tables 0x22/0x23 are
-// DELIBERATELY unbalanced (rail 2 and rail 1 drive all 25 frames) because the
-// scrub is the point: it pins gray-edge pixels to their target tone and clears
-// the B/W planes' residual edge charge before the AA waveform runs. Restoring
-// net charge to zero would truncate exactly those scrubs.
+// minimum 1; 25 frames/table -> 16 at the 60% default, ~340ms measured
+// frame rate applies per phase) with NO charge repair — the stock tables
+// 0x22/0x23 are DELIBERATELY unbalanced (rail 2 and rail 1 drive all 25
+// frames) because the scrub is the point: it pins gray-edge pixels to their
+// target tone and clears the B/W planes' residual edge charge before the AA
+// waveform runs. Restoring net charge to zero would truncate exactly those
+// scrubs.
 #ifndef FREEINK_UC8279X4_PRE_SPEED
 #define FREEINK_UC8279X4_PRE_SPEED 60
 #endif
@@ -100,19 +102,23 @@ const uint8_t (*scaledPreBwMid())[PREBW_LUT_LEN + 1] {
   static bool built = false;
   if (built) return out;
   for (uint8_t t = 0; t < 5; t++) {
-    out[t][0] = kXtfPreBwMid[t][0];
-    for (uint8_t g = 1; g < PREBW_LUT_LEN; g += 7) {
-      out[t][g] = kXtfPreBwMid[t][g];  // group marker byte
-      for (uint8_t i = 1; i <= 4 && g + i < PREBW_LUT_LEN; i++) {
+    // Start from a full copy so every byte (including the trailing pad at
+    // [PREBW_LUT_LEN], which runGrayscalePrecondition's upload spans) is
+    // defined; only phase bytes get rewritten below.
+    for (uint8_t i = 0; i <= PREBW_LUT_LEN; i++) {
+      out[t][i] = kXtfPreBwMid[t][i];
+    }
+    // Phase groups start at row index 1 (after the cmd byte) every 7 bytes;
+    // the marker byte at [g] is copied verbatim, [g+1..g+4] carry the four
+    // phases ((rail<<6)|frames), [g+5..g+6] are padding.
+    for (uint8_t g = 1; g + 4 < PREBW_LUT_LEN; g += 7) {
+      for (uint8_t i = 1; i <= 4; i++) {
         const uint8_t b = kXtfPreBwMid[t][g + i];
         const uint8_t frames = static_cast<uint8_t>(b & 0x3F);
         uint16_t scaled = (static_cast<uint16_t>(frames) * FREEINK_UC8279X4_PRE_SPEED + 50u) / 100u;
         if (frames != 0 && scaled == 0) scaled = 1;
         if (scaled > 63) scaled = 63;
         out[t][g + i] = static_cast<uint8_t>((b & 0xC0) | scaled);
-      }
-      for (uint8_t i = 5; i <= 6; i++) {
-        if (g + i < PREBW_LUT_LEN) out[t][g + i] = kXtfPreBwMid[t][g + i];  // padding bytes
       }
     }
   }
