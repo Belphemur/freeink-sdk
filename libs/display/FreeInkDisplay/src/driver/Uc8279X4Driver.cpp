@@ -85,6 +85,41 @@ const uint8_t kXtfPreBwMid[5][PREBW_LUT_LEN + 1] = {
     // remaining bytes of each 42-byte table are zero (aggregate init).
 };
 
+// Time-scaled view of kXtfPreBwMid, built at first use: every phase's frame
+// count is multiplied by FREEINK_UC8279X4_PRE_SPEED percent (round-half-up,
+// minimum 1) with NO charge repair — the stock tables 0x22/0x23 are
+// DELIBERATELY unbalanced (rail 2 and rail 1 drive all 25 frames) because the
+// scrub is the point: it pins gray-edge pixels to their target tone and clears
+// the B/W planes' residual edge charge before the AA waveform runs. Restoring
+// net charge to zero would truncate exactly those scrubs.
+#ifndef FREEINK_UC8279X4_PRE_SPEED
+#define FREEINK_UC8279X4_PRE_SPEED 60
+#endif
+const uint8_t (*scaledPreBwMid())[PREBW_LUT_LEN + 1] {
+  static uint8_t out[5][PREBW_LUT_LEN + 1];
+  static bool built = false;
+  if (built) return out;
+  for (uint8_t t = 0; t < 5; t++) {
+    out[t][0] = kXtfPreBwMid[t][0];
+    for (uint8_t g = 1; g < PREBW_LUT_LEN; g += 7) {
+      out[t][g] = kXtfPreBwMid[t][g];  // group marker byte
+      for (uint8_t i = 1; i <= 4 && g + i < PREBW_LUT_LEN; i++) {
+        const uint8_t b = kXtfPreBwMid[t][g + i];
+        const uint8_t frames = static_cast<uint8_t>(b & 0x3F);
+        uint16_t scaled = (static_cast<uint16_t>(frames) * FREEINK_UC8279X4_PRE_SPEED + 50u) / 100u;
+        if (frames != 0 && scaled == 0) scaled = 1;
+        if (scaled > 63) scaled = 63;
+        out[t][g + i] = static_cast<uint8_t>((b & 0xC0) | scaled);
+      }
+      for (uint8_t i = 5; i <= 6; i++) {
+        if (g + i < PREBW_LUT_LEN) out[t][g + i] = kXtfPreBwMid[t][g + i];  // padding bytes
+      }
+    }
+  }
+  built = true;
+  return out;
+}
+
 const GrayLut* selectAaLuts() {
   // LUT_VER stored by the boot probe. 0x02 has its own table; 0x68 is the newer
   // set. Reserved 0x69 (and anything unknown) falls back to the 0x68 bytes —
@@ -724,9 +759,10 @@ void Uc8279X4Driver::runGrayscalePrecondition(EpdBus& bus) {
   bus.data(_cfg.ccset);
   bus.cmd(CMD_TSSET);
   bus.data(_cfg.tssetFast);  // 0x5A
-  for (const auto& l : kXtfPreBwMid) {
-    bus.cmd(l[0]);
-    bus.data(&l[1], PREBW_LUT_LEN);
+  const uint8_t(*preBank)[PREBW_LUT_LEN + 1] = scaledPreBwMid();
+  for (int i = 0; i < 5; i++) {
+    bus.cmd(preBank[i][0]);
+    bus.data(&preBank[i][1], PREBW_LUT_LEN);
   }
 
   powerOnIfNeeded(bus, " 8279x4_gray_pre_PON");
