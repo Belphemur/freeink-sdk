@@ -3841,12 +3841,56 @@ void testScreenControlCenterWrappers() {
   CHECK_EQ(interactions.count(), 6u);
 }
 
+// PR #84 regression: textStyleWithForeground() used to set both
+// text.color = White and text.inverted = true for a white foreground.
+// DisplayTarget::text() treats `inverted` as a further flip of `color`, so
+// White flipped back to Black and inverted states (the default InvertFill
+// list selection, active buttons, selected tabs) drew black-on-black.
+void testWhiteForegroundDoesNotFlipBackToBlack() {
+  constexpr int16_t W = 64, H = 32, WB = W / 8;
+  uint8_t fb[WB * H];
+
+  // The function itself must carry the colour and leave the flip to the caller.
+  const TextStyle base{};
+  const TextStyle white = textStyleWithForeground(base, Paint::solid(Color::White));
+  CHECK(white.color == Color::White);
+  CHECK(!white.inverted);
+  const TextStyle black = textStyleWithForeground(base, Paint::solid(Color::Black));
+  CHECK(black.color == Color::Black);
+  CHECK(!black.inverted);
+
+  // A dithered foreground (disabled-row style) carries its gray level and
+  // must not flip the inverted flag on either.
+  const TextStyle gray = textStyleWithForeground(base, Paint::dither(Color::LightGray));
+  CHECK(gray.color == Color::LightGray);
+  CHECK(!gray.inverted);
+
+  // Renderer-level: black row fill + white label -> the label must leave
+  // visible ink. With the bug, White resolved back to Black and the row
+  // rendered as a blank black bar.
+  std::memset(fb, 0xFF, sizeof(fb));  // white page
+  DisplayTarget target(fb, W, H, WB, Orientation::LandscapeCounterClockwise);
+  CHECK(target.ready());
+  target.fill(Rect{0, 0, W, H}, Paint::solid(Color::Black));  // selected row
+  TextStyle selected = textStyleWithForeground(base, Paint::solid(Color::White));
+  target.text(Rect{0, 0, W, H}, "Ag", selected);
+  // The white label must carve paper pixels out of the black fill: with the
+  // bug every pixel stayed ink (black-on-black blank bar), so the count was
+  // exactly W*H.
+  size_t inkCount = 0;
+  for (int16_t y = 0; y < H; ++y)
+    for (int16_t x = 0; x < W; ++x)
+      if (((fb[y * WB + (x >> 3)] >> (7 - (x & 7))) & 0x01) == 0) ++inkCount;  // clear bit = ink
+  CHECK(inkCount < static_cast<size_t>(W) * H);
+}
+
 }  // namespace
 
 int main() {
   testRect();
   testDisplayTarget();
   testDisplayTargetAlphaFont();
+  testWhiteForegroundDoesNotFlipBackToBlack();
   testStackFillsExactly();
   testStackFlexRemainderWithTrailingFixed();
   testStackGaps();

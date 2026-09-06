@@ -890,7 +890,12 @@ int16_t clampInt16(int32_t value, int16_t minValue, int16_t maxValue) {
 TextStyle textStyleWithForeground(TextStyle text, Paint foreground) {
   if (foreground.kind == PaintKind::Solid) {
     text.color = foreground.color;
-    text.inverted = foreground.color == Color::White;
+    // `color` already names the ink; DisplayTarget::text() treats `inverted`
+    // as a further flip of it. Setting both made a white foreground resolve
+    // back to black, so every inverted state (the default InvertFill list
+    // selection, an active button, a selected tab) drew black-on-black and
+    // lost its label. Carry the colour, and leave the flip to the caller.
+    text.inverted = false;
   } else if (foreground.kind == PaintKind::Dither) {
     // A dithered foreground (the disabled-row style) must reach the renderer's
     // dithered text path. Without this, color stays at its default Black and a
