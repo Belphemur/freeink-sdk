@@ -163,10 +163,15 @@ void UsbMassStorage::end() {
   // On the dual-core S3 the TinyUSB task runs on the other core — without this
   // drain, a callback can dereference null gDev/gOwner (or the zeroed msc_luns
   // function pointers) and hard-fault during the subsequent ESP.restart().
-  tud_disconnect();
-  for (uint32_t i = 0; i < 50; i++) {  // ~500ms timeout at 10ms ticks
-    if (!tud_mounted()) break;
-    delay(10);
+  // Guard: if the host is already gone (cable unplugged), skip tud_disconnect()
+  // — calling it on a controller whose VBUS is absent can fault the USB
+  // peripheral on the S3, causing a freeze instead of clean teardown.
+  if (tud_mounted()) {
+    tud_disconnect();
+    for (uint32_t i = 0; i < 50; i++) {  // ~500ms timeout at 10ms ticks
+      if (!tud_mounted()) break;
+      delay(10);
+    }
   }
   // Mark inactive first so any callback already dispatched bails out instead
   // of dereferencing the globals that we clear below.
