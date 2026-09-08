@@ -38,6 +38,9 @@ enum class KeyboardLayoutId : uint8_t {
   // Hebrew: no letter case, so a single layer and no shift key. Right-to-left
   // is the renderer's job -- the layout inserts code points in logical order.
   HebrewIl,
+  // Arabic: same shape as Hebrew -- no case, one layer, no shift, RTL left to
+  // the renderer. Standard 101 arrangement; alef madda long-presses off أ.
+  ArabicAr,
 };
 
 struct KeyboardKey {
