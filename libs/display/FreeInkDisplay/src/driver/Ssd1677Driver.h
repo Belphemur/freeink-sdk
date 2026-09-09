@@ -91,7 +91,7 @@ class Ssd1677Driver : public PanelDriver {
 
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode == GrayscaleMode::Absolute && _cfg.absoluteGrayscale)
-      return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Separate, true, false, false};
+      return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Combined, true, false, false};
     if (mode != GrayscaleMode::Overlay) return {};
     return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, true, true, false};
   }

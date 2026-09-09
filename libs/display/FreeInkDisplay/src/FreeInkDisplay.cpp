@@ -820,6 +820,7 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
       return;
     }
     _driver->displayGray(_bus, frameBuffer, turnOffScreen, nullptr, true);
+    _inversionDirty = false;
     cancelGrayscalePass();
     return;
   }
@@ -868,8 +869,10 @@ bool FreeInkDisplay::acceptGrayscaleRows(unsigned plane, const uint8_t* data, ui
 
 bool FreeInkDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback, bool turnOffScreen) {
   cancelGrayscalePass();
-  if (!grayscaleCapabilities(mode).supported()) return false;
-  if (_inversionDirty) displayBuffer(fallback, turnOffScreen);
+  const auto caps = grayscaleCapabilities(mode);
+  if (!caps.supported()) return false;
+  if (_inversionDirty && (mode != GrayscaleMode::Absolute || caps.base == GrayscaleBase::Separate))
+    displayBuffer(fallback, turnOffScreen);
   syncPendingAsync();
   _shadowValid = false;
   _grayPassFailed = false;

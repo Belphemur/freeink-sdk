@@ -550,9 +550,9 @@ void Ssd1677Driver::seedPreviousFrame(EpdBus& bus, const uint8_t* buf) {
 }
 
 void Ssd1677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) {
-  _absoluteInput = false;
-  displayGrayscaleBase(bus, fb, fallback, turnOff);
   _absoluteInput = mode == GrayscaleMode::Absolute;
+  // Absolute planes supply every target pixel; activate only the final gray image.
+  if (!_absoluteInput) displayGrayscaleBase(bus, fb, fallback, turnOff);
 }
 
 void Ssd1677Driver::writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t len) {

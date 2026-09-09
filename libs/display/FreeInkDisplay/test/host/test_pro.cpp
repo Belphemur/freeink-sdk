@@ -217,9 +217,11 @@ static void testAbsolutePipeline() {
   const auto bw = frame(33), lsb = frame(14), msb = frame(29);
   std::memcpy(display.getFrameBuffer(), bw.data(), bw.size());
   const auto absolute = GrayscaleMode::Absolute;
+  assert(display.grayscaleCapabilities(absolute).base == GrayscaleBase::Combined);
   for (bool strips : {false, true}) {
-    assert(display.displayGrayscaleBase(absolute));
     display._bus.clear();
+    assert(display.displayGrayscaleBase(absolute));
+    assert(display._bus.writes.empty());
     if (strips) {
       for (unsigned y = 0; y < 480; y += 80) {
         display.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_LSB, lsb.data() + y * 100, y, 80);
@@ -235,7 +237,10 @@ static void testAbsolutePipeline() {
     for (size_t i = 0; i < lsb.size(); ++i) {
       assert(plane0[i] == uint8_t(~lsb[i]) && plane1[i] == uint8_t(~msb[i]));
     }
+    for (const auto& w : display._bus.writes) assert(w.command != 0x20);
     display.displayGrayBuffer(false);
+    assert(std::count_if(display._bus.writes.begin(), display._bus.writes.end(),
+                         [](const auto& w) { return w.command == 0x20; }) == 1);
     assert(lastRegister(display._bus, 0x22) == 0xC7);
     assert(!driver._isScreenOn && driver._needsGrayClear);
     display.cleanupGrayscaleBuffers(bw.data());
@@ -274,6 +279,12 @@ static void testAbsolutePipeline() {
   assert(display._grayscaleMode == GrayscaleMode::Overlay);
   assert(!display.displayGrayscaleBase(absolute));
   display.setInverted(false);
+  display._bus.clear();
+  assert(display.displayGrayscaleBase(absolute));
+  assert(display._bus.writes.empty() && display._inversionDirty);
+  display.copyGrayscaleBuffers(lsb.data(), msb.data());
+  display.displayGrayBuffer();
+  assert(!display._inversionDirty);
   assert(display.displayGrayscaleBase(absolute));
   display.deepSleep();
   assert(display._grayscaleMode == GrayscaleMode::Overlay);
@@ -353,7 +364,9 @@ static void testStickyAbsolute() {
   display.begin();
   const auto bw = frame(33), lsb = frame(14), msb = frame(29);
   std::memcpy(display.getFrameBuffer(), bw.data(), bw.size());
+  display._bus.clear();
   assert(display.displayGrayscaleBase(GrayscaleMode::Absolute));
+  assert(display._bus.writes.empty());
   display.copyGrayscaleBuffers(lsb.data(), msb.data());
   display.displayGrayBuffer(false);
   assert(lastRegister(display._bus, 0x22) == 0xC7);

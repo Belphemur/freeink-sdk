@@ -38,8 +38,10 @@ retains its existing path.
 The X3 uploads the stock XTH4 rows to registers 20/24/22/23/21. The SSD1677
 driver complements the common host planes for the native factory selectors;
 it retains the factory LUT bytes and the C7 activation/power-down sequence.
-Absolute encoding does not promise that a waveform can start from arbitrary
-previous ink without conditioning. Always prepare the actual B/W image first.
+SSD1677 absolute mode uses a single activation: the typed base call selects the
+input mode without displaying a B/W intermediate image (`base = Combined`).
+UltraChip modes retain their controller-specific B/W conditioning, so callers
+still prepare the actual B/W image and call the same typed entry point.
 
 ```cpp
 if (display.displayGrayscaleBase(freeink::GrayscaleMode::Absolute)) {
@@ -66,8 +68,8 @@ existing overlay pipeline. Alpha BMP and PNG sleep overlays select absolute mode
 on supported panels, retaining the composed B/W background in both planes and
 rewriting every visible overlay pixel. No extra framebuffer is allocated. The image quantizer uses evenly spaced levels for
 absolute covers and a separate `_original` BMP cache name, so older AA-tuned
-cover caches are not silently reused. Decode/rewind failures leave the B/W
-base visible and cancel the absolute pass. No user setting or build flag is
+cover caches are not silently reused. Decode/rewind failures cancel the absolute pass. SSD1677 keeps the previous
+display visible; controllers with separate conditioning keep their B/W base. No user setting or build flag is
 required.
 
 An unsupported mode returns the default descriptor: `supported()` is false and
