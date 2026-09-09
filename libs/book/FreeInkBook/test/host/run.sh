@@ -62,17 +62,14 @@ python3 ../fixtures/gen_omnibus.py "$BUILD_DIR/fixtures/omnibus.epub" 1700 >/dev
 INCLUDES="-I../../include -I../../third_party/miniz -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb"
 VENDOR_SRCS="miniz_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl"
 if [ -n "$FREEINK_BOOK_EXTERNAL_EXPAT" ]; then
+  CC_FLAGS="-O1 -std=c99 -DFREEINK_BOOK_EXTERNAL_EXPAT=1 $INCLUDES"
+  LD_LIBS="-lexpat"
   VENDOR_SRCS="miniz_impl unibreak_impl pngle_impl tjpgd_impl"
 else
-  INCLUDES="$INCLUDES -I../../third_party/expat"
-fi
-CC_FLAGS="-O1 -std=c99 $INCLUDES"
-# System libexpat link (external mode only). The CrossPoint firmware provides
-# the XML_* definitions from its own lib/expat object set instead.
-if [ -n "$FREEINK_BOOK_EXTERNAL_EXPAT" ]; then
-  LD_LIBS="-lexpat"
-else
+  CC_FLAGS="-O1 -std=c99 $INCLUDES"
   LD_LIBS=""
+  VENDOR_SRCS="miniz_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl"
+  INCLUDES="$INCLUDES -I../../third_party/expat"
 fi
 for src in $VENDOR_SRCS; do
   cc $CC_FLAGS -c "../../src/vendor/$src.c" -o "$BUILD_DIR/obj/$src.o"

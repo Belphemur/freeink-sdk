@@ -8,8 +8,11 @@
 # entry + our sources' #include <expat.h>, both already in place in
 # CrossPoint); we only ever REMOVE ours.
 # The vendored path is declared in two ways: library.json build "flags" (-I,
-# which land in BUILD_FLAGS / *FLAGS) and any CPPPATH entries, so both are
-# filtered.
+# which land in BUILD_FLAGS / *FLAGS) and any CPPPATH entries (plain paths,
+# possibly SCons Dir nodes), so both are filtered. The flag itself is NOT
+# defined here — it is the consuming project's consumption-mode switch
+# (CrossPoint's [base] defines it); a standalone build keeps the vendored
+# expat, self-contained.
 Import("env")
 
 _PATH_MARK = "third_party/expat"
@@ -23,23 +26,29 @@ def _is_external(e):
     return False
 
 
-def _want(drop_flag):
-    return drop_flag is None or not drop_flag.startswith("-I")
-
-
 def _drop_vendored_expat_path(e):
     for key in ("CPPPATH", "CPPFLAGS", "CFLAGS", "CXXFLAGS", "CCFLAGS", "BUILD_FLAGS"):
         entries = e.get(key, [])
         if not entries:
             continue
-        filtered = [
-            x for x in entries
-            if _want(x) or _PATH_MARK not in str(x)
-        ]
+        if key == "CPPPATH":
+            filtered = [x for x in entries if _PATH_MARK not in str(x)]
+        else:
+            filtered = [
+                x for x in entries
+                if x is None or not str(x).startswith("-I")
+                or _PATH_MARK not in str(x)
+            ]
         if len(filtered) != len(entries):
             e.Replace(**{key: filtered})
 
 
-for e in [env, DefaultEnvironment()] + list(env.GetLibBuilders()):
+def _apply(e):
     if _is_external(e):
         _drop_vendored_expat_path(e)
+
+
+_apply(env)
+_apply(DefaultEnvironment())
+for lb in env.GetLibBuilders():
+    _apply(lb.env)
