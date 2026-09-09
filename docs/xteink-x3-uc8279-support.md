@@ -10,25 +10,33 @@ Build: nothing new — `-DFREEINK_DEVICE_X3=1` links both X3 drivers
 (`FREEINK_DRIVER_UC8253_X3` and `FREEINK_DRIVER_UC8279`); which one runs is
 decided at boot.
 
-**Everything below is written from the UC8279d_B 0.1 datasheet (Dec 2025) and
-is Pending hardware validation — no UC8279 X3 unit has been on the bench yet.**
+The detection section reflects the stock V6.3.15 protocol. The driver notes
+below describe the initial OTP-based proposal and are historical; the current
+driver uses recovered external waveforms and register initialization. See the
+[V6.3.15 audit](x3-v6.3.15-firmware-audit.md) for the verified comparison.
 
 ## Runtime detection
 
-`XteinkDetect::selectXteinkDevice()` now runs a second fingerprint on a
-confirmed X3: `detectX3DisplayController()` bit-bangs a half-duplex 4-wire SPI
-read on the X3 display pins (SCLK 8 / SDA 10 / CS 21 / DC 4 / RST 5 / BUSY 6)
-after a reset pulse, and reads the UC8279's **VER (0x70)** — reserved `0x00`,
-`CHIP_VER` (datasheet default `0x03`), 24-bit `LUT_VER` — and **FLG (0x71)**
-status. Signature match (leading `0x00`, non-floating CHIP_VER, FLG idle with
-`BUSY_N=1`) in two passes that agree byte-for-byte confirms a UC8279; anything
-else conservatively resolves to the shipping UC8253. Raw bytes are exposed via
-out-params for bring-up logging.
+After the X3 I2C fingerprint, `detectX3DisplayController()` uses the fixed X3
+pins (SCLK 8 / SDA 10 / CS 21 / DC 4 / RST 5 / BUSY 6), even while the active
+profile still names X4. `detectXteinkDisplayController()` uses the same X3
+protocol when either X3 profile is already active.
 
-**Pending:** what the UC8253 actually answers to `0x70` (UC815x-family REV
-places the revision in the first byte, which the matcher relies on), and
-whether production MTP programs `CHIP_VER` to something other than `0x03` (the
-matcher deliberately doesn't pin the exact value).
+The probe follows stock V6.3.15: RESET high 10 ms, low 50 ms, high 50 ms;
+wait up to 300 ms for BUSY high; release SDA to input and read three bytes of
+**VER (0x70)**, sampling after SCLK rises. A BUSY timeout is recorded but does
+not suppress the read, as in stock firmware. The third byte selects the panel:
+`0x66` confirms UC8279, `0xFF` assumes UC8253, other IDs are inconclusive and
+leave the default UC8253 selected. FLG and MTP are not read or required.
+
+The legacy five-byte VER out-param contains the three read bytes and two zeros;
+the FLG out-param is zero (not sampled). Diagnostics expose `verBytesRead=3`
+and `busyTimedOut`. Boot logs show `[XTDET] X3 stock probe VER=...` with the
+selection and timeout status. X4-family probes retain their existing protocol.
+
+Hardware validation remains necessary: collect these logs on affected units
+and check cold boot and sleep/wake. This change updates identification only;
+display refresh reset timing, SPI frequency, and waveforms are separate tests.
 
 ## Driver — `Uc8279Driver`
 

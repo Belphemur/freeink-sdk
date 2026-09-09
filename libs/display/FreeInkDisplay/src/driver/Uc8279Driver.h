@@ -24,6 +24,7 @@
 // BUSY_N: low while busy (PON/DRF/POF all flag), same two-phase shape as the
 // UC8253 X3 — reuses BusyPolarity::X3TwoPhase and the async start/finish split.
 
+
 #include "PanelDriver.h"
 
 namespace freeink {
@@ -51,10 +52,14 @@ class Uc8279Driver : public PanelDriver {
   // Two 1bpp planes (LSB -> DTM1/old, MSB -> DTM2/new) encode 4 levels; the
   // external XTF_AA LUT bank resolves them. displayGrayscaleBase / precondition
   // run the OEM XTF_PRE_BW_MID "AA-pre-BW(mid)" settle before the gray planes.
-  bool supportsStripGrayscale() const override { return true; }
-  bool supportsAsyncGrayscaleBase() const override { return false; }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode == GrayscaleMode::Absolute)
+      return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Separate, true, false, false};
+    if (mode != GrayscaleMode::Overlay) return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, true, false, false};
+  }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
@@ -70,8 +75,9 @@ class Uc8279Driver : public PanelDriver {
   // Load a 5-table command-prefixed waveform bank (BW_GC/BW_DU/XTF_PRE_BW_MID)
   // into LUT registers 0x20-0x24: byte 0 of each table is the register id.
   void loadBank(EpdBus& bus, const uint8_t (*bank)[43]);
-  // Load the raw (non-prefixed) 49-byte XTF_AA grayscale bank: 0x20+i then table.
-  void loadXtfAa(EpdBus& bus);
+  // Load a raw (non-prefixed) 5x49-byte grayscale bank (XTF_AA or XTH4):
+  // register destinations follow the bank's plane encoding, then the table.
+  void loadRawBank(EpdBus& bus, const uint8_t (*bank)[49]);
   // Blocking PON -> DRF -> wait (-> POF) used by the grayscale paths.
   void triggerGrayRefresh(EpdBus& bus, bool turnOff);
   // Enter the full 792x528 PTL partial window (PTIN + PTL). ALL RAM plane writes

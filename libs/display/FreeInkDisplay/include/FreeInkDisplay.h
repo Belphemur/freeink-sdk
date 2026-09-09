@@ -17,6 +17,7 @@
 #include <SPI.h>
 
 #include "../src/bus/EpdBus.h"
+#include "GrayscaleCapabilities.h"
 
 namespace freeink {
 
@@ -123,11 +124,19 @@ class FreeInkDisplay {
   // follows. X3 uses the OEM differential base waveform; other panels display
   // normally with `fallback` mode. See PanelDriver::displayGrayscaleBase.
   void displayGrayscaleBase(RefreshMode fallback = HALF_REFRESH, bool turnOffScreen = false);
+  // Starts a mode-bound pass. Absolute uploads must cover both complete planes
+  // (full buffers or consecutive strips per plane) before displayGrayBuffer().
+  // False means the requested mode is unavailable; no base was painted.
+  bool displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback = HALF_REFRESH, bool turnOffScreen = false);
   void copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer);
   void copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer);
   void copyGrayscaleMsbBuffers(const uint8_t* msbBuffer);
   enum GrayPlane { GRAY_PLANE_LSB, GRAY_PLANE_MSB };
   void writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows);
+  // Current mode availability, including output inversion and base readiness.
+  // A query does not alter the pending refresh or the plane encoding.
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const;
+  // Compatibility wrappers for Overlay mode.
   bool supportsBusyGrayscaleStaging() const;
   void prepareGrayscaleTarget();
   bool supportsStripGrayscale() const;
@@ -414,9 +423,19 @@ class FreeInkDisplay {
   // baseline again).
   // One pending flag for every deferred refresh (X4 async fire, X3 split);
   // drained by syncPendingAsync() through the driver's displayFinish().
+  GrayscaleMode _grayscaleMode = GrayscaleMode::Overlay;
+  uint16_t _grayRows[2] = {0, 0};
+  bool _grayPassFailed = false;
+  void cancelGrayscalePass();
+  bool acceptGrayscaleRows(unsigned plane, const uint8_t* data, uint16_t y, uint16_t rows);
   bool _refreshPending = false;
   uint8_t* _asyncShadow = nullptr;
   bool _shadowValid = false;
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // Frame submitted to the pending update: the shadow for redraw-safe async,
+  // or the live frame for entry points requiring it to remain untouched.
+  const uint8_t* _pendingSingleBufferFrame = nullptr;
+#endif
   bool _buildLent = false;  // framebuffer storage lent to a build (see lendBuildStorage)
 
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE

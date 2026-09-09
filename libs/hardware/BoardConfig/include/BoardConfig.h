@@ -834,20 +834,16 @@ constexpr SdmmcPins NO_SDMMC = {
     PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0};
 constexpr BatteryGaugeConfig NO_GAUGE = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0};  // ADC battery
 
+// Shared display SPI default for every Xteink board and controller variant.
+constexpr uint32_t XTEINK_DISPLAY_SPI_HZ = 10000000u;
+
 // --- Xteink X4 — ESP32-C3, SSD1677 (800x480) ---------------------------------
-// X4 display SPI clock. Default 20 MHz = SSD1677 datasheet max for write mode
-// (Solomon Systech SSD1677, MCU Serial Interface AC Characteristics: "MCU
-// interface: SPI serial peripheral, Maximum 20MHz for write"; fSCL Write = 20 MHz.
-// https://files.waveshare.com/upload/2/2a/SSD1677_1.0.pdf). The plane writes are
-// ~38 ms/refresh at 20 MHz. Define -DFREEINK_X4_OVERCLOCK_SPI to run 40 MHz — the
-// (out-of-spec, 2x datasheet) clock the CrossPoint / Witch Reader fork used, which
-// halves that to ~19 ms (~17-20 ms/refresh faster) but can glitch plane writes on
-// marginal wiring. Opt-in only; validate on your hardware. (NB: the Ssd1677Driver
-// 0-default of 40 MHz is likewise over spec for boards that leave displaySpiHz 0.)
+// Default 10 MHz, like the other Xteink profiles. Preserve the explicit legacy
+// 40 MHz opt-in for consumers that have validated it on their hardware.
 #ifdef FREEINK_X4_OVERCLOCK_SPI
 #define FREEINK_X4_DISPLAY_SPI_HZ 40000000u
 #else
-#define FREEINK_X4_DISPLAY_SPI_HZ 20000000u
+#define FREEINK_X4_DISPLAY_SPI_HZ 10000000u
 #endif
 constexpr BoardProfile XTEINK_X4 = {Board::XteinkX4,
                                     "xteink_x4",
@@ -894,11 +890,7 @@ constexpr BoardProfile XTEINK_X3 = {
     792,
     528,
     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-    20000000,  // displaySpiHz: 20 MHz = UC8253 datasheet max. UC8253 datasheet (UltraChip / Good Display),
-               // features: "Clock rate up to 20MHz" (serial write timing TSCYCW).
-               // (https://www.elecrow.com/download/product/DIE01237S/UC8253_Datasheet.pdf)
-               // Witch Reader (a CrossPoint fork) ran a conservative 16 MHz; 20 MHz is in-spec and ~25% faster
-               // on plane writes. Falls back to the driver's 16 MHz default if set to 0.
+    XTEINK_DISPLAY_SPI_HZ,  // displaySpiHz: 10 MHz
     // powerEnable=GPIO13 = the X3 SD-rail power switch (active-high; HIGH at boot
     // powers the card, the sleep path drives it LOW). Confirmed by X3 factory-firmware
     // RE: setup() does digitalWrite(13,HIGH); every deep-sleep does digitalWrite(13,LOW).
@@ -937,7 +929,7 @@ constexpr BoardProfile XTEINK_X3_UC8279 = {
     792,
     528,
     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-    20000000,
+    XTEINK_DISPLAY_SPI_HZ,  // displaySpiHz: 10 MHz
     {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, 13, false, 0},  // SD powerEnable=GPIO13 (active-high) — see XTEINK_X3
     {0, 1, 2, 3, 4, 5, 3, false},
     0,
@@ -1578,9 +1570,7 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // needed. GPIO1 also triggers a refresh when toggled (likely a panel power
     // enable), but the panel works without driving it, so powerEnable stays unset.
     {12, 11, 13, 18, 14, 6, PIN_UNASSIGNED},
-    20000000,  // displaySpiHz: 20 MHz, matching the X4's default. The OEM clocks the panel at only 5 MHz
-               // (SPISettings 0x4C4B40), but the SSD1677 handles far more (X4 runs 20, de-link 40), so 20 MHz
-               // is well in spec and gives noticeably faster RAM writes. Drop back to 5 MHz if artifacts appear.
+    XTEINK_DISPLAY_SPI_HZ,  // displaySpiHz: 10 MHz across SSD1677/UC8179/UC8279 batches
     // SD is native SDMMC (see the sdmmc field below) — the card is silent to SPI-mode CMD0 on
     // hardware. This SPI SdPins entry is retained only for its powerEnable=GPIO5, the SD enable
     // used by the SDMMC mount path. GPIO5 is ACTIVE-LOW: SdmmcBlockDevice pulses it HIGH→LOW
@@ -1730,7 +1720,7 @@ constexpr BoardProfile XTEINK_X4_CLASSIC = {
     // from NVS screenType. GPIO1 supplies the panel/peripheral rail.
     // {SCLK, MOSI, CS, DC, RST, BUSY, powerEnable}
     {12, 11, 13, 14, 10, 18, PIN_UNASSIGNED},
-    20000000,  // displaySpiHz: UC8279 serial-write maximum; avoids throttling full-plane AA uploads
+    XTEINK_DISPLAY_SPI_HZ,  // displaySpiHz: 10 MHz
     // SD SPI view retained only for consistency; the card mounts via the native SDMMC
     // block device (sdmmc field below). GPIO6 is its active-low enable; the stock mount
     // pulses HIGH->LOW and leaves it LOW while the card is in use.

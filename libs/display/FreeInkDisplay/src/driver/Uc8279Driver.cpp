@@ -1,15 +1,16 @@
 #include "Uc8279Driver.h"
 
 #include <Arduino.h>
-
 #include <BoardConfig.h>
+#include <string.h>
+
+#include <new>
 
 #include "../lut/Uc8279X3Luts.h"
 
 namespace freeink {
 namespace {
 // UC8279d command set (UC8279d_B 0.1 datasheet + stock-firmware RE).
-constexpr uint8_t CMD_PANEL_SETTING = 0x00;       // PSR
 constexpr uint8_t CMD_POWER_OFF = 0x02;           // POF
 constexpr uint8_t CMD_POWER_ON = 0x04;            // PON
 constexpr uint8_t CMD_DEEP_SLEEP = 0x07;          // DSLP (check code 0xA5)
@@ -17,11 +18,6 @@ constexpr uint8_t CMD_DTM1 = 0x10;                // OLD plane in KW mode
 constexpr uint8_t CMD_DATA_STOP = 0x11;           // DSP
 constexpr uint8_t CMD_DISPLAY_REFRESH = 0x12;     // DRF
 constexpr uint8_t CMD_DTM2 = 0x13;                // NEW plane in KW mode
-constexpr uint8_t CMD_LUT_VCOM = 0x20;            // LUT registers 0x20-0x24
-constexpr uint8_t CMD_LUT_WW = 0x21;
-constexpr uint8_t CMD_LUT_BW = 0x22;
-constexpr uint8_t CMD_LUT_WB = 0x23;
-constexpr uint8_t CMD_LUT_BB = 0x24;
 constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;  // CDI
 constexpr uint8_t CMD_PARTIAL_WINDOW = 0x90;      // PTL
 constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN
@@ -62,18 +58,14 @@ void Uc8279Driver::loadBank(EpdBus& bus, const uint8_t (*bank)[43]) {
   }
 }
 
-void Uc8279Driver::loadXtfAa(EpdBus& bus) {
-  // Raw (non-prefixed) 49-byte AA tables: send the register, then the whole
-  // table (FUN_42013be0). The stock set encodes dark gray as old=1/new=0 (WB)
-  // and leaves WW passive. CrossPoint's planes encode dark gray as
-  // old=1/new=1 (WW), so the WW and WB tables are exchanged on upload;
-  // without this, level 1 selects the passive table and renders black. The
-  // table bytes stay stock, as with the X4 XTH4 register exchange.
-  // Stock table order is VCOM, WW, BW, WB, BB.
-  static constexpr uint8_t kReg[5] = {CMD_LUT_VCOM, CMD_LUT_WB, CMD_LUT_BW, CMD_LUT_WW, CMD_LUT_BB};
+void Uc8279Driver::loadRawBank(EpdBus& bus, const uint8_t (*bank)[49]) {
+  // CrossPoint delta-AA encodes dark gray as WW rather than stock WB.
+  // XTH4 rows are VCOM, black, light, dark, white; map them to absolute planes.
+  static constexpr uint8_t aaRegisters[5] = {0x20, 0x23, 0x22, 0x21, 0x24};
+  static constexpr uint8_t absoluteRegisters[5] = {0x20, 0x24, 0x22, 0x23, 0x21};
   for (int t = 0; t < 5; t++) {
-    bus.cmd(kReg[t]);
-    bus.data(kUc8279X3_XtfAa[t], 49);
+    bus.cmd(bank == kUc8279X3_XtfAa ? aaRegisters[t] : absoluteRegisters[t]);
+    bus.data(bank[t], 49);
   }
 }
 
@@ -138,8 +130,7 @@ bool Uc8279Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // first paint, a forced resync, and while the boot initial-full budget is
   // unspent (so the first content screen after boot is a real clear, since
   // CrossPoint paints home with FAST); DU only for a Fast request with a baseline.
-  const bool useGc = (mode != RefreshMode::Fast) || !_oldPlaneValid || _forceFullSyncNext ||
-                     _initialFullsRemaining > 0;
+  const bool useGc = (mode != RefreshMode::Fast) || !_oldPlaneValid || _forceFullSyncNext || _initialFullsRemaining > 0;
 
   bus.cmd(CMD_PARTIAL_IN);  // enter the full-panel PTL window set in init
 
@@ -217,7 +208,7 @@ void Uc8279Driver::requestResync(uint8_t settlePasses) {
 }
 
 void Uc8279Driver::skipInitialResync() {
-  _oldPlaneValid = true;      // caller asserts the panel already holds a valid frame
+  _oldPlaneValid = true;       // caller asserts the panel already holds a valid frame
   _initialFullsRemaining = 0;  // ...so don't force the boot clears
 }
 
@@ -238,12 +229,10 @@ void Uc8279Driver::deepSleep(EpdBus& bus) {
 // (raw 49-byte tables) and the single-byte CDI.
 
 void Uc8279Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
-  if (!lsb) {
-    _lsbValid = false;
-    return;
-  }
+  _lsbValid = false;
+  if (!lsb) return;
   grayWindowIn(bus);
-  bus.sendPlaneFlipped(CMD_DTM1, lsb, _h, _wb);  // LSB plane -> "old" RAM
+  bus.sendPlaneFlipped(CMD_DTM1, lsb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   bus.cmd(CMD_PARTIAL_OUT);
   _lsbValid = true;
@@ -252,14 +241,14 @@ void Uc8279Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 void Uc8279Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   if (!msb || !_lsbValid) return;
   grayWindowIn(bus);
-  bus.sendPlaneFlipped(CMD_DTM2, msb, _h, _wb);  // MSB plane -> "new" RAM
+  bus.sendPlaneFlipped(CMD_DTM2, msb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   bus.cmd(CMD_PARTIAL_OUT);
 }
 
 void Uc8279Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                             uint16_t numRows) {
-  if (!rows || numRows == 0) return;
+  if (!rows || numRows == 0 || yStart >= _h || numRows > _h - yStart) return;
   // PTL partial-window in GATE space (logical row y lives at gate H-1-y), rows
   // emitted bottom-first so they land on the same gates the full-frame write
   // uses — same idiom as the UC8253 sibling (fixes AA banding).
@@ -286,7 +275,9 @@ void Uc8279Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const 
   }
   bus.endTxn();
   bus.cmd(CMD_PARTIAL_OUT);
-  if (plane == GrayPlane::Lsb) _lsbValid = true;
+  if (plane == GrayPlane::Lsb) {
+    _lsbValid = true;
+  }
 }
 
 void Uc8279Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
@@ -295,14 +286,16 @@ void Uc8279Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   (void)lut;  // waveform is the built-in XTF_AA bank
   if (!_lsbValid) return;
   // Differential grayscale leaves the gray bank/planes loaded, so the next B/W
-  // turn must revert first; factory absolute mode self-cleans.
+  // turn must revert first; absolute passes request a clean next B/W refresh.
   _inGrayscaleMode = !factoryMode;
   // PSR REG=1 (external LUT) is already set from init and untouched by the B/W
-  // path, so just load the AA bank + CDI and refresh (FUN_42015108/42013be0).
+  // path, so just load the bank + CDI and refresh (FUN_42015108/42013be0).
   // The refresh MUST run in the partial window (like the plane writes); also
   // resets PTL to full after any per-strip writeGrayscalePlaneStrip windows.
+  // Absolute passes consume complete host planes unchanged. Overlay passes
+  // keep the short XTF_AA nudge and its existing mask encoding.
   grayWindowIn(bus);
-  loadXtfAa(bus);
+  loadRawBank(bus, factoryMode ? kUc8279X3_Xth4 : kUc8279X3_XtfAa);
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
   triggerGrayRefresh(bus, turnOff);
@@ -310,7 +303,7 @@ void Uc8279Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
 
   _firstRefresh = false;
   _oldPlaneValid = false;  // gray planes overwrote DTM1/DTM2 — next B/W needs a rebase/clear
-  _forceFullSyncNext = false;
+  _forceFullSyncNext = factoryMode;
   _lsbValid = false;
 }
 
@@ -398,7 +391,6 @@ void Uc8279Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   bus.cmd(CMD_PARTIAL_OUT);
   _lsbValid = false;
   _oldPlaneValid = true;
-  _forceFullSyncNext = false;
   _inGrayscaleMode = false;
 }
 

@@ -170,6 +170,82 @@ void releaseDisplayPins(const EpdProbePins& p) {
   if (p.rst >= 0) pinMode(p.rst, INPUT);
 }
 
+#if FREEINK_DEVICE_X3
+// X3 V6.3.15: 4200dafa (reset), 4200db40 (BUSY), 42009e4c/42009dba
+// (read), 4200fb12 (selector). See docs/x3-v6.3.15-firmware-audit.md.
+// Keep this separate from the X4-family fingerprint: stock X3 selects from
+// VER byte 2 alone, without a FLG signature or readable/programmed MTP.
+DisplayControllerVerdict probeX3DisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg) {
+  g_probeDiag = {};
+  g_probeDiag.valid = true;
+  g_probeDiag.verBytesRead = 3;
+  pinMode(p.cs, OUTPUT);
+  digitalWrite(p.cs, HIGH);
+  pinMode(p.sclk, OUTPUT);
+  digitalWrite(p.sclk, LOW);
+  pinMode(p.dc, OUTPUT);
+  digitalWrite(p.dc, HIGH);
+  pinMode(p.mosi, OUTPUT);
+  if (p.busy >= 0) pinMode(p.busy, INPUT);
+
+  if (p.rst >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(p.rst));
+    pinMode(p.rst, OUTPUT);
+    digitalWrite(p.rst, HIGH);
+    delay(10);
+    digitalWrite(p.rst, LOW);
+    delay(50);
+    digitalWrite(p.rst, HIGH);
+  }
+  delay(50);
+  if (p.busy >= 0) {
+    const unsigned long start = millis();
+    do {
+      delay(1);
+      if (digitalRead(p.busy) == HIGH) break;
+      if (millis() - start >= 300) {
+        g_probeDiag.busyTimedOut = true;
+        break;
+      }
+    } while (true);
+  }
+
+  // Stock still attempts VER after its bounded BUSY wait expires. A timeout
+  // is diagnostic, not another condition that can reject a recognized ID.
+  digitalWrite(p.cs, LOW);
+  digitalWrite(p.dc, LOW);
+  epdWriteByte(p, UC81XX_CMD_VER);
+  digitalWrite(p.dc, HIGH);
+  epdClockDelay();
+  pinMode(p.mosi, INPUT);  // stock releases SDA without enabling a pull-up
+  delayMicroseconds(2);
+  for (uint8_t i = 0; i < 3; i++) {
+    uint8_t& b = g_probeDiag.ver[i];
+    for (uint8_t bit = 0; bit < 8; bit++) {
+      digitalWrite(p.sclk, LOW);
+      epdClockDelay();
+      digitalWrite(p.sclk, HIGH);
+      epdClockDelay();
+      b = static_cast<uint8_t>((b << 1) | (digitalRead(p.mosi) == HIGH ? 1 : 0));
+    }
+    digitalWrite(p.sclk, LOW);
+    epdClockDelay();
+  }
+  digitalWrite(p.cs, HIGH);
+  pinMode(p.mosi, OUTPUT);
+  releaseDisplayPins(p);
+
+  const uint8_t id = g_probeDiag.ver[2];
+  const auto verdict = id == 0x66 ? DisplayControllerVerdict::Uc81xxConfirmed
+                       : id == 0xFF ? DisplayControllerVerdict::PrimaryAssumed
+                                    : DisplayControllerVerdict::Inconclusive;
+  g_probeDiag.verdict = static_cast<uint8_t>(verdict);
+  if (verBytes) memcpy(verBytes, g_probeDiag.ver, 5);
+  if (flg) *flg = 0;  // not read by the stock X3 protocol
+  return verdict;
+}
+#endif
+
 // Two-pass probe with agreement, over an arbitrary pinout. Confirmed only when
 // both passes match the UC81xx signature AND agree on the VER bytes — a floating
 // bus can't produce the same stable non-trivial pattern twice. Disagreement is
@@ -181,21 +257,11 @@ void releaseDisplayPins(const EpdProbePins& p) {
 // read under doc conditions. An SSD-family board (floating bus) therefore pays
 // two cheap passes (~66 ms total, as before the doc-timing change) instead of
 // two 50 ms resets on every boot and wake.
-DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg,
-                                                bool escalateReset) {
+DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg) {
   uint8_t ver1[5] = {0};
   uint8_t ver2[5] = {0};
   uint8_t flg1 = 0;
-  bool pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/1);
-  if (!pass1 && escalateReset) {
-    // Escalation for boards whose UC sibling might only answer the vendor's
-    // identification timing (RST low 50 ms): a failed short screening pass is
-    // retried once at doc timing before concluding "no UC part". Requested for
-    // X3-family boards (their boot budget tolerates it); the X4 family keeps
-    // the cheap path — its UC8179 is bench-proven to answer the 1 ms pulse.
-    delay(2);
-    pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/50);
-  }
+  const bool pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/1);
   delay(2);
   const bool pass2 = runDisplayProbePass(p, ver2, nullptr, /*rstLowMs=*/pass1 ? 50 : 1);
 
@@ -205,7 +271,9 @@ DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t v
   const bool flgDriven = flg1 != 0x00 && flg1 != 0xFF && (flg1 & 0x01) == 0x01;
 
   // Diagnostics snapshot for locked units (persisted by firmware, e.g. to SD).
+  g_probeDiag = {};
   g_probeDiag.valid = true;
+  g_probeDiag.verBytesRead = 5;
   memcpy(g_probeDiag.ver, pass1 && pass2 ? ver2 : ver1, 5);
   g_probeDiag.flg = flg1;
   g_probeDiag.promoted = false;
@@ -271,10 +339,13 @@ DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t v
 DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5], uint8_t* flg) {
   const auto& d = BoardConfig::ACTIVE.display;
   const EpdProbePins p{d.sclk, d.mosi, d.cs, d.dc, d.rst, d.busy};
-  // X3-family boards (UC8253 default) escalate a failed screening pass to the
-  // 50 ms vendor-ID reset — see probeDisplayController.
-  const bool escalate = BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8253;
-  return probeDisplayController(p, verBytes, flg, escalate);
+#if FREEINK_DEVICE_X3
+  if (BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3 ||
+      BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3Uc8279) {
+    return probeX3DisplayController(p, verBytes, flg);
+  }
+#endif
+  return probeDisplayController(p, verBytes, flg);
 }
 
 const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag() { return g_probeDiag; }
@@ -310,18 +381,26 @@ bool probeSaysUltraChip(uint8_t verOut[5]) {
   const DisplayControllerVerdict v = detectXteinkDisplayController(ver, &flg);
   memcpy(verOut, ver, 5);
   if (Serial) {
-    Serial.printf("[%lu] [XTDET] bus probe VER=%02X %02X %02X %02X %02X FLG=%02X -> %s\n", millis(), ver[0], ver[1],
-                  ver[2], ver[3], ver[4], flg,
-                  v == DisplayControllerVerdict::Uc81xxConfirmed  ? "UltraChip"
-                  : v == DisplayControllerVerdict::PrimaryAssumed ? "default controller"
-                                                                  : "inconclusive (default)");
-    // MTP header (RMTP 0xA2), read whenever the status line was driven: 0xA5 at
-    // byte 0 = a UC part with a programmed MTP (the fallback discriminator);
-    // uniform FF/00 = no RMTP support (UC8253 / SSD-family) or unreadable.
-    if (g_probeDiag.mtpValid) {
-      Serial.printf("[%lu] [XTDET] MTP[0x000..0x02F]:", millis());
-      for (size_t i = 0; i < sizeof(g_probeDiag.mtp); i++) Serial.printf(" %02X", g_probeDiag.mtp[i]);
-      Serial.printf("\n");
+    if (g_probeDiag.verBytesRead == 3) {
+      Serial.printf("[%lu] [XTDET] X3 stock probe VER=%02X %02X %02X BUSY-timeout=%u -> %s\n", millis(),
+                    ver[0], ver[1], ver[2], g_probeDiag.busyTimedOut,
+                    v == DisplayControllerVerdict::Uc81xxConfirmed ? "UC8279"
+                    : v == DisplayControllerVerdict::PrimaryAssumed ? "UC8253"
+                                                                    : "unknown ID (UC8253 default)");
+    } else {
+      Serial.printf("[%lu] [XTDET] bus probe VER=%02X %02X %02X %02X %02X FLG=%02X -> %s\n", millis(), ver[0], ver[1],
+                    ver[2], ver[3], ver[4], flg,
+                    v == DisplayControllerVerdict::Uc81xxConfirmed  ? "UltraChip"
+                    : v == DisplayControllerVerdict::PrimaryAssumed ? "default controller"
+                                                                    : "inconclusive (default)");
+      // MTP header (RMTP 0xA2), read whenever the status line was driven: 0xA5 at
+      // byte 0 = a UC part with a programmed MTP (the fallback discriminator);
+      // uniform FF/00 = no RMTP support (UC8253 / SSD-family) or unreadable.
+      if (g_probeDiag.mtpValid) {
+        Serial.printf("[%lu] [XTDET] MTP[0x000..0x02F]:", millis());
+        for (size_t i = 0; i < sizeof(g_probeDiag.mtp); i++) Serial.printf(" %02X", g_probeDiag.mtp[i]);
+        Serial.printf("\n");
+      }
     }
   }
   return v == DisplayControllerVerdict::Uc81xxConfirmed;
@@ -539,10 +618,11 @@ bool detectXteinkIsX3() { return detectXteinkVerdict() == XteinkVerdict::X3Confi
 #if FREEINK_DEVICE_X3
 
 X3DisplayVerdict detectX3DisplayController(uint8_t verBytes[5], uint8_t* flg) {
-  // The X3 uses the shared board-agnostic probe over its display pinout. Both
-  // X3 profiles carry the same display pins, so ACTIVE (still the boot default
-  // here, before selectDevice) has the right map either way.
-  const DisplayControllerVerdict v = detectXteinkDisplayController(verBytes, flg);
+  // selectXteinkDevice() can call this while ACTIVE still names the X4 boot
+  // default. Use the known X3 pins and protocol, independent of ACTIVE.
+  const auto& d = BoardConfig::XTEINK_X3.display;
+  const EpdProbePins p{d.sclk, d.mosi, d.cs, d.dc, d.rst, d.busy};
+  const DisplayControllerVerdict v = probeX3DisplayController(p, verBytes, flg);
   switch (v) {
     case DisplayControllerVerdict::Uc81xxConfirmed: return X3DisplayVerdict::Uc8279Confirmed;
     case DisplayControllerVerdict::PrimaryAssumed: return X3DisplayVerdict::Uc8253Assumed;
