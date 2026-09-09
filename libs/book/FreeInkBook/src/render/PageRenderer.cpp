@@ -238,9 +238,17 @@ void PageRenderer::renderRules(const Page& page, const FrameTarget& target) {
   for (uint16_t r = 0; r < page.ruleCount; ++r) {
     const PageRule& rule = page.rules[r];
     if (rule.width == 0 || rule.thicknessPx == 0) continue;
-    for (int32_t t = 0; t < rule.thicknessPx; ++t) {
-      for (int32_t x = rule.x; x < rule.x + rule.width; ++x) {
-        inkPixel(target, x, rule.y + t, 255);
+    // Clip to the frame first: a corrupted cache record may declare a huge
+    // rectangle; inkPixel would reject every off-panel pixel, but only
+    // after the loop pays for it (up to 16M iterations for one record).
+    const int32_t x0 = rule.x < 0 ? 0 : rule.x;
+    const int32_t x1 = rule.x + rule.width > target.width ? target.width : rule.x + rule.width;
+    const int32_t y0 = rule.y < 0 ? 0 : rule.y;
+    const int32_t y1 = rule.y + rule.thicknessPx > target.height ? target.height
+                                                                 : rule.y + rule.thicknessPx;
+    for (int32_t y = y0; y < y1; ++y) {
+      for (int32_t x = x0; x < x1; ++x) {
+        inkPixel(target, x, y, 255);
       }
     }
   }
