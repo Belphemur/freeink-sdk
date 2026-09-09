@@ -330,6 +330,41 @@ void testCssStrikethrough() {
   CssDecl d4 = parseInlineStyle("text-decoration: line-through");
   CHECK_EQ(d4.strikethrough, 1);
   CHECK_EQ(d4.underline, 0);  // explicitly cleared by the shorthand
+
+  // The cascade path (applyOver/cascadeFor) must carry the field too and
+  // honor the shorthand-replaces semantics across rules, not just inline
+  // parsing: class beats element, inline beats both.
+  {
+    Arena arena(bookBuf, sizeof(bookBuf));
+    CssStylesheetBuilder builder;
+    CHECK(builder.begin(arena));
+    const char* css = ".strike { text-decoration: line-through; } p { text-decoration: none; }";
+    builder.addText(css, static_cast<uint32_t>(std::strlen(css)));
+    const CssStylesheet sheet = builder.finish();
+    CHECK_EQ(sheet.ruleCount, 2);
+
+    // A bare <p> gets the element rule: line-through cleared.
+    CssDecl p = cascadeFor(sheet, "p", nullptr, nullptr);
+    CHECK_EQ(p.strikethrough, 0);
+    CHECK_EQ(p.underline, 0);
+
+    // <p class="strike"> gets both rules; the class rule wins specificity.
+    CssDecl cls = cascadeFor(sheet, "p", "strike", nullptr);
+    CHECK_EQ(cls.strikethrough, 1);
+    CHECK_EQ(cls.underline, 0);
+
+    // An inline declaration replaces the class rule's decoration.
+    CssDecl inlineNone = parseInlineStyle("text-decoration: none");
+    CssDecl inl = cascadeFor(sheet, "p", "strike", &inlineNone);
+    CHECK_EQ(inl.strikethrough, 0);
+    CHECK_EQ(inl.underline, 0);
+
+    // ...and an inline line-through carries through to the final cascade.
+    CssDecl inlineStrike = parseInlineStyle("text-decoration: line-through");
+    CssDecl inl2 = cascadeFor(sheet, "span", "strike", &inlineStrike);
+    CHECK_EQ(inl2.strikethrough, 1);
+    CHECK_EQ(inl2.underline, 0);
+  }
 }
 
 }  // namespace
