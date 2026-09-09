@@ -104,6 +104,6 @@ mkdir -p "$BUILD_DIR/cache"
 "$BUILD_DIR/test_layout" "$BUILD_DIR/fixtures" "$BUILD_DIR/hyph-en-us.fibh" "$BUILD_DIR/hyph-test-ru.fibh"
 "$BUILD_DIR/test_layout_small" "$BUILD_DIR/fixtures" "$BUILD_DIR/hyph-en-us.fibh" "$BUILD_DIR/hyph-test-ru.fibh"
 "$BUILD_DIR/test_layout_large" "$BUILD_DIR/fixtures" "$BUILD_DIR/hyph-en-us.fibh" "$BUILD_DIR/hyph-test-ru.fibh"
-"$BUILD_DIR/test_cache" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache"
+"$BUILD_DIR/test_cache" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache" "$BUILD_DIR/hyph-en-us.fibh"
 "$BUILD_DIR/test_font" "$BUILD_DIR/fixtures" ../fixtures/fonts/DejaVuSans.ttf
 "$BUILD_DIR/test_catalog" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache"

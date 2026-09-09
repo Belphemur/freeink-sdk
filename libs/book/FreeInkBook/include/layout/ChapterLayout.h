@@ -60,6 +60,15 @@ struct PageTextRun {
   int16_t baselineY;
   uint16_t sizePx;     // resolved size — headings differ from body
   uint8_t styleFlags;  // StyleFlags bits
+  // Per-run layout artifacts. The first bit, LayoutHyphenated, marks a run
+  // (or the last byte of it) that terminates in a synthetic '-' (U+002D)
+  // appended by the flow engine for a soft wrap — consumers that join
+  // wrapped segments (e.g. dictionary lookup, selection groups) must strip
+  // it. Plain byte, no default initializer: PageTextRun is produced via
+  // Arena::allocArray (raw storage, no constructors) and every producer
+  // (emitSeg, PageCache decode) sets it explicitly — like the other fields.
+  uint8_t layoutFlags;
+  static constexpr uint8_t LayoutHyphenated = 1u << 0;
 };
 
 // One placed image. `href` is the container path of the image entry,

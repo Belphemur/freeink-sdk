@@ -1774,7 +1774,8 @@ class LayoutEngine : public XmlHandler {
                           static_cast<int16_t>(x),
                           runBaseline,
                           spanSizePx(*sg.span),
-                          runFlags};
+                          runFlags,
+                          addHyphen ? static_cast<uint8_t>(PageTextRun::LayoutHyphenated) : uint8_t{0}};
     if (sg.span->link != 0 && linkCount_ < kMaxLinksPerPage) {
       const uint8_t li = static_cast<uint8_t>(sg.span->link - 1);
       const uint16_t sz = spanSizePx(*sg.span);

@@ -6,6 +6,7 @@
 #include <FreeInkBook.h>
 #include <cache/PageCache.h>
 #include <layout/ChapterLayout.h>
+#include <text/Hyphenator.h>
 
 #include <cstdio>
 #include <cstring>
@@ -449,6 +450,76 @@ void testPartialCacheAndMidBuildRead(HostCacheStorage& cache) {
   cache.remove(name);
 }
 
+// The layoutFlags artifact must survive the cache byte-for-byte: build a
+// hyphenated generation, count runs that carry LayoutHyphenated both in the
+// live layout and after a cache decode round-trip, and require the counts
+// (and every flagged run's tail byte) to agree.
+void testHyphenFlagRoundtrip(HostCacheStorage& cache, const Hyphenator& hyphenator) {
+  HostFileSource source;
+  CHECK(source.open(fixture("minimal.epub")));
+  Arena bookArena(bookBuf, sizeof(bookBuf));
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  Book book;
+  CHECK_EQ(static_cast<int>(book.open(source, bookArena, scratch)),
+           static_cast<int>(BookStatus::Ok));
+
+  FakeFont font;
+  LayoutParams params = makeParams(font, 16);
+  params.pageWidth = 240;  // narrow column forces hyphenated breaks
+  params.hyphenator = &hyphenator;
+  const uint32_t hash = buildCache(source, book, cache, params, scratch, nullptr);
+  char name[64];
+  CHECK(pageCacheName(1, hash, name, sizeof(name)));
+
+  // Direct layout: count hyphenated runs page by page.
+  class FlagCountSink : public PageSink {
+   public:
+    bool onPage(const Page& page) override {
+      for (uint16_t r = 0; r < page.runCount; ++r) {
+        const PageTextRun& run = page.runs[r];
+        if (run.layoutFlags & PageTextRun::LayoutHyphenated) {
+          ++flagged;
+          if (run.len == 0 || run.text[run.len - 1] != '-') ++badTail;
+        }
+      }
+      return true;
+    }
+    int flagged = 0;
+    int badTail = 0;
+  };
+  FlagCountSink live;
+  {
+    const size_t marked = scratch.mark();
+    const ZipEntry* entry = book.zip().find(book.spineItem(1)->href);
+    CHECK(entry != nullptr);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, book.zip(), *entry, entry->name, params,
+                                                    scratch, live, nullptr)),
+             static_cast<int>(BookStatus::Ok));
+    scratch.release(marked);
+  }
+  CHECK(live.flagged > 0);           // the narrow column did hyphenate
+  CHECK_EQ(live.badTail, 0);         // flagged runs end in '-'
+
+  // Cache decode: same counts, same tails.
+  Arena cacheArena(cacheBuf, sizeof(cacheBuf));
+  PageCacheReader reader;
+  CHECK_EQ(static_cast<int>(reader.open(cache, name, hash, cacheArena)),
+           static_cast<int>(BookStatus::Ok));
+  FlagCountSink cached;
+  for (uint32_t p = 0; p < reader.pageCount(); ++p) {
+    const size_t marked = scratch.mark();
+    Page page{};
+    CHECK_EQ(static_cast<int>(reader.readPage(p, scratch, &page)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK(cached.onPage(page));
+    scratch.release(marked);
+  }
+  CHECK_EQ(cached.flagged, live.flagged);
+  CHECK_EQ(cached.badTail, 0);
+
+  cache.remove(name);
+}
+
 // A <hr> page round-trips its rule records through the cache byte-identical:
 // v4 cache format, rules appended after links in the page blob.
 void testRuleRoundtrip(HostCacheStorage& cache) {
@@ -535,16 +606,27 @@ void testRuleRoundtrip(HostCacheStorage& cache) {
 }
 
 int main(int argc, char** argv) {
-  if (argc < 3) {
-    std::printf("usage: %s <fixtures-build-dir> <cache-dir>\n", argv[0]);
+  if (argc < 4) {
+    std::printf("usage: %s <fixtures-build-dir> <cache-dir> <hyph-en-us.fibh>\n", argv[0]);
     return 2;
   }
   fixturesDir = argv[1];
   HostCacheStorage cache(argv[2]);
 
+  static uint8_t hyphBuf[96 * 1024];
+  Hyphenator hyphenator;
+  {
+    FILE* f = std::fopen(argv[3], "rb");
+    CHECK(f != nullptr);
+    const size_t n = f != nullptr ? std::fread(hyphBuf, 1, sizeof(hyphBuf), f) : 0;
+    if (f != nullptr) std::fclose(f);
+    CHECK(hyphenator.init(hyphBuf, static_cast<uint32_t>(n)));
+  }
+
   testRoundtripAndStaleness(cache);
   testPositionMigration(cache);
   testPartialCacheAndMidBuildRead(cache);
+  testHyphenFlagRoundtrip(cache, hyphenator);
   testRuleRoundtrip(cache);
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);

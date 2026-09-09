@@ -202,7 +202,7 @@ bool PageCacheWriter::onPage(const Page& page) {
     putU16(rec + 2, static_cast<uint16_t>(run.baselineY));
     putU16(rec + 4, run.sizePx);
     rec[6] = run.styleFlags;
-    rec[7] = 0;
+    rec[7] = run.layoutFlags;
     putU16(rec + 8, run.len);
     if (!writeRaw(rec, sizeof(rec))) return false;
     if (!writeRaw(run.text, run.len)) return false;
@@ -556,6 +556,7 @@ static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t
     run.baselineY = static_cast<int16_t>(getU16(blob + pos + 2));
     run.sizePx = getU16(blob + pos + 4);
     run.styleFlags = blob[pos + 6];
+    run.layoutFlags = blob[pos + 7];  // reserved-0 in v4 files written before LayoutHyphenated
     run.len = getU16(blob + pos + 8);
     pos += 10;
     if (pos + run.len > blobLen) return BookStatus::Stale;
