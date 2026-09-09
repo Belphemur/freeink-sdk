@@ -1183,6 +1183,7 @@ class LayoutEngine : public XmlHandler {
     if (stack_[stackTop_].displayNone) return;
     const int32_t contentW = params_.pageWidth - params_.marginLeft - params_.marginRight;
     const int32_t contentH = params_.pageHeight - params_.marginTop - params_.marginBottom;
+    if (contentW < 4 || contentH < 1) return;  // degenerate content box: nothing drawable
     const int16_t air = static_cast<int16_t>(lineHeightFor(params_.baseSizePx) / 2);
     const uint8_t thickness = 2;
 

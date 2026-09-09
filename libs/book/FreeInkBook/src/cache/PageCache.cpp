@@ -12,6 +12,7 @@ namespace {
 
 constexpr uint16_t kFormatVersion = 4;  // v4: rule records (v3: link records + anchor table)
 constexpr uint32_t kHeaderSize = 12;
+constexpr uint32_t kBlobHeaderSize = 12;  // per-page blob: charStart u32 + run/image/link/rule counts u16
 constexpr uint32_t kFooterSize = 24;  // v3: + anchors + totalChars
 // Partial (suspended-build) footer: the final footer's five u32 fields plus
 // bytesConsumed + bytesTotal, sealed with "FIBx" instead of "FIBX". Old
@@ -186,7 +187,7 @@ bool PageCacheWriter::onPage(const Page& page) {
   curChunk_->charStarts[slot] = page.charStart;
   ++pageCount_;
 
-  uint8_t head[12];
+  uint8_t head[kBlobHeaderSize];
   putU32(head, page.charStart);
   putU16(head + 4, page.runCount);
   putU16(head + 6, page.imageCount);
@@ -536,7 +537,7 @@ BookStatus PageCacheReader::readPage(uint32_t pageIndex, Arena& scratch, Page* o
 // PageCacheWriter::readPage (mid-build read-back of the open write stream).
 static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex,
                                  Arena& scratch, Page* out) {
-  if (blobLen < 12) return BookStatus::Stale;
+  if (blobLen < kBlobHeaderSize) return BookStatus::Stale;
   const uint32_t charStart = getU32(blob);
   const uint16_t runCount = getU16(blob + 4);
   const uint16_t imageCount = getU16(blob + 6);
@@ -547,7 +548,7 @@ static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t
   PageImage* images = scratch.allocArray<PageImage>(imageCount);
   if (images == nullptr && imageCount != 0) return BookStatus::OutOfMemory;
 
-  uint32_t pos = 12;
+  uint32_t pos = kBlobHeaderSize;
   for (uint16_t r = 0; r < runCount; ++r) {
     if (pos + 10 > blobLen) return BookStatus::Stale;
     PageTextRun& run = runs[r];
