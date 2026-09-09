@@ -317,6 +317,22 @@ void testRenderRules() {
     if (grayFb[i] == 0) ++grayBlack;
   }
   CHECK_EQ(grayBlack, 200u * 2u + 600u * 1u);
+
+  // Portrait rotation: rule coordinates are LOGICAL (480x800 on an 800x480
+  // panel). A rule in the logical bottom half must still be drawn — clipping
+  // on panel-native height (480) would drop it entirely.
+  std::memset(monoFb, 0xFF, sizeof(monoFb));
+  PageRule proRules[1] = {{100, 600, 200, 2}};
+  Page proPage{};
+  proPage.rules = proRules;
+  proPage.ruleCount = 1;
+  FrameTarget pro{monoFb, 800, 480, 100, FrameFormat::Mono1Dithered, FrameRotation::Portrait};
+  PageRenderer::renderRules(proPage, pro);
+  uint32_t proBits = 0;
+  for (uint32_t i = 0; i < sizeof(monoFb); ++i) {
+    proBits += static_cast<uint32_t>(__builtin_popcount(0xFF ^ monoFb[i]));
+  }
+  CHECK_EQ(proBits, 200u * 2u);
 }
 
 }  // namespace
