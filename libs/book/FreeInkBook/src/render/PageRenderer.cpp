@@ -204,6 +204,15 @@ uint32_t PageRenderer::renderText(const Page& page, FontChain& fonts, const Fram
         for (int32_t x = run.x; x < penX; ++x) inkPixel(target, x, y + t, 255);
       }
     }
+    if (run.styleFlags & StyleStrikethrough) {
+      // Drawn through the middle of the run's em box, matching the old
+      // TextBlock.cpp:195-198 seam (2px rule, midline across all runs).
+      const int32_t y = run.baselineY - (run.sizePx / 2);
+      const int32_t thickness = run.sizePx >= 28 ? 2 : 1;
+      for (int32_t t = 0; t < thickness; ++t) {
+        for (int32_t x = run.x; x < penX; ++x) inkPixel(target, x, y + t, 255);
+      }
+    }
   }
   return missing;
 }

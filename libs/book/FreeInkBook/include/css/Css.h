@@ -14,7 +14,8 @@
 //
 // Supported properties: font-size (em/%/px/pt/rem + keywords), font-weight,
 // font-style, text-align, text-indent (em/px), margin-left/margin-top/
-// margin-bottom (em/px, also via the margin shorthand), display:none.
+// margin-bottom (em/px, also via the margin shorthand), display:none,
+// text-decoration (underline, line-through, none).
 
 #include <stdint.h>
 
@@ -42,6 +43,7 @@ struct CssDecl {
   int16_t marginBottomPct = -1;
   int8_t displayNone = -1;     // -1 unset, 1 = display:none
   int8_t underline = -1;       // -1 unset, 0 none, 1 underline
+  int8_t strikethrough = -1;   // -1 unset, 0 none, 1 strikethrough
   int8_t vertAlign = -1;       // -1 unset, 0 baseline, 1 super, 2 sub
 
   // Applies every property `over` declares on top of this one.

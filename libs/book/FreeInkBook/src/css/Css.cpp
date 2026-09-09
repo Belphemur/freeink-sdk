@@ -180,8 +180,21 @@ void applyDeclaration(CssDecl* decl, const char* prop, uint32_t propLen, const c
   } else if (propIs("display")) {
     if (valueIs("none")) decl->displayNone = 1;
   } else if (propIs("text-decoration") || propIs("text-decoration-line")) {
-    if (valueIs("underline")) decl->underline = 1;
-    else if (valueIs("none")) decl->underline = 0;
+    // Single-token values only (the common EPUB case); multi-token lists
+    // like "underline line-through" are not split yet and match nothing.
+    // Each recognized value replaces the FULL decoration state (the CSS
+    // shorthand replaces text-decoration-line), so a later/more specific
+    // rule overrides an earlier decoration instead of accumulating both.
+    if (valueIs("underline")) {
+      decl->underline = 1;
+      decl->strikethrough = 0;
+    } else if (valueIs("line-through")) {
+      decl->strikethrough = 1;
+      decl->underline = 0;
+    } else if (valueIs("none")) {
+      decl->underline = 0;
+      decl->strikethrough = 0;
+    }
   } else if (propIs("vertical-align")) {
     if (valueIs("super")) decl->vertAlign = 1;
     else if (valueIs("sub")) decl->vertAlign = 2;
@@ -248,6 +261,7 @@ void CssDecl::applyOver(const CssDecl& over) {
   if (over.marginBottomPct >= 0) marginBottomPct = over.marginBottomPct;
   if (over.displayNone >= 0) displayNone = over.displayNone;
   if (over.underline >= 0) underline = over.underline;
+  if (over.strikethrough >= 0) strikethrough = over.strikethrough;
   if (over.vertAlign >= 0) vertAlign = over.vertAlign;
 }
 
