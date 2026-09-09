@@ -609,16 +609,18 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   setCustomLut(bus, true, selectedLut);
 
   if (factoryMode) {
-    // Explicit, self-contained power cycle for 4-level absolute grayscale.
+    // Keep shutdown separate from the absolute grayscale activation: combining
+    // ANALOG_OFF/CLOCK_OFF with the paint can leave incomplete or smeared grays.
     // Reset CTRL1 to normal — a prior HALF leaves BYPASS_RED set, which would
     // ignore RED RAM and break 4-level grayscale.
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
     bus.data(CTRL1_NORMAL);
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
-    bus.data(0xC7);  // CLOCK_ON|ANALOG_ON|DISPLAY_START|ANALOG_OFF|CLOCK_OFF
+    bus.data(0xCC);  // CLOCK_ON|ANALOG_ON|MODE_SELECT|DISPLAY_START
     bus.cmd(CMD_MASTER_ACTIVATION);
-    bus.waitBusy("factory_gray");
-    _isScreenOn = false;  // 0xC7 always powers down after the update
+    bus.waitRefreshComplete("factory_gray");
+    _isScreenOn = true;
+    if (turnOff) powerOffController(bus);
     _needsGrayClear = true;  // restoring RAM alone cannot restore B/W ink
   } else {
     // Settled rails before the gray waveform (no-op where the panel is already

@@ -241,8 +241,8 @@ static void testAbsolutePipeline() {
     display.displayGrayBuffer(false);
     assert(std::count_if(display._bus.writes.begin(), display._bus.writes.end(),
                          [](const auto& w) { return w.command == 0x20; }) == 1);
-    assert(lastRegister(display._bus, 0x22) == 0xC7);
-    assert(!driver._isScreenOn && driver._needsGrayClear);
+    assert(lastRegister(display._bus, 0x22) == 0xCC);
+    assert(driver._isScreenOn && driver._needsGrayClear);
     display.cleanupGrayscaleBuffers(bw.data());
     assert(driver._needsGrayClear);
     display._bus.clear();
@@ -251,6 +251,17 @@ static void testAbsolutePipeline() {
     display.waitRefreshComplete();
     assert(!driver._needsGrayClear);
   }
+  // Explicit shutdown must use its own activation after the gray refresh wait.
+  assert(display.displayGrayscaleBase(absolute));
+  display.copyGrayscaleBuffers(lsb.data(), msb.data());
+  display._bus.clear();
+  display.displayGrayBuffer(true);
+  std::vector<uint8_t> activations;
+  for (const auto& w : display._bus.writes) {
+    if (w.command == 0x22) activations.push_back(w.bytes.at(0));
+  }
+  assert((activations == std::vector<uint8_t>{0xCC, 0x03}));
+  assert(!driver._isScreenOn && driver._needsGrayClear);
   for (unsigned failure = 0; failure < 6; ++failure) {
     assert(display.displayGrayscaleBase(absolute));
     display._bus.clear();
@@ -399,8 +410,8 @@ static void testStickyAbsolute() {
   assert(display._bus.writes.empty());
   display.copyGrayscaleBuffers(lsb.data(), msb.data());
   display.displayGrayBuffer(false);
-  assert(lastRegister(display._bus, 0x22) == 0xC7);
-  assert(!driver._isScreenOn);
+  assert(lastRegister(display._bus, 0x22) == 0xCC);
+  assert(driver._isScreenOn);
   display.cleanupGrayscaleBuffers(bw.data());
   display._bus.clear();
   display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
