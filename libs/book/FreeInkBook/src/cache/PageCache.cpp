@@ -70,11 +70,11 @@ constexpr uint32_t kRuleRecSize = 7;
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
 constexpr uint32_t kLayoutRevision = 10;  // 10: <hr> lays out as a drawn rule
-                                          // (9: uniform per-paragraph line grid (CrossPoint parity)
-                                         // (8: inline CSS sizes/margins + line box sizing,
-                                         //  7: image dimension pre-scan,
-                                         //  6: focus reading + non-ASCII hyphenation,
-                                         //  5: Korean/CJ punct, 4: Arabic, 3: bidi, 2: ligatures)
+                                          //  (9: uniform per-paragraph line grid (CrossPoint parity)
+                                          //   8: inline CSS sizes/margins + line box sizing,
+                                          //   7: image dimension pre-scan,
+                                          //   6: focus reading + non-ASCII hyphenation,
+                                          //   5: Korean/CJ punct, 4: Arabic, 3: bidi, 2: ligatures)
 
 uint32_t layoutGenerationHash(const LayoutParams& params, uint32_t fontFingerprint) {
   uint32_t hash = 2166136261u;
@@ -236,7 +236,7 @@ bool PageCacheWriter::onPage(const Page& page) {
   }
   for (uint16_t r = 0; r < page.ruleCount; ++r) {
     const PageRule& rule = page.rules[r];
-    uint8_t rec[7];
+    uint8_t rec[kRuleRecSize];
     putU16(rec, static_cast<uint16_t>(rule.x));
     putU16(rec + 2, static_cast<uint16_t>(rule.y));
     putU16(rec + 4, rule.width);

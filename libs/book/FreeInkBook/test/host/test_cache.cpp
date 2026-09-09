@@ -469,10 +469,13 @@ void testRuleRoundtrip(HostCacheStorage& cache) {
       if (ruleCount > 0 || captured) return true;
       if (page.ruleCount > 0) {
         captured = true;
-        ruleCount = page.ruleCount;
         pageIndex = page.pageIndex;
         charStart = page.charStart;
-        for (uint16_t r = 0; r < page.ruleCount; ++r) rules[r] = page.rules[r];
+        // Clamp to the sink's fixed buffer: kMaxRulesPerPage can exceed it
+        // (up to 24 on LARGE), so a raw copy could overflow.
+        const uint16_t cap = static_cast<uint16_t>(sizeof(rules) / sizeof(rules[0]));
+        ruleCount = page.ruleCount < cap ? page.ruleCount : cap;
+        for (uint16_t r = 0; r < ruleCount; ++r) rules[r] = page.rules[r];
       }
       return true;
     }
