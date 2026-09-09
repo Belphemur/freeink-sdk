@@ -1,0 +1,11 @@
+/* Compiles the vendored expat parser core. Configuration lives in
+ * third_party/expat/expat_config.h.
+ *
+ * The firmware (crosspoint) also compiles libexpat from its own lib/expat/.
+ * Both copies include xmltok_ns.c via NS(x)=x (plain, no prefix), which
+ * causes duplicate symbols at link time. We define XML_TOK_PREFIX to
+ * x##freeink so the SDK's copy is fully prefixed and isolated.
+ */
+#define XML_TOK_PREFIX(x) x##freeink
+#define XML_NS
+#include "../../third_party/expat/xmltok.c"
