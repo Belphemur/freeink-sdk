@@ -5,6 +5,7 @@
 // than a hope. Run with test/host/run.sh.
 
 #include <FreeInkBook.h>
+#include <css/Css.h>
 #include <epub/PackageParsers.h>
 
 #include <cstdio>
@@ -180,7 +181,7 @@ void testMinimalBook(const char* name) {
   CHECK_STREQ(book.metadata().language, "en");
   CHECK_STREQ(book.metadata().identifier, "urn:uuid:freeinkbook-fixture-0001");
 
-  CHECK_EQ(book.spineCount(), 8u);
+  CHECK_EQ(book.spineCount(), 9u);
   CHECK_STREQ(book.spineItem(0)->href, "OEBPS/text/ch 1.xhtml");
   CHECK_STREQ(book.spineItem(1)->href, "OEBPS/text/ch2.xhtml");
   CHECK_STREQ(book.spineItem(2)->href, "OEBPS/text/ch3.xhtml");
@@ -189,7 +190,8 @@ void testMinimalBook(const char* name) {
   CHECK_STREQ(book.spineItem(5)->href, "OEBPS/text/ch6.xhtml");
   CHECK_STREQ(book.spineItem(6)->href, "OEBPS/text/ch7.xhtml");
   CHECK_STREQ(book.spineItem(7)->href, "OEBPS/text/ch8.xhtml");
-  CHECK(book.spineItem(8) == nullptr);
+  CHECK_STREQ(book.spineItem(8)->href, "OEBPS/text/ch9.hr.xhtml");
+  CHECK(book.spineItem(9) == nullptr);
 
   // EPUB 2 <meta name="cover"> promotes its manifest item to cover-image.
   {
@@ -308,6 +310,64 @@ void testNotAnEpub() {
            static_cast<int>(BookStatus::NotZip));
 }
 
+// ------------------------------------------------------------------------------
+void testCssStrikethrough() {
+  // "text-decoration: line-through" must set the strikethrough bit.
+  // parseInlineStyle takes the raw declaration list (e.g. "color:red; text-decoration: line-through").
+  CssDecl d = parseInlineStyle("text-decoration: line-through");
+  CHECK_EQ(d.strikethrough, 1);
+  CHECK_EQ(d.underline, 0);  // explicitly cleared by the shorthand
+
+  CssDecl d2 = parseInlineStyle("text-decoration: none");
+  CHECK_EQ(d2.strikethrough, 0);
+  CHECK_EQ(d2.underline, 0);
+
+  // The shorthand replaces the whole decoration line: `underline` declares
+  // underline AND no line-through, so a later/more specific rule overrides
+  // an earlier decoration instead of accumulating both.
+  CssDecl d3 = parseInlineStyle("text-decoration: underline");
+  CHECK_EQ(d3.underline, 1);
+  CHECK_EQ(d3.strikethrough, 0);  // explicitly cleared by the shorthand
+  CssDecl d4 = parseInlineStyle("text-decoration: line-through");
+  CHECK_EQ(d4.strikethrough, 1);
+  CHECK_EQ(d4.underline, 0);  // explicitly cleared by the shorthand
+
+  // The cascade path (applyOver/cascadeFor) must carry the field too and
+  // honor the shorthand-replaces semantics across rules, not just inline
+  // parsing: class beats element, inline beats both.
+  {
+    Arena arena(bookBuf, sizeof(bookBuf));
+    CssStylesheetBuilder builder;
+    CHECK(builder.begin(arena));
+    const char* css = ".strike { text-decoration: line-through; } p { text-decoration: none; }";
+    builder.addText(css, static_cast<uint32_t>(std::strlen(css)));
+    const CssStylesheet sheet = builder.finish();
+    CHECK_EQ(sheet.ruleCount, 2);
+
+    // A bare <p> gets the element rule: line-through cleared.
+    CssDecl p = cascadeFor(sheet, "p", nullptr, nullptr);
+    CHECK_EQ(p.strikethrough, 0);
+    CHECK_EQ(p.underline, 0);
+
+    // <p class="strike"> gets both rules; the class rule wins specificity.
+    CssDecl cls = cascadeFor(sheet, "p", "strike", nullptr);
+    CHECK_EQ(cls.strikethrough, 1);
+    CHECK_EQ(cls.underline, 0);
+
+    // An inline declaration replaces the class rule's decoration.
+    CssDecl inlineNone = parseInlineStyle("text-decoration: none");
+    CssDecl inl = cascadeFor(sheet, "p", "strike", &inlineNone);
+    CHECK_EQ(inl.strikethrough, 0);
+    CHECK_EQ(inl.underline, 0);
+
+    // ...and an inline line-through carries through to the final cascade.
+    CssDecl inlineStrike = parseInlineStyle("text-decoration: line-through");
+    CssDecl inl2 = cascadeFor(sheet, "span", "strike", &inlineStrike);
+    CHECK_EQ(inl2.strikethrough, 1);
+    CHECK_EQ(inl2.underline, 0);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -323,6 +383,7 @@ int main(int argc, char** argv) {
   testMinimalBook("stored.epub");  // same book, stored (uncompressed) entries
   testNcxOnlyBook();
   testNotAnEpub();
+  testCssStrikethrough();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;
