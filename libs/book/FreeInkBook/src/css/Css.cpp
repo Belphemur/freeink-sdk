@@ -182,9 +182,16 @@ void applyDeclaration(CssDecl* decl, const char* prop, uint32_t propLen, const c
   } else if (propIs("text-decoration") || propIs("text-decoration-line")) {
     // Single-token values only (the common EPUB case); multi-token lists
     // like "underline line-through" are not split yet and match nothing.
-    if (valueIs("underline")) decl->underline = 1;
-    else if (valueIs("line-through")) decl->strikethrough = 1;
-    else if (valueIs("none")) {
+    // Each recognized value replaces the FULL decoration state (the CSS
+    // shorthand replaces text-decoration-line), so a later/more specific
+    // rule overrides an earlier decoration instead of accumulating both.
+    if (valueIs("underline")) {
+      decl->underline = 1;
+      decl->strikethrough = 0;
+    } else if (valueIs("line-through")) {
+      decl->strikethrough = 1;
+      decl->underline = 0;
+    } else if (valueIs("none")) {
       decl->underline = 0;
       decl->strikethrough = 0;
     }

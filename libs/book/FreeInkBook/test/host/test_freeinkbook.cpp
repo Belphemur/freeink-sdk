@@ -315,17 +315,21 @@ void testCssStrikethrough() {
   // parseInlineStyle takes the raw declaration list (e.g. "color:red; text-decoration: line-through").
   CssDecl d = parseInlineStyle("text-decoration: line-through");
   CHECK_EQ(d.strikethrough, 1);
-  CHECK_EQ(d.underline, -1);  // unset
+  CHECK_EQ(d.underline, 0);  // explicitly cleared by the shorthand
 
   CssDecl d2 = parseInlineStyle("text-decoration: none");
   CHECK_EQ(d2.strikethrough, 0);
   CHECK_EQ(d2.underline, 0);
 
-  // Regression: the reworked text-decoration chain must keep parsing
-  // the underline token, and must not touch the strikethrough field.
+  // The shorthand replaces the whole decoration line: `underline` declares
+  // underline AND no line-through, so a later/more specific rule overrides
+  // an earlier decoration instead of accumulating both.
   CssDecl d3 = parseInlineStyle("text-decoration: underline");
   CHECK_EQ(d3.underline, 1);
-  CHECK_EQ(d3.strikethrough, -1);  // unset
+  CHECK_EQ(d3.strikethrough, 0);  // explicitly cleared by the shorthand
+  CssDecl d4 = parseInlineStyle("text-decoration: line-through");
+  CHECK_EQ(d4.strikethrough, 1);
+  CHECK_EQ(d4.underline, 0);  // explicitly cleared by the shorthand
 }
 
 }  // namespace
