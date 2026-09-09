@@ -10,7 +10,7 @@ namespace book {
 
 namespace {
 
-constexpr uint16_t kFormatVersion = 3;  // v3: link records + anchor table
+constexpr uint16_t kFormatVersion = 4;  // v4: rule records (v3: link records + anchor table)
 constexpr uint32_t kHeaderSize = 12;
 constexpr uint32_t kFooterSize = 24;  // v3: + anchors + totalChars
 // Partial (suspended-build) footer: the final footer's five u32 fields plus
@@ -62,10 +62,14 @@ uint32_t hashMix(uint32_t hash, uint32_t value) {
 static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex,
                                  Arena& scratch, Page* out);
 
+// One serialized page-blob rule record.
+constexpr uint32_t kRuleRecSize = 7;
+
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 9;  // 9: uniform per-paragraph line grid (CrossPoint parity)
+constexpr uint32_t kLayoutRevision = 10;  // 10: <hr> lays out as a drawn rule
+                                          // (9: uniform per-paragraph line grid (CrossPoint parity)
                                          // (8: inline CSS sizes/margins + line box sizing,
                                          //  7: image dimension pre-scan,
                                          //  6: focus reading + non-ASCII hyphenation,
@@ -182,11 +186,12 @@ bool PageCacheWriter::onPage(const Page& page) {
   curChunk_->charStarts[slot] = page.charStart;
   ++pageCount_;
 
-  uint8_t head[10];
+  uint8_t head[12];
   putU32(head, page.charStart);
   putU16(head + 4, page.runCount);
   putU16(head + 6, page.imageCount);
   putU16(head + 8, page.linkCount);
+  putU16(head + 10, page.ruleCount);
   if (!writeRaw(head, sizeof(head))) return false;
 
   for (uint16_t r = 0; r < page.runCount; ++r) {
@@ -227,6 +232,15 @@ bool PageCacheWriter::onPage(const Page& page) {
     if (!writeRaw(rec, sizeof(rec))) return false;
     if (!writeRaw(link.target, tLen)) return false;
     if (!writeRaw(link.fragment, fLen)) return false;
+  }
+  for (uint16_t r = 0; r < page.ruleCount; ++r) {
+    const PageRule& rule = page.rules[r];
+    uint8_t rec[7];
+    putU16(rec, static_cast<uint16_t>(rule.x));
+    putU16(rec + 2, static_cast<uint16_t>(rule.y));
+    putU16(rec + 4, rule.width);
+    rec[6] = rule.thicknessPx;
+    if (!writeRaw(rec, sizeof(rec))) return false;
   }
   return true;
 }
@@ -522,17 +536,18 @@ BookStatus PageCacheReader::readPage(uint32_t pageIndex, Arena& scratch, Page* o
 // PageCacheWriter::readPage (mid-build read-back of the open write stream).
 static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex,
                                  Arena& scratch, Page* out) {
-  if (blobLen < 10) return BookStatus::Stale;
+  if (blobLen < 12) return BookStatus::Stale;
   const uint32_t charStart = getU32(blob);
   const uint16_t runCount = getU16(blob + 4);
   const uint16_t imageCount = getU16(blob + 6);
   const uint16_t linkCount = getU16(blob + 8);
+  const uint16_t ruleCount = getU16(blob + 10);
   PageTextRun* runs = scratch.allocArray<PageTextRun>(runCount);
   if (runs == nullptr && runCount != 0) return BookStatus::OutOfMemory;
   PageImage* images = scratch.allocArray<PageImage>(imageCount);
   if (images == nullptr && imageCount != 0) return BookStatus::OutOfMemory;
 
-  uint32_t pos = 10;
+  uint32_t pos = 12;
   for (uint16_t r = 0; r < runCount; ++r) {
     if (pos + 10 > blobLen) return BookStatus::Stale;
     PageTextRun& run = runs[r];
@@ -591,12 +606,26 @@ static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t
     pos += tLen + fLen;
   }
 
+  PageRule* rules = scratch.allocArray<PageRule>(ruleCount);
+  if (rules == nullptr && ruleCount != 0) return BookStatus::OutOfMemory;
+  for (uint16_t r = 0; r < ruleCount; ++r) {
+    if (pos + kRuleRecSize > blobLen) return BookStatus::Stale;
+    PageRule& rule = rules[r];
+    rule.x = static_cast<int16_t>(getU16(blob + pos));
+    rule.y = static_cast<int16_t>(getU16(blob + pos + 2));
+    rule.width = getU16(blob + pos + 4);
+    rule.thicknessPx = blob[pos + 6];
+    pos += kRuleRecSize;
+  }
+
   out->runs = runs;
   out->runCount = runCount;
   out->images = images;
   out->imageCount = imageCount;
   out->links = links;
   out->linkCount = linkCount;
+  out->rules = rules;
+  out->ruleCount = ruleCount;
   out->pageIndex = pageIndex;
   out->charStart = charStart;
   return BookStatus::Ok;

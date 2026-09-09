@@ -234,9 +234,22 @@ BookStatus PageRenderer::renderImages(const Page& page, BookSource& source,
   return worst;
 }
 
+void PageRenderer::renderRules(const Page& page, const FrameTarget& target) {
+  for (uint16_t r = 0; r < page.ruleCount; ++r) {
+    const PageRule& rule = page.rules[r];
+    if (rule.width == 0 || rule.thicknessPx == 0) continue;
+    for (int32_t t = 0; t < rule.thicknessPx; ++t) {
+      for (int32_t x = rule.x; x < rule.x + rule.width; ++x) {
+        inkPixel(target, x, rule.y + t, 255);
+      }
+    }
+  }
+}
+
 BookStatus PageRenderer::render(const Page& page, FontChain& fonts, BookSource& source,
                                 const ZipCatalog& zip, Arena& scratch,
                                 const FrameTarget& target) {
+  renderRules(page, target);
   renderText(page, fonts, target);
   return renderImages(page, source, zip, scratch, target);
 }

@@ -180,7 +180,7 @@ void testMinimalBook(const char* name) {
   CHECK_STREQ(book.metadata().language, "en");
   CHECK_STREQ(book.metadata().identifier, "urn:uuid:freeinkbook-fixture-0001");
 
-  CHECK_EQ(book.spineCount(), 8u);
+  CHECK_EQ(book.spineCount(), 9u);
   CHECK_STREQ(book.spineItem(0)->href, "OEBPS/text/ch 1.xhtml");
   CHECK_STREQ(book.spineItem(1)->href, "OEBPS/text/ch2.xhtml");
   CHECK_STREQ(book.spineItem(2)->href, "OEBPS/text/ch3.xhtml");
@@ -189,7 +189,8 @@ void testMinimalBook(const char* name) {
   CHECK_STREQ(book.spineItem(5)->href, "OEBPS/text/ch6.xhtml");
   CHECK_STREQ(book.spineItem(6)->href, "OEBPS/text/ch7.xhtml");
   CHECK_STREQ(book.spineItem(7)->href, "OEBPS/text/ch8.xhtml");
-  CHECK(book.spineItem(8) == nullptr);
+  CHECK_STREQ(book.spineItem(8)->href, "OEBPS/text/ch9.hr.xhtml");
+  CHECK(book.spineItem(9) == nullptr);
 
   // EPUB 2 <meta name="cover"> promotes its manifest item to cover-image.
   {

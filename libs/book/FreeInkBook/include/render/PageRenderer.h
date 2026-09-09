@@ -65,6 +65,9 @@ class PageRenderer {
   static BookStatus renderImages(const Page& page, BookSource& source, const ZipCatalog& zip,
                                  Arena& scratch, const FrameTarget& target);
 
+  // Draws the page's horizontal rules as filled ink rectangles.
+  static void renderRules(const Page& page, const FrameTarget& target);
+
   // Text + images.
   static BookStatus render(const Page& page, FontChain& fonts, BookSource& source,
                            const ZipCatalog& zip, Arena& scratch, const FrameTarget& target);

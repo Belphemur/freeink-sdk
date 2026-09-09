@@ -1906,6 +1906,75 @@ void testFocusReading() {
   CHECK(layoutGenerationHash(params, 1) != layoutGenerationHash(off, 1));
 }
 
+// <hr> is a drawn PageRule (CrossPoint parity with the old PageHorizontalRule):
+// 2px ink, a quarter of the content width, centered, half a line of air above
+// and below. Geometry is checked with FakeFont (lineHeight = size + 4, base
+// 16 → 20): air = 10, rule height = 2, advance = 22.
+void testHorizontalRule() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  const int16_t left = params.marginLeft;
+  const int16_t right = params.pageWidth - params.marginRight;
+  const int16_t contentW = static_cast<int16_t>(right - left);
+  const int16_t ruleW = static_cast<int16_t>(contentW / 4);
+  const int16_t ruleX = static_cast<int16_t>(left + (contentW - ruleW) / 2);
+
+  struct RuleSink : PageSink {
+    bool onPage(const Page& page) override {
+      for (uint16_t r = 0; r < page.ruleCount && count < 64; ++r) rules[count++] = page.rules[r];
+      for (uint16_t r = 0; r < page.runCount && textLen + page.runs[r].len < sizeof(text); ++r) {
+        std::memcpy(text + textLen, page.runs[r].text, page.runs[r].len);
+        textLen += page.runs[r].len;
+      }
+      text[textLen] = '\0';
+      return true;
+    }
+    PageRule rules[64];
+    uint32_t count = 0;
+    char text[16 * 1024];
+    uint32_t textLen = 0;
+  } sink;
+
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch9.hr.xhtml");
+  CHECK(entry != nullptr);
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, sink, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+
+  // The fixture carries 4 <hr> elements; every one placed a rule.
+  CHECK_EQ(sink.count, 4u);
+  CHECK_EQ(opened.scratch.used(), 0u);
+
+  for (uint32_t i = 0; i < sink.count; ++i) {
+    const PageRule& rule = sink.rules[i];
+    CHECK_EQ(static_cast<int>(rule.thicknessPx), 2);
+    CHECK_EQ(static_cast<int>(rule.width), ruleW);
+    CHECK_EQ(static_cast<int>(rule.x), ruleX);
+    // The rule stays inside the content box.
+    CHECK(rule.x >= left);
+    CHECK(rule.x + rule.width <= right);
+    CHECK(rule.y >= params.marginTop);
+    CHECK(rule.y + rule.thicknessPx <= params.pageHeight - params.marginBottom);
+    if (i > 0) {
+      // The rule run never overlaps the previous rule.
+      CHECK(sink.rules[i].y >= sink.rules[i - 1].y + sink.rules[i - 1].thicknessPx);
+    }
+  }
+
+  // Paragraph text is intact and in order around the rule run.
+  CHECK(std::strstr(sink.text, "Before the first rule.") != nullptr);
+  CHECK(std::strstr(sink.text, "Between rules.") != nullptr);
+  CHECK(std::strstr(sink.text, "After a rule run.") != nullptr);
+  CHECK(std::strstr(sink.text, "Between rules.After a rule run.") != nullptr);
+
+  // A leading <hr> must not create a blank leading page: the rule shares the
+  // page with the text that follows it (no page whose only content is air).
+  CHECK(std::strlen(sink.text) > 0);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1957,6 +2026,7 @@ int main(int argc, char** argv) {
   testCjPunctuationCompression();
   testCjkLatinGap();
   testFocusReading();
+  testHorizontalRule();
   if (argc > 3) {
     static uint8_t ruBuf[4096];
     Hyphenator ru;

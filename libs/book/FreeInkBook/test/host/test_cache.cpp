@@ -449,6 +449,88 @@ void testPartialCacheAndMidBuildRead(HostCacheStorage& cache) {
   cache.remove(name);
 }
 
+// A <hr> page round-trips its rule records through the cache byte-identical:
+// v4 cache format, rules appended after links in the page blob.
+void testRuleRoundtrip(HostCacheStorage& cache) {
+  HostFileSource source;
+  CHECK(source.open(fixture("minimal.epub")));
+  Arena bookArena(bookBuf, sizeof(bookBuf));
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  Book book;
+  CHECK_EQ(static_cast<int>(book.open(source, bookArena, scratch)),
+           static_cast<int>(BookStatus::Ok));
+
+  FakeFont font;
+  LayoutParams params = makeParams(font, 16);
+
+  // Direct layout: capture the page carrying the first rule.
+  struct RulePageSink : PageSink {
+    bool onPage(const Page& page) override {
+      if (ruleCount > 0 || captured) return true;
+      if (page.ruleCount > 0) {
+        captured = true;
+        ruleCount = page.ruleCount;
+        pageIndex = page.pageIndex;
+        charStart = page.charStart;
+        for (uint16_t r = 0; r < page.ruleCount; ++r) rules[r] = page.rules[r];
+      }
+      return true;
+    }
+    bool captured = false;
+    uint16_t ruleCount = 0;
+    uint32_t pageIndex = 0;
+    uint32_t charStart = 0;
+    PageRule rules[16];
+  } direct;
+  {
+    const size_t marked = scratch.mark();
+    const ZipEntry* entry = book.zip().find("OEBPS/text/ch9.hr.xhtml");
+    CHECK(entry != nullptr);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, book.zip(), *entry, entry->name, params, scratch, direct,
+                                                    nullptr)),
+             static_cast<int>(BookStatus::Ok));
+    scratch.release(marked);
+  }
+  CHECK(direct.captured);
+  CHECK(direct.ruleCount > 0);
+
+  // Build the cache for the same chapter, then read the rule page back.
+  const uint32_t hash = layoutGenerationHash(params, /*fontFingerprint=*/1);
+  char name[64];
+  CHECK(pageCacheName(0, hash, name, sizeof(name)));
+  const size_t marked = scratch.mark();
+  PageCacheWriter writer;
+  CHECK(writer.begin(cache, name, hash, scratch));
+  const ZipEntry* entry = book.zip().find("OEBPS/text/ch9.hr.xhtml");
+  CHECK(entry != nullptr);
+  uint32_t pages = 0;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, book.zip(), *entry, entry->name, params, scratch, writer,
+                                                  &pages)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(writer.finish());
+  scratch.release(marked);
+
+  Arena cacheArena(cacheBuf, sizeof(cacheBuf));
+  PageCacheReader reader;
+  CHECK_EQ(static_cast<int>(reader.open(cache, name, hash, cacheArena)), static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(reader.pageCount(), pages);
+
+  const size_t marked2 = scratch.mark();
+  Page page{};
+  CHECK_EQ(static_cast<int>(reader.readPage(direct.pageIndex, scratch, &page)),
+           static_cast<int>(BookStatus::Ok));
+  scratch.release(marked2);
+  CHECK_EQ(page.ruleCount, direct.ruleCount);
+  CHECK_EQ(page.charStart, direct.charStart);
+  for (uint16_t r = 0; r < direct.ruleCount; ++r) {
+    CHECK_EQ(page.rules[r].x, direct.rules[r].x);
+    CHECK_EQ(page.rules[r].y, direct.rules[r].y);
+    CHECK_EQ(page.rules[r].width, direct.rules[r].width);
+    CHECK_EQ(page.rules[r].thicknessPx, direct.rules[r].thicknessPx);
+  }
+  cache.remove(name);
+}
+
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::printf("usage: %s <fixtures-build-dir> <cache-dir>\n", argv[0]);
@@ -460,6 +542,7 @@ int main(int argc, char** argv) {
   testRoundtripAndStaleness(cache);
   testPositionMigration(cache);
   testPartialCacheAndMidBuildRead(cache);
+  testRuleRoundtrip(cache);
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

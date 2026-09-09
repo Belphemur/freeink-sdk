@@ -83,6 +83,15 @@ struct PageLink {
   uint16_t height;
 };
 
+// One drawn horizontal rule (<hr>): a solid filled rectangle, `width` px
+// wide and `thicknessPx` px tall with its top edge at y.
+struct PageRule {
+  int16_t x;
+  int16_t y;
+  uint16_t width;
+  uint8_t thicknessPx;
+};
+
 struct Page {
   const PageTextRun* runs;
   uint16_t runCount;
@@ -90,6 +99,8 @@ struct Page {
   uint16_t imageCount;
   const PageLink* links;
   uint16_t linkCount;
+  const PageRule* rules;
+  uint16_t ruleCount;
   uint32_t pageIndex;  // 0-based within the chapter
   // Chapter character offset (codepoints of extracted text) of this page's
   // first text run. Whitespace collapse and entity resolution are layout-

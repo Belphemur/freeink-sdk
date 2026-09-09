@@ -50,6 +50,7 @@ constexpr uint16_t kMaxLinesPerPar = 176;
 constexpr uint32_t kPageArenaCap = 7 * 1024;
 constexpr uint8_t kMaxElemDepth = 16;
 constexpr uint16_t kMaxImagesPerPage = 8;
+constexpr uint16_t kMaxRulesPerPage = 8;
 constexpr uint16_t kMaxLinksPerPage = 16;
 constexpr uint8_t kMaxLinksPerPar = 6;
 constexpr uint32_t kStyleTextCap = 3 * 1024;
@@ -62,6 +63,7 @@ constexpr uint16_t kMaxLinesPerPar = 1024;
 constexpr uint32_t kPageArenaCap = 48 * 1024;
 constexpr uint8_t kMaxElemDepth = 32;
 constexpr uint16_t kMaxImagesPerPage = 24;
+constexpr uint16_t kMaxRulesPerPage = 24;
 constexpr uint16_t kMaxLinksPerPage = 48;
 constexpr uint8_t kMaxLinksPerPar = 12;
 constexpr uint32_t kStyleTextCap = 24 * 1024;
@@ -74,6 +76,7 @@ constexpr uint16_t kMaxLinesPerPar = 512;
 constexpr uint32_t kPageArenaCap = 24 * 1024;
 constexpr uint8_t kMaxElemDepth = 24;
 constexpr uint16_t kMaxImagesPerPage = 16;
+constexpr uint16_t kMaxRulesPerPage = 16;
 constexpr uint16_t kMaxLinksPerPage = 24;
 constexpr uint8_t kMaxLinksPerPar = 8;
 constexpr uint32_t kStyleTextCap = 12 * 1024;  // chapter-embedded <style> blocks
@@ -710,6 +713,7 @@ class LayoutEngine : public XmlHandler {
     runs_ = scratch_.allocArray<PageTextRun>(kMaxRunsPerPage);
     images_ = scratch_.allocArray<PageImage>(kMaxImagesPerPage);
     links_ = scratch_.allocArray<PageLink>(kMaxLinksPerPage);
+    rules_ = scratch_.allocArray<PageRule>(kMaxRulesPerPage);
     lines_ = scratch_.allocArray<LineRec>(kMaxLinesPerPar);
     // Page-run text lives in its own sub-arena, NOT in `scratch_`: the XML
     // parse that drives this engine keeps its inflate window and parser
@@ -720,7 +724,7 @@ class LayoutEngine : public XmlHandler {
     chapterCssOk_ = styleText_ != nullptr && chapterBuilder_.begin(scratch_);
     void* pageBlock = scratch_.alloc(kPageArenaCap, alignof(max_align_t));
     if (parText_ == nullptr || breaks_ == nullptr || levels_ == nullptr || spans_ == nullptr || runs_ == nullptr ||
-        images_ == nullptr || links_ == nullptr || lines_ == nullptr || pageBlock == nullptr) {
+        images_ == nullptr || links_ == nullptr || rules_ == nullptr || lines_ == nullptr || pageBlock == nullptr) {
       return false;
     }
     pageArena_.init(pageBlock, kPageArenaCap);
@@ -817,7 +821,7 @@ class LayoutEngine : public XmlHandler {
       appendRaw('\n');
     } else if (strcmp(local, "hr") == 0) {
       flushParagraph();
-      advanceY(lineHeightFor(params_.baseSizePx));
+      placeRule();
     } else if (strcmp(local, "img") == 0 || strcmp(local, "image") == 0) {
       const char* src = attrLocal(atts, "src");
       if (src == nullptr) src = attrLocal(atts, "href");  // SVG xlink:href
@@ -894,7 +898,7 @@ class LayoutEngine : public XmlHandler {
   bool finish() {
     if (failed_) return false;
     flushParagraph();
-    if (runCount_ > 0 || imageCount_ > 0) emitPage();
+    if (runCount_ > 0 || imageCount_ > 0 || ruleCount_ > 0) emitPage();
     return !failed_;
   }
 
@@ -1168,6 +1172,38 @@ class LayoutEngine : public XmlHandler {
     img.y = pageY_;
     if (runCount_ == 0 && imageCount_ == 1) pageCharStart_ = parCharBase_;
     pageY_ = static_cast<int16_t>(pageY_ + h + params_.baseSizePx / 2);
+  }
+
+  // --- rules ------------------------------------------------------------------
+
+  // <hr>: a drawn rule, matching the old engine's PageHorizontalRule — 2px
+  // ink, a quarter of the content width, centered, with half a line of air
+  // above and below. A rule that no longer fits breaks the page.
+  void placeRule() {
+    if (stack_[stackTop_].displayNone) return;
+    const int32_t contentW = params_.pageWidth - params_.marginLeft - params_.marginRight;
+    const int32_t contentH = params_.pageHeight - params_.marginTop - params_.marginBottom;
+    const int16_t air = static_cast<int16_t>(lineHeightFor(params_.baseSizePx) / 2);
+    const uint8_t thickness = 2;
+
+    const int32_t totalHeight = static_cast<int32_t>(air) + thickness + air;
+    const bool hasContent = runCount_ > 0 || imageCount_ > 0 || ruleCount_ > 0 || pageY_ > params_.marginTop;
+    if ((pageY_ + totalHeight > params_.pageHeight - params_.marginBottom || ruleCount_ >= kMaxRulesPerPage) &&
+        hasContent) {
+      emitPage();
+      if (stopParse) return;
+    }
+
+    PageRule& rule = rules_[ruleCount_++];
+    rule.x = static_cast<int16_t>(params_.marginLeft + (contentW - contentW / 4) / 2);
+    rule.width = static_cast<uint16_t>(contentW / 4);
+    rule.y = static_cast<int16_t>(pageY_ + air);
+    rule.thicknessPx = thickness;
+    if (runCount_ == 0 && imageCount_ == 0 && ruleCount_ == 1) pageCharStart_ = parCharBase_;
+    pageY_ = static_cast<int16_t>(pageY_ + totalHeight);
+    if (pageY_ > static_cast<int16_t>(params_.marginTop + contentH)) {
+      pageY_ = static_cast<int16_t>(params_.marginTop + contentH);  // clamp: the next rule breaks the page
+    }
   }
 
   // --- measure phase ----------------------------------------------------------
@@ -1753,13 +1789,14 @@ class LayoutEngine : public XmlHandler {
   }
 
   void emitPage() {
-    Page page{runs_, runCount_, images_, imageCount_, links_, linkCount_, pageCount_,
-              pageCharStart_};
+    Page page{runs_, runCount_, images_, imageCount_, links_, linkCount_, rules_, ruleCount_,
+              pageCount_, pageCharStart_};
     ++pageCount_;
     if (!sink_.onPage(page)) stopParse = true;
     runCount_ = 0;
     imageCount_ = 0;
     linkCount_ = 0;
+    ruleCount_ = 0;
     pageArena_.reset();
     pageY_ = params_.marginTop;
   }
@@ -1813,6 +1850,8 @@ class LayoutEngine : public XmlHandler {
   uint8_t currentLink_ = 0;
   PageLink* links_ = nullptr;
   uint16_t linkCount_ = 0;
+  PageRule* rules_ = nullptr;
+  uint16_t ruleCount_ = 0;
   const ProbedImage* probed_ = nullptr;  // pre-scanned image dimensions
   uint16_t probedCount_ = 0;
   bool lastBreakShy_ = false;   // last ALLOWBREAK sat on a soft hyphen
