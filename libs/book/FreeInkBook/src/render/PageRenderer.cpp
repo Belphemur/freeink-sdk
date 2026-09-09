@@ -234,9 +234,38 @@ BookStatus PageRenderer::renderImages(const Page& page, BookSource& source,
   return worst;
 }
 
+void PageRenderer::renderRules(const Page& page, const FrameTarget& target) {
+  // Rule coordinates live in page-LOGICAL space, exactly like the inkPixel/
+  // toPanel inputs: under Portrait/PortraitInverted the logical extent swaps
+  // width/height. Clip against those logical bounds — clipping on the
+  // panel-native dimensions would truncate rules near the logical edge.
+  const bool rotated = target.rotation == FrameRotation::Portrait ||
+                       target.rotation == FrameRotation::PortraitInverted;
+  const int32_t logicalW = rotated ? target.height : target.width;
+  const int32_t logicalH = rotated ? target.width : target.height;
+  for (uint16_t r = 0; r < page.ruleCount; ++r) {
+    const PageRule& rule = page.rules[r];
+    if (rule.width == 0 || rule.thicknessPx == 0) continue;
+    // Clip to the frame first: a corrupted cache record may declare a huge
+    // rectangle; inkPixel would reject every off-panel pixel, but only
+    // after the loop pays for it (up to 16M iterations for one record).
+    const int32_t x0 = rule.x < 0 ? 0 : rule.x;
+    const int32_t x1 = rule.x + rule.width > logicalW ? logicalW : rule.x + rule.width;
+    const int32_t y0 = rule.y < 0 ? 0 : rule.y;
+    const int32_t y1 = rule.y + rule.thicknessPx > logicalH ? logicalH
+                                                            : rule.y + rule.thicknessPx;
+    for (int32_t y = y0; y < y1; ++y) {
+      for (int32_t x = x0; x < x1; ++x) {
+        inkPixel(target, x, y, 255);
+      }
+    }
+  }
+}
+
 BookStatus PageRenderer::render(const Page& page, FontChain& fonts, BookSource& source,
                                 const ZipCatalog& zip, Arena& scratch,
                                 const FrameTarget& target) {
+  renderRules(page, target);
   renderText(page, fonts, target);
   return renderImages(page, source, zip, scratch, target);
 }

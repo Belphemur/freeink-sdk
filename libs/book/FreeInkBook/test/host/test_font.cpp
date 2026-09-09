@@ -287,6 +287,54 @@ void testPageRenderer(const char* fixturesDir, TtfFont& font) {
   CHECK(mid > 500);  // edge pixels with partial coverage = anti-aliasing
 }
 
+// The rule render arm: a filled PageRule is solid ink on both mono and Gray8
+// targets. The exact ink count (2×200 + 600 = 1000 rule pixels) doubles as a
+// no-stray-ink assertion: any extra black pixel must steal one from a rule.
+void testRenderRules() {
+  static uint8_t monoFb[100 * 480];
+  static uint8_t grayFb[800 * 480];
+  std::memset(monoFb, 0xFF, sizeof(monoFb));
+  std::memset(grayFb, 0xFF, sizeof(grayFb));
+
+  PageRule rules[2] = {{300, 100, 200, 2}, {100, 400, 600, 1}};
+  Page page{};
+  page.rules = rules;
+  page.ruleCount = 2;
+
+  FrameTarget mono{monoFb, 800, 480, 100, FrameFormat::Mono1Dithered};
+  FrameTarget gray{grayFb, 800, 480, 800, FrameFormat::Gray8};
+  PageRenderer::renderRules(page, mono);
+  PageRenderer::renderRules(page, gray);
+
+  uint32_t monoBits = 0;
+  for (uint32_t i = 0; i < sizeof(monoFb); ++i) {
+    monoBits += static_cast<uint32_t>(__builtin_popcount(0xFF ^ monoFb[i]));
+  }
+  CHECK_EQ(monoBits, 200u * 2u + 600u * 1u);
+
+  uint32_t grayBlack = 0;
+  for (uint32_t i = 0; i < sizeof(grayFb); ++i) {
+    if (grayFb[i] == 0) ++grayBlack;
+  }
+  CHECK_EQ(grayBlack, 200u * 2u + 600u * 1u);
+
+  // Portrait rotation: rule coordinates are LOGICAL (480x800 on an 800x480
+  // panel). A rule in the logical bottom half must still be drawn — clipping
+  // on panel-native height (480) would drop it entirely.
+  std::memset(monoFb, 0xFF, sizeof(monoFb));
+  PageRule proRules[1] = {{100, 600, 200, 2}};
+  Page proPage{};
+  proPage.rules = proRules;
+  proPage.ruleCount = 1;
+  FrameTarget pro{monoFb, 800, 480, 100, FrameFormat::Mono1Dithered, FrameRotation::Portrait};
+  PageRenderer::renderRules(proPage, pro);
+  uint32_t proBits = 0;
+  for (uint32_t i = 0; i < sizeof(monoFb); ++i) {
+    proBits += static_cast<uint32_t>(__builtin_popcount(0xFF ^ monoFb[i]));
+  }
+  CHECK_EQ(proBits, 200u * 2u);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -319,6 +367,7 @@ int main(int argc, char** argv) {
   testFontChain(font, second);
   testLayoutWithRealFont(argv[1], font);
   testPageRenderer(argv[1], font);
+  testRenderRules();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;
