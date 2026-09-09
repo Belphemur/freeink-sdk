@@ -24,6 +24,8 @@
 // BUSY_N: low while busy (PON/DRF/POF all flag), same two-phase shape as the
 // UC8253 X3 — reuses BusyPolarity::X3TwoPhase and the async start/finish split.
 
+#include <memory>
+
 #include "PanelDriver.h"
 
 namespace freeink {
@@ -64,14 +66,17 @@ class Uc8279Driver : public PanelDriver {
   void grayscaleRevert(EpdBus& bus, const uint8_t* fb) override;
 
  private:
+  void releaseGrayBase();
+  void captureGrayBase(const uint8_t* fb);
   void initController(EpdBus& bus);
   // Replay a {cmd, len, data...} register script (kUc8279X3_Init).
   void sendScript(EpdBus& bus, const uint8_t* script, uint16_t len);
   // Load a 5-table command-prefixed waveform bank (BW_GC/BW_DU/XTF_PRE_BW_MID)
   // into LUT registers 0x20-0x24: byte 0 of each table is the register id.
   void loadBank(EpdBus& bus, const uint8_t (*bank)[43]);
-  // Load the raw (non-prefixed) 49-byte XTF_AA grayscale bank: 0x20+i then table.
-  void loadXtfAa(EpdBus& bus);
+  // Load a raw (non-prefixed) 5x49-byte grayscale bank (XTF_AA or XTH4):
+  // register 0x20+i sent separately, then the table.
+  void loadRawBank(EpdBus& bus, const uint8_t (*bank)[49]);
   // Blocking PON -> DRF -> wait (-> POF) used by the grayscale paths.
   void triggerGrayRefresh(EpdBus& bus, bool turnOff);
   // Enter the full 792x528 PTL partial window (PTIN + PTL). ALL RAM plane writes
@@ -100,6 +105,17 @@ class Uc8279Driver : public PanelDriver {
   // means gray planes were written over DTM1/DTM2 (no valid B/W baseline).
   bool _inGrayscaleMode = false;
   bool _lsbValid = false;
+
+  // Four-tone scratch (~52KB SRAM), owned only between displayGrayscaleBase
+  // and copyGrayscaleMsb. It snapshots the B/W base, is
+  // folded into absolute plane0 in copyGrayscaleLsb, and becomes plane1 in
+  // copyGrayscaleMsb when the pass classifies as an image (grey coverage over
+  // the threshold). displayGray then runs the built-in XTH4 four-grey bank
+  // instead of the XTF_AA nudge set.
+  std::unique_ptr<uint8_t[]> _grayBase;
+  bool _grayBaseValid = false;
+  bool _absoluteGrayPlanes = false;
+  bool _grayImagePass = false;
 
   // Async split state (see Uc8253X3Driver for the contract).
   bool _pendingRefresh = false;
