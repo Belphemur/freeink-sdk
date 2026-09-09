@@ -43,10 +43,11 @@ enum class BusyPolarity { X3TwoPhase };
 class EpdBus {
   uint8_t command=0;
 public:
-  std::vector<uint8_t> oldPlane, newPlane, lastBank, rawRegisters;
+  std::vector<uint8_t> oldPlane, newPlane, lastBank, rawRegisters, lastBwBank;
   void cmd(uint8_t c) { command=c; }
   void data(uint8_t) {}
   void data(const uint8_t* p, size_t n) {
+    if(command == 0x20 && n == 42) lastBwBank.assign(p,p+n);
     if(n == 49) {
       if(command == 0x20) rawRegisters.clear();
       rawRegisters.push_back(command);

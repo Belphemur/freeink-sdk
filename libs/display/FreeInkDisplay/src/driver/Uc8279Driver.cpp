@@ -11,7 +11,6 @@
 namespace freeink {
 namespace {
 // UC8279d command set (UC8279d_B 0.1 datasheet + stock-firmware RE).
-constexpr uint8_t CMD_PANEL_SETTING = 0x00;       // PSR
 constexpr uint8_t CMD_POWER_OFF = 0x02;           // POF
 constexpr uint8_t CMD_POWER_ON = 0x04;            // PON
 constexpr uint8_t CMD_DEEP_SLEEP = 0x07;          // DSLP (check code 0xA5)
@@ -19,7 +18,6 @@ constexpr uint8_t CMD_DTM1 = 0x10;                // OLD plane in KW mode
 constexpr uint8_t CMD_DATA_STOP = 0x11;           // DSP
 constexpr uint8_t CMD_DISPLAY_REFRESH = 0x12;     // DRF
 constexpr uint8_t CMD_DTM2 = 0x13;                // NEW plane in KW mode
-constexpr uint8_t CMD_LUT_VCOM = 0x20;            // first LUT register (0x20-0x24)
 constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;  // CDI
 constexpr uint8_t CMD_PARTIAL_WINDOW = 0x90;      // PTL
 constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN
@@ -62,10 +60,11 @@ void Uc8279Driver::loadBank(EpdBus& bus, const uint8_t (*bank)[43]) {
 
 void Uc8279Driver::loadRawBank(EpdBus& bus, const uint8_t (*bank)[49]) {
   // CrossPoint delta-AA encodes dark gray as WW rather than stock WB.
-  // Exchange those registers only for AA; retain the local XTH4 path.
+  // XTH4 rows are VCOM, black, light, dark, white; map them to absolute planes.
   static constexpr uint8_t aaRegisters[5] = {0x20, 0x23, 0x22, 0x21, 0x24};
+  static constexpr uint8_t absoluteRegisters[5] = {0x20, 0x24, 0x22, 0x23, 0x21};
   for (int t = 0; t < 5; t++) {
-    bus.cmd(bank == kUc8279X3_XtfAa ? aaRegisters[t] : static_cast<uint8_t>(CMD_LUT_VCOM + t));
+    bus.cmd(bank == kUc8279X3_XtfAa ? aaRegisters[t] : absoluteRegisters[t]);
     bus.data(bank[t], 49);
   }
 }
@@ -112,27 +111,7 @@ void Uc8279Driver::initController(EpdBus& bus) {
 void Uc8279Driver::begin(EpdBus& bus) {
   bus.reset(50);
   _forceFullSyncNext = false;
-  releaseGrayBase();
   initController(bus);
-}
-
-void Uc8279Driver::releaseGrayBase() {
-  _grayBase.reset();
-  _grayBaseValid = false;
-  _absoluteGrayPlanes = false;
-}
-
-void Uc8279Driver::captureGrayBase(const uint8_t* fb) {
-  if (!fb) return;
-  // This snapshot spans plane callbacks; a stack buffer cannot outlive this call
-  // and a static buffer would permanently consume SRAM on the PSRAM-less C3.
-  _grayBase.reset(new (std::nothrow) uint8_t[_bufferSize]);
-  if (!_grayBase) {
-    log_e("UC8279 grayscale scratch unavailable (%u bytes); using delta AA", (unsigned)_bufferSize);
-    return;
-  }
-  memcpy(_grayBase.get(), fb, _bufferSize);
-  _grayBaseValid = true;
 }
 
 void Uc8279Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
@@ -141,7 +120,6 @@ void Uc8279Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 }
 
 bool Uc8279Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
-  releaseGrayBase();
   (void)prev;  // single-buffer: DTM1 holds the previous frame from displayFinish()'s sync
   // GC vs DU is ONLY a waveform-bank choice — BOTH diff the new frame against the
   // REAL previous frame in DTM1 (the live stock full path FUN_42015786 loads
@@ -235,7 +213,6 @@ void Uc8279Driver::skipInitialResync() {
 }
 
 void Uc8279Driver::deepSleep(EpdBus& bus) {
-  releaseGrayBase();
   if (_isScreenOn) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" 8279 power-down");
@@ -252,77 +229,26 @@ void Uc8279Driver::deepSleep(EpdBus& bus) {
 // (raw 49-byte tables) and the single-byte CDI.
 
 void Uc8279Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
-  if (!lsb) {
-    releaseGrayBase();
-    _lsbValid = false;
-    return;
-  }
-  _grayImagePass = false;
+  _lsbValid = false;
+  if (!lsb) return;
   grayWindowIn(bus);
-  bus.sendPlaneFlipped(CMD_DTM1, lsb, _h, _wb);  // LSB plane -> "old" RAM
+  bus.sendPlaneFlipped(CMD_DTM1, lsb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   bus.cmd(CMD_PARTIAL_OUT);
-  // Fold absolute plane0 = base | maskLsb for a possible image pass (base bit
-  // is 1 for white, 0 for non-white). The raw delta plane above already serves
-  // the stock AA case; copyGrayscaleMsb rewrites both planes if the pass
-  // classifies as an image.
-  if (_grayBaseValid && _grayBase != nullptr) {
-    const uint32_t n = static_cast<uint32_t>(_wb) * _h;
-    for (uint32_t i = 0; i < n; i++) _grayBase[i] = static_cast<uint8_t>(_grayBase[i] | lsb[i]);
-    _absoluteGrayPlanes = true;
-  }
-  _grayBaseValid = false;  // _grayBase now holds absolute plane0, not the B/W base
   _lsbValid = true;
 }
 
-// Grey-mask coverage (percent of panel pixels) above which a gray pass is
-// treated as an image and refreshed with the built-in XTH4 four-grey bank.
-// Deliberately high: only image-dominant surfaces (sleep screens, standalone
-// image pages, full covers — typically 30%+) should cross it; glyph AA marks
-// 1-2% and book pages with modest inline images stay under it.
-#ifndef FREEINK_UC8279X3_QUALITY_COVERAGE_PCT
-#define FREEINK_UC8279X3_QUALITY_COVERAGE_PCT 25
-#endif
-
 void Uc8279Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
-  // Both absolute planes are sent synchronously; no scratch survives this call.
-  auto grayBase = std::move(_grayBase);
-  const bool absoluteGrayPlanes = _absoluteGrayPlanes;
-  _grayBaseValid = false;
-  _absoluteGrayPlanes = false;
   if (!msb || !_lsbValid) return;
-  if (absoluteGrayPlanes && grayBase != nullptr) {
-    // The MSB mask marks every grey pixel (dark=(1,1), light=(0,1)); its
-    // coverage separates image passes from glyph AA without a caller hint.
-    const uint32_t n = static_cast<uint32_t>(_wb) * _h;
-    uint32_t grayPx = 0;
-    for (uint32_t i = 0; i < n; i++) grayPx += __builtin_popcount(msb[i]);
-    _grayImagePass = grayPx * 100u > n * 8u * FREEINK_UC8279X3_QUALITY_COVERAGE_PCT;
-    if (_grayImagePass) {
-      // Image pass: replace the raw delta planes with the absolute pair the
-      // XTH4 bank consumes — plane0 = base|maskLsb, plane1 = plane0^maskMsb,
-      // so black=(0,0), dark=(1,0), light=(0,1), white=(1,1) match the KW
-      // transition registers (KK/WK/KW/WW).
-      grayWindowIn(bus);
-      bus.sendPlaneFlipped(CMD_DTM1, grayBase.get(), _h, _wb);
-      bus.cmd(CMD_DATA_STOP);
-      for (uint32_t i = 0; i < n; i++) grayBase[i] = static_cast<uint8_t>(grayBase[i] ^ msb[i]);
-      bus.sendPlaneFlipped(CMD_DTM2, grayBase.get(), _h, _wb);
-      bus.cmd(CMD_DATA_STOP);
-      bus.cmd(CMD_PARTIAL_OUT);
-      return;
-    }
-  }
   grayWindowIn(bus);
-  bus.sendPlaneFlipped(CMD_DTM2, msb, _h, _wb);  // MSB plane -> "new" RAM
+  bus.sendPlaneFlipped(CMD_DTM2, msb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   bus.cmd(CMD_PARTIAL_OUT);
 }
 
 void Uc8279Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                             uint16_t numRows) {
-  if (!rows || numRows == 0) return;
-  releaseGrayBase();
+  if (!rows || numRows == 0 || yStart >= _h || numRows > _h - yStart) return;
   // PTL partial-window in GATE space (logical row y lives at gate H-1-y), rows
   // emitted bottom-first so they land on the same gates the full-frame write
   // uses — same idiom as the UC8253 sibling (fixes AA banding).
@@ -351,31 +277,25 @@ void Uc8279Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const 
   bus.cmd(CMD_PARTIAL_OUT);
   if (plane == GrayPlane::Lsb) {
     _lsbValid = true;
-    // The tiled reader path is glyph AA by construction — never an image pass.
-    _grayImagePass = false;
-    _absoluteGrayPlanes = false;
   }
 }
 
 void Uc8279Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                bool factoryMode) {
-  releaseGrayBase();
   (void)fb;
   (void)lut;  // waveform is the built-in XTF_AA bank
   if (!_lsbValid) return;
   // Differential grayscale leaves the gray bank/planes loaded, so the next B/W
-  // turn must revert first; factory absolute mode self-cleans.
+  // turn must revert first; absolute passes request a clean next B/W refresh.
   _inGrayscaleMode = !factoryMode;
   // PSR REG=1 (external LUT) is already set from init and untouched by the B/W
   // path, so just load the bank + CDI and refresh (FUN_42015108/42013be0).
   // The refresh MUST run in the partial window (like the plane writes); also
   // resets PTL to full after any per-strip writeGrayscalePlaneStrip windows.
-  // Image passes (coverage over threshold, or explicit factoryMode) run the
-  // panel's own built-in XTH4 four-grey bank over the absolute planes loaded
-  // in copyGrayscaleMsb; glyph AA keeps the XTF_AA nudge set over delta planes.
+  // Absolute passes consume complete host planes unchanged. Overlay passes
+  // keep the short XTF_AA nudge and its existing mask encoding.
   grayWindowIn(bus);
-  loadRawBank(bus, (factoryMode || _grayImagePass) ? kUc8279X3_Xth4 : kUc8279X3_XtfAa);
-  _grayImagePass = false;
+  loadRawBank(bus, factoryMode ? kUc8279X3_Xth4 : kUc8279X3_XtfAa);
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
   triggerGrayRefresh(bus, turnOff);
@@ -383,12 +303,11 @@ void Uc8279Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
 
   _firstRefresh = false;
   _oldPlaneValid = false;  // gray planes overwrote DTM1/DTM2 — next B/W needs a rebase/clear
-  _forceFullSyncNext = false;
+  _forceFullSyncNext = factoryMode;
   _lsbValid = false;
 }
 
 void Uc8279Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
-  releaseGrayBase();
   // OEM "AA-pre-BW(mid)" base: settle the frame with XTF_PRE_BW_MID before the
   // gray planes so particles are receptive to the weak AA nudge. When the
   // controller state can't support a clean differential (post-AA, boot fulls
@@ -407,7 +326,6 @@ void Uc8279Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
     loadBank(bus, kUc8279X3_XtfPreBwMid);
     triggerGrayRefresh(bus, turnOff);
     bus.cmd(CMD_PARTIAL_OUT);
-    captureGrayBase(fb);
     return;
   }
   grayWindowIn(bus);
@@ -427,7 +345,6 @@ void Uc8279Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
   bus.cmd(CMD_DATA_STOP);
   bus.cmd(CMD_PARTIAL_OUT);
   _oldPlaneValid = true;
-  captureGrayBase(fb);
 }
 
 void Uc8279Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
@@ -463,7 +380,6 @@ void Uc8279Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, ui
 }
 
 void Uc8279Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
-  releaseGrayBase();
   if (!bw) return;
   // Rebase both planes from the restored BW buffer so the next B/W turn has a
   // valid differential baseline (the per-page cleanup the tiled AA reader runs).
@@ -475,12 +391,10 @@ void Uc8279Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   bus.cmd(CMD_PARTIAL_OUT);
   _lsbValid = false;
   _oldPlaneValid = true;
-  _forceFullSyncNext = false;
   _inGrayscaleMode = false;
 }
 
 void Uc8279Driver::grayscaleRevert(EpdBus& bus, const uint8_t* fb) {
-  releaseGrayBase();
   (void)fb;
   if (!_inGrayscaleMode) return;
   _inGrayscaleMode = false;
@@ -497,8 +411,6 @@ void Uc8279Driver::grayscaleRevert(EpdBus& bus, const uint8_t* fb) {
   bus.cmd(CMD_PARTIAL_OUT);
   _oldPlaneValid = true;  // white baseline
   _lsbValid = false;
-  _grayImagePass = false;
-  _absoluteGrayPlanes = false;
 }
 
 PanelDriver& uc8279Driver() {

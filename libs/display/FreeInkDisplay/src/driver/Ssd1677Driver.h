@@ -53,6 +53,8 @@ struct Ssd1677Config {
   // collapsing toward B/W). The X4 keeps the panel powered between fast
   // refreshes, so it never needs this and keeps stock behavior.
   bool grayPowerUpFirst = false;
+  // Only configurations using the verified X4 factory LUT/rails advertise it.
+  bool absoluteGrayscale = false;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
@@ -82,9 +84,14 @@ class Ssd1677Driver : public PanelDriver {
   void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
                      uint16_t h, bool turnOff) override;
 
+  void requestResync(uint8_t) override { _needsGrayClear = true; _absoluteInput = false; }
+  void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
+
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
 
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode == GrayscaleMode::Absolute && _cfg.absoluteGrayscale)
+      return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Separate, true, false, false};
     if (mode != GrayscaleMode::Overlay) return {};
     return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, true, true, false};
   }
@@ -101,6 +108,9 @@ class Ssd1677Driver : public PanelDriver {
   void setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) override;
 
  private:
+  bool _needsGrayClear = false;
+  bool _absoluteInput = false;
+  void writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t len);
   void initController(EpdBus& bus);
   void setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
   void writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, uint32_t size);

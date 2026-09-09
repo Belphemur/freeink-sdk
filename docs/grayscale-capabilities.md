@@ -23,13 +23,44 @@ CrossPoint. The `encoding` is `OverlayMasks`: in (LSB, MSB) order, dark gray is
 supplied by the base frame. This is the host input encoding; a driver may convert
 it internally before sending controller RAM.
 
-`Absolute` reserves the complete four-tone plane contract: black (0,0), dark
-(1,0), light (0,1), white (1,1). Every pixel, including text and background,
-would need to be supplied. **No driver currently advertises this mode.** Existing
-`factoryMode`/calibration entry points do not imply this capability. The #40/#95
-integrations must establish encoding, preparation, and next-refresh behavior
-before opting in. Absolute pixel encoding does not promise that a waveform can
-start from arbitrary previous ink without conditioning.
+`Absolute` supplies a complete four-tone image: black (0,0), dark (1,0),
+light (0,1), white (1,1). Every pixel, including text and background, must be
+present in both planes. The UC8279 X3 and the X4 SSD1677 configuration (including
+SSD1677 X4 Pro/Classic) advertise this mode by default. Other configurations,
+including Sticky and Paper Mono, retain their existing paths.
+
+The X3 uploads the stock XTH4 rows to registers 20/24/22/23/21. The SSD1677
+driver complements the common host planes for the native factory selectors;
+it retains the factory LUT bytes and the C7 activation/power-down sequence.
+Absolute encoding does not promise that a waveform can start from arbitrary
+previous ink without conditioning. Always prepare the actual B/W image first.
+
+```cpp
+if (display.displayGrayscaleBase(freeink::GrayscaleMode::Absolute)) {
+  display.copyGrayscaleBuffers(absoluteLsb, absoluteMsb);
+  display.displayGrayBuffer();
+}
+```
+
+The typed base call fixes the mode before any plane upload. It returns false
+without painting a base if the mode is unavailable. Complete-plane calls or
+consecutive full-width strips starting at row zero must cover both planes. Start
+with LSB; strips may then interleave the two planes.
+Missing, duplicate, out-of-order, null, and out-of-bounds absolute uploads are
+never activated. `cleanupGrayscaleBuffers(nullptr)` cancels an incomplete pass;
+normal painting, inversion changes, and sleep also cancel it. The next B/W
+refresh is forced clean after an absolute pass or cancellation, even when a
+caller has restored controller RAM in the meantime. This recovery belongs to
+the driver, not to an application-side panel-state flag.
+
+CrossPoint automatically selects this mode for unfiltered opaque sleep images,
+EPUB sleep covers, and grayscale BMP viewing on supported panels. Gray text-AA,
+EPUB/XTC page rendering, and transparent/preserved-background images keep their
+existing overlay pipeline. The image quantizer uses evenly spaced levels for
+absolute covers and a separate `_original` BMP cache name, so older AA-tuned
+cover caches are not silently reused. Decode/rewind failures leave the B/W
+base visible and cancel the absolute pass. No user setting or build flag is
+required.
 
 An unsupported mode returns the default descriptor: `supported()` is false and
 all upload/overlap flags are false. Do not silently fall back from Absolute to
@@ -75,8 +106,9 @@ to the sibling SDK checkout).
 
 ## Validation
 
-The display host tests cover driver availability, unsupported modes, inversion,
-async readiness, compatibility wrappers, and query side effects, alongside the
-existing X3/Pro transfer and lifecycle checks. On hardware, compare AA page turns,
+The display host tests cover mode selection, exact selector polarity, full/strip
+equivalence, incomplete uploads, LUT mapping, power state, recovery, inversion,
+and wake, alongside the existing X3/Pro transfer and lifecycle checks. CrossPoint
+tests the four-tone pixel encoding and the separate image/AA quantizers. On hardware, compare AA page turns,
 image pages, inverted reading, and the first page after wake. Include Paper Mono
 for combined-base behavior; the capability refactor changes no waveform tables.

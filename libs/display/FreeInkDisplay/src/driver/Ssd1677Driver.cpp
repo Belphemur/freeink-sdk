@@ -65,6 +65,8 @@ const Ssd1677Config& ssd1677DefaultConfig() {
       0xC0,  // borderWaveformGray: written explicitly with the external AA LUT (vendor
              // reference stage 2); same value the B/W paths leave in the register, so
              // the wire state is unchanged — just no longer relying on carry-over
+      false, // grayPowerUpFirst
+      true,  // absoluteGrayscale: verified X4 factory LUT
   };
   return cfg;
 }
@@ -407,6 +409,10 @@ void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
 
 void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
                                 bool async) {
+  if (_needsGrayClear) {
+    if (mode == RefreshMode::Fast) mode = _cfg.halfSeqOverride ? RefreshMode::Half : RefreshMode::Full;
+    _needsGrayClear = false;
+  }
   // The first paint after boot/wake must be an absolute clean, not a partial/DU
   // refresh: a partial only drives pixels that differ from the RED "old" plane, so
   // it can't clear what is physically on the panel at boot (e.g. the sleep screen).
@@ -490,8 +496,8 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
   // gray MSB plane, not the previous frame). With no revert waveform (stock
   // parity), exit grayscale by painting the whole frame with the single-pass
   // HALF clean instead; the window content is part of fb, so nothing is lost.
-  if (_inGrayscaleMode) {
-    displayImpl(bus, fb, nullptr, RefreshMode::Half, turnOff, /*async=*/false);
+  if (_inGrayscaleMode || _needsGrayClear) {
+    displayImpl(bus, fb, nullptr, _cfg.halfSeqOverride ? RefreshMode::Half : RefreshMode::Full, turnOff, /*async=*/false);
     return;
   }
 
@@ -542,16 +548,40 @@ void Ssd1677Driver::seedPreviousFrame(EpdBus& bus, const uint8_t* buf) {
   writeRam(bus, CMD_WRITE_RAM_RED, buf, _bufferSize);
 }
 
+void Ssd1677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) {
+  _absoluteInput = false;
+  displayGrayscaleBase(bus, fb, fallback, turnOff);
+  _absoluteInput = mode == GrayscaleMode::Absolute;
+}
+
+void Ssd1677Driver::writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t len) {
+  if (!_absoluteInput) {
+    writeRam(bus, command, data, len);
+    return;
+  }
+  // The X4 factory bank selects black at 11 and white at 00. The public
+  // absolute encoding is black=00/white=11, so complement each host plane.
+  uint8_t chunk[128];
+  bus.cmd(command);
+  bus.beginTxn();
+  for (uint32_t offset = 0; offset < len; offset += sizeof(chunk)) {
+    const uint16_t count = (len - offset < sizeof(chunk)) ? len - offset : sizeof(chunk);
+    for (uint16_t i = 0; i < count; ++i) chunk[i] = static_cast<uint8_t>(~data[offset + i]);
+    bus.rawWriteBytes(chunk, count);
+  }
+  bus.endTxn();
+}
+
 void Ssd1677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (!lsb) return;
   setRamArea(bus, 0, 0, _w, _h);
-  writeRam(bus, CMD_WRITE_RAM_BW, lsb, _bufferSize);
+  writeGrayRam(bus, CMD_WRITE_RAM_BW, lsb, _bufferSize);
 }
 
 void Ssd1677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   if (!msb) return;
   setRamArea(bus, 0, 0, _w, _h);
-  writeRam(bus, CMD_WRITE_RAM_RED, msb, _bufferSize);
+  writeGrayRam(bus, CMD_WRITE_RAM_RED, msb, _bufferSize);
 }
 
 void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
@@ -560,8 +590,7 @@ void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const
   const uint16_t len = static_cast<uint16_t>(static_cast<uint32_t>(numRows) * _wb);
   const uint8_t ramCmd = (plane == GrayPlane::Lsb) ? CMD_WRITE_RAM_BW : CMD_WRITE_RAM_RED;
   setRamArea(bus, 0, yStart, _w, numRows);
-  bus.cmd(ramCmd);
-  bus.data(rows, len);
+  writeGrayRam(bus, ramCmd, rows, len);
 }
 
 void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
@@ -589,6 +618,7 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     bus.cmd(CMD_MASTER_ACTIVATION);
     bus.waitBusy("factory_gray");
     _isScreenOn = false;  // 0xC7 always powers down after the update
+    _needsGrayClear = true;  // restoring RAM alone cannot restore B/W ink
   } else {
     // Settled rails before the gray waveform (no-op where the panel is already
     // on, i.e. the X4's fast path). refresh() then runs the 0xCC external-LUT
@@ -598,6 +628,7 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   }
 
   setCustomLut(bus, false, nullptr);
+  _absoluteInput = false;
 }
 
 void Ssd1677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {

@@ -176,7 +176,7 @@ static void testCapabilities() {
   assert(caps.base == GrayscaleBase::Separate);
   assert(display.supportsStripGrayscale() == caps.stripUploads);
   assert(display.supportsAsyncGrayscaleBase() == caps.asyncBase);
-  assert(!display.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
+  assert(display.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
   assert(!display.grayscaleCapabilities(static_cast<GrayscaleMode>(255)).supported());
   display._inversionDirty = true;
   assert(!display.grayscaleCapabilities().asyncBase);
@@ -208,7 +208,87 @@ static void testCapabilities() {
   assert(display._bus.writes.empty() && !display.isRefreshPending());
 }
 
+static void testAbsolutePipeline() {
+  Ssd1677Driver driver;
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  display._driver = &driver;
+  display.begin();
+  const auto bw = frame(33), lsb = frame(14), msb = frame(29);
+  std::memcpy(display.getFrameBuffer(), bw.data(), bw.size());
+  const auto absolute = GrayscaleMode::Absolute;
+  for (bool strips : {false, true}) {
+    assert(display.displayGrayscaleBase(absolute));
+    display._bus.clear();
+    if (strips) {
+      for (unsigned y = 0; y < 480; y += 80) {
+        display.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_LSB, lsb.data() + y * 100, y, 80);
+        display.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_MSB, msb.data() + y * 100, y, 80);
+      }
+    } else display.copyGrayscaleBuffers(lsb.data(), msb.data());
+    Bytes plane0, plane1;
+    for (const auto& w : display._bus.writes) {
+      if (w.command == 0x24) plane0.insert(plane0.end(), w.bytes.begin(), w.bytes.end());
+      if (w.command == 0x26) plane1.insert(plane1.end(), w.bytes.begin(), w.bytes.end());
+    }
+    assert(plane0.size() == lsb.size() && plane1.size() == msb.size());
+    for (size_t i = 0; i < lsb.size(); ++i) {
+      assert(plane0[i] == uint8_t(~lsb[i]) && plane1[i] == uint8_t(~msb[i]));
+    }
+    display.displayGrayBuffer(false);
+    assert(lastRegister(display._bus, 0x22) == 0xC7);
+    assert(!driver._isScreenOn && driver._needsGrayClear);
+    display.cleanupGrayscaleBuffers(bw.data());
+    assert(driver._needsGrayClear);
+    display._bus.clear();
+    display.displayBufferAsync(FreeInkDisplay::FAST_REFRESH);
+    assert(lastRegister(display._bus, 0x22) == 0xD7);
+    display.waitRefreshComplete();
+    assert(!driver._needsGrayClear);
+  }
+  for (unsigned failure = 0; failure < 6; ++failure) {
+    assert(display.displayGrayscaleBase(absolute));
+    display._bus.clear();
+    if (failure == 0) display.copyGrayscaleLsbBuffers(lsb.data()); // missing MSB
+    if (failure == 1) display.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_LSB, lsb.data(), 80, 80);
+    if (failure == 2) display.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_LSB, lsb.data(), 0, 481);
+    if (failure == 3) display.copyGrayscaleLsbBuffers(nullptr);
+    if (failure == 4) {
+      display.copyGrayscaleBuffers(lsb.data(), msb.data());
+      display.copyGrayscaleLsbBuffers(lsb.data()); // duplicate plane
+    }
+    if (failure == 5) {
+      display.copyGrayscaleMsbBuffers(msb.data());
+      display.copyGrayscaleLsbBuffers(lsb.data());
+    }
+    display.displayGrayBuffer();
+    for (const auto& w : display._bus.writes) assert(w.command != 0x20);
+    display.cleanupGrayscaleBuffers(nullptr);
+    display._bus.clear();
+    display.displayBuffer(FreeInkDisplay::FAST_REFRESH, true);
+    assert(lastRegister(display._bus, 0x22) == 0xD7);
+  }
+  assert(display.displayGrayscaleBase(absolute));
+  display.copyGrayscaleLsbBuffers(lsb.data());
+  display.setInverted(true);
+  assert(display._grayscaleMode == GrayscaleMode::Overlay);
+  assert(!display.displayGrayscaleBase(absolute));
+  display.setInverted(false);
+  assert(display.displayGrayscaleBase(absolute));
+  display.deepSleep();
+  assert(display._grayscaleMode == GrayscaleMode::Overlay);
+  display.releaseBuffers();
+
+  Ssd1677Config unsupported = ssd1677DefaultConfig();
+  unsupported.absoluteGrayscale = false;
+  Ssd1677Driver other(unsupported);
+  FreeInkDisplay noAbsolute(1, 2, 3, 4, 5, 6);
+  noAbsolute._driver = &other;
+  assert(!noAbsolute.displayGrayscaleBase(absolute));
+  assert(noAbsolute._bus.writes.empty());
+}
+
 int main() {
+  testAbsolutePipeline();
   testCapabilities();
   testStream<Uc8179Driver>(true,0);
   testStream<Uc8279X4Driver>(false,120);

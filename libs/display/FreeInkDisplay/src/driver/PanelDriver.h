@@ -132,6 +132,12 @@ class PanelDriver {
     display(bus, fb, nullptr, fallback, turnOff);
   }
 
+  // Mode is fixed before uploads; drivers may adapt the common host encoding.
+  virtual void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) {
+    (void)mode;
+    displayGrayscaleBase(bus, fb, fallback, turnOff);
+  }
+
   // Grayscale preconditioning settle pass (OEM X3 "AA-pre-BW(mid)"), windowed
   // to the panel rect [x, x+w) x [y, y+h) like the OEM's PTL usage; fire after
   // the BW base frame is displayed, before grayscale planes are written.
