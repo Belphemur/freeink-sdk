@@ -17,7 +17,11 @@ constexpr uint8_t CMD_DTM1 = 0x10;                // OLD plane in KW mode
 constexpr uint8_t CMD_DATA_STOP = 0x11;           // DSP
 constexpr uint8_t CMD_DISPLAY_REFRESH = 0x12;     // DRF
 constexpr uint8_t CMD_DTM2 = 0x13;                // NEW plane in KW mode
-constexpr uint8_t CMD_LUT_VCOM = 0x20;             // first LUT register (0x20-0x24)
+constexpr uint8_t CMD_LUT_VCOM = 0x20;            // LUT registers 0x20-0x24
+constexpr uint8_t CMD_LUT_WW = 0x21;
+constexpr uint8_t CMD_LUT_BW = 0x22;
+constexpr uint8_t CMD_LUT_WB = 0x23;
+constexpr uint8_t CMD_LUT_BB = 0x24;
 constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;  // CDI
 constexpr uint8_t CMD_PARTIAL_WINDOW = 0x90;      // PTL
 constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN
@@ -59,10 +63,16 @@ void Uc8279Driver::loadBank(EpdBus& bus, const uint8_t (*bank)[43]) {
 }
 
 void Uc8279Driver::loadXtfAa(EpdBus& bus) {
-  // Raw (non-prefixed) 49-byte AA tables: send the register 0x20+t, then the
-  // whole table (FUN_42013be0).
+  // Raw (non-prefixed) 49-byte AA tables: send the register, then the whole
+  // table (FUN_42013be0). The stock set encodes dark gray as old=1/new=0 (WB)
+  // and leaves WW passive. CrossPoint's planes encode dark gray as
+  // old=1/new=1 (WW), so the WW and WB tables are exchanged on upload;
+  // without this, level 1 selects the passive table and renders black. The
+  // table bytes stay stock, as with the X4 XTH4 register exchange.
+  // Stock table order is VCOM, WW, BW, WB, BB.
+  static constexpr uint8_t kReg[5] = {CMD_LUT_VCOM, CMD_LUT_WB, CMD_LUT_BW, CMD_LUT_WW, CMD_LUT_BB};
   for (int t = 0; t < 5; t++) {
-    bus.cmd(static_cast<uint8_t>(CMD_LUT_VCOM + t));
+    bus.cmd(kReg[t]);
     bus.data(kUc8279X3_XtfAa[t], 49);
   }
 }
