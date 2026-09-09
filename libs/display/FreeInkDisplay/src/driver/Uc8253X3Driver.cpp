@@ -194,8 +194,9 @@ bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
     bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   }
 
-  // doFullSync re-powers the charge pump even if already on (higher current).
-  if (!_isScreenOn || doFullSync) {
+  // PON only when the rails are down: a redundant PON on a powered UC8253 gives
+  // no BUSY LOW edge, so the X3TwoPhase wait burns its 1000 ms ceiling.
+  if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
     bus.waitBusy(" X3_PON");
     _isScreenOn = true;
