@@ -343,7 +343,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     // vendor reference — clock/analog enable + display, WITHOUT the OTP LUT reload
     // (0x10 bit clear). The enable bits are a no-op when the rails are already up
     // (the usual X4 case, where stage 1 left them on), and required when they are
-    // not, so 0xCC is correct in both states. Licorice's AA path leaves power
+    // not, so 0xCC is correct in both states. The OEM AA path leaves power
     // enabled: only the low disable bits added for turnOff power it down.
     displayMode = 0xCC;
     if (turnOff) displayMode |= 0x03;

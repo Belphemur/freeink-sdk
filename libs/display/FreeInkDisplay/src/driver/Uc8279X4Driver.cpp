@@ -316,7 +316,7 @@ void Uc8279X4Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb,
   uint8_t row[128];
   const uint16_t wb = _wb <= sizeof(row) ? _wb : sizeof(row);
   bus.cmd(ramCmd);
-  // Licorice keeps CS asserted across a plane upload. Preserve our validated
+  // The OEM driver keeps CS asserted across a plane upload. Preserve our validated
   // gate offset/orientation, but avoid a new SPI transaction for every row.
   bus.beginTxn();
   // Gates before the visible window (the 120-gate offset): white.
