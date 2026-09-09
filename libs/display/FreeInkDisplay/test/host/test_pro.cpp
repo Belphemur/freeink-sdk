@@ -202,7 +202,8 @@ static void testCapabilities() {
     display._driver = driver;
     caps = display.grayscaleCapabilities();
     assert(caps.supported() && !caps.stripUploads && !caps.asyncBase && !caps.stagingWhileBusy);
-    assert(!display.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
+    assert(display.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
+    assert(!display.grayscaleCapabilities(GrayscaleMode::Absolute).stripUploads);
   }
   // Queries must neither start a refresh nor write the panel bus.
   assert(display._bus.writes.empty() && !display.isRefreshPending());
@@ -287,6 +288,60 @@ static void testAbsolutePipeline() {
   assert(noAbsolute._bus.writes.empty());
 }
 
+template<class Driver>
+static void testUltraChipAbsolute(bool reverse, unsigned gateOffset, bool inverted) {
+  for (bool snapshot : {false, true}) for (bool turnOff : {false, true}) {
+    Driver driver;
+    FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+    display._driver = &driver;
+    display.begin();
+    if (!snapshot) { free(driver._grayBase); driver._grayBase = nullptr; }
+    const auto bw = frame(91), lsb = frame(13), msb = frame(29);
+    memcpy(display.getFrameBuffer(), bw.data(), bw.size());
+    assert(display.displayGrayscaleBase(GrayscaleMode::Absolute));
+    display._bus.clear();
+    display.copyGrayscaleBuffers(lsb.data(), msb.data());
+    for (unsigned p = 0; p < 2; ++p) {
+      const auto& input = p ? msb : lsb;
+      const auto command = p ? 0x13 : 0x10;
+      const auto it = std::find_if(display._bus.writes.begin(), display._bus.writes.end(),
+                                  [command](const auto& w) { return w.command == command; });
+      assert(it != display._bus.writes.end() && it->bytes.size() == 60000);
+      for (unsigned y = 0; y < 600; ++y) for (unsigned x = 0; x < 100; ++x) {
+        uint8_t expected = 0xff;
+        if (y >= gateOffset && y < gateOffset + 480) {
+          unsigned row = y - gateOffset;
+          if (reverse) row = 479 - row;
+          expected = input[row * 100 + x];
+          if (inverted) expected = uint8_t(~expected);
+        }
+        assert(it->bytes[y * 100 + x] == expected);
+      }
+    }
+    if (snapshot) assert(memcmp(driver._grayBase, bw.data(), bw.size()) == 0);
+    display.displayGrayBuffer(turnOff);
+    assert(driver._isScreenOn == !turnOff);
+    assert(driver._needFullClear && !driver._absoluteInput);
+    display.cleanupGrayscaleBuffers(bw.data());
+    assert(driver._needFullClear);
+    display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+    assert(!driver._needFullClear);
+    // Incomplete uploads are canceled without a gray activation and still force a clean.
+    assert(display.displayGrayscaleBase(GrayscaleMode::Absolute));
+    display.copyGrayscaleLsbBuffers(lsb.data());
+    display._bus.clear();
+    display.displayGrayBuffer();
+    for (const auto& w : display._bus.writes) assert(w.command != 0x12);
+    display.cleanupGrayscaleBuffers(bw.data());
+    assert(driver._needFullClear && !driver._absoluteInput);
+    display.displayGrayscaleBase(FreeInkDisplay::HALF_REFRESH);
+    assert(!driver._absoluteInput);
+    display.releaseBuffers();
+    free(driver._grayBase);
+    driver._grayBase = nullptr;
+  }
+}
+
 static void testStickyAbsolute() {
   BoardConfig::ACTIVE.board = BoardConfig::Board::Sticky;
   auto& driver = static_cast<Ssd1677Driver&>(ssd1677Driver());
@@ -315,6 +370,11 @@ int main(int argc, char**) {
     testStickyAbsolute();
     std::puts("Sticky absolute capability, activation, power-down and B/W recovery passed");
     return 0;
+  }
+  testUltraChipAbsolute<Uc8179Driver>(true, 0, false);
+  for (uint8_t variant : {0x02, 0x68, 0x69}) {
+    BoardConfig::ACTIVE.displayControllerVariant = variant;
+    testUltraChipAbsolute<Uc8279X4Driver>(false, 120, true);
   }
   testAbsolutePipeline();
   testCapabilities();

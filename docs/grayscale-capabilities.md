@@ -27,7 +27,13 @@ it internally before sending controller RAM.
 light (0,1), white (1,1). Every pixel, including text and background, must be
 present in both planes. The UC8279 X3 and the X4 SSD1677 configuration (including
 SSD1677 X4 Pro/Classic), Sticky, and the shared Waveshare 3.97-inch configuration
-advertise this mode by default. Paper Mono retains its existing path.
+advertise this mode by default. The UC8179 and UC8279 variants of the X4,
+X4 Pro, and X4 Classic also accept absolute planes through this API. They use
+full-plane uploads, retaining their controller-specific gate padding and polarity.
+UC8279 selects its existing image-quality bank explicitly; UC8179 retains its
+existing stock grayscale bank. This is an input-contract integration, not a new
+UC8179 waveform or a promise of improved physical tone separation. Paper Mono
+retains its existing path.
 
 The X3 uploads the stock XTH4 rows to registers 20/24/22/23/21. The SSD1677
 driver complements the common host planes for the native factory selectors;

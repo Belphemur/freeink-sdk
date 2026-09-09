@@ -93,9 +93,12 @@ class Uc8279X4Driver : public PanelDriver {
   // fold + post-DRF base restore (base = plane0 & plane1) fixes both. Single-byte
   // CDI (constant 0x97), PSR rewritten before DRF, panel LEFT POWERED (vendor).
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode == GrayscaleMode::Absolute)
+      return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Separate, false, false, false};
     if (mode != GrayscaleMode::Overlay) return {};
     return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
   }
+  void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
@@ -146,6 +149,7 @@ class Uc8279X4Driver : public PanelDriver {
   uint8_t* _grayBase = nullptr;
   bool _grayBaseValid = false;
   bool _absoluteGrayPlanes = false;
+  bool _absoluteInput = false;
   // True once a grayscale (AA) refresh has run. Gates the non-flashing base
   // transition + precondition (both need a valid previous page in DTM1).
   bool _grayRefreshedOnce = false;

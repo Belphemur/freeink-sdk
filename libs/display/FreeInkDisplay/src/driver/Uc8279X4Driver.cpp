@@ -388,6 +388,7 @@ void Uc8279X4Driver::powerOnIfNeeded(EpdBus& bus, const char* tag) {
 }
 
 bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  _absoluteInput = false;
   (void)prev;
   // Snapshot the B/W base for a grayscale overlay that may follow (the reader
   // draws this base, then folds it into the absolute AA planes). Harmless for
@@ -509,6 +510,7 @@ void Uc8279X4Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
 }
 
 void Uc8279X4Driver::requestResync(uint8_t settlePasses) {
+  _absoluteInput = false;
   (void)settlePasses;
   _needFullClear = true;
 }
@@ -516,6 +518,7 @@ void Uc8279X4Driver::requestResync(uint8_t settlePasses) {
 void Uc8279X4Driver::skipInitialResync() { _needFullClear = false; }
 
 void Uc8279X4Driver::deepSleep(EpdBus& bus) {
+  _absoluteInput = false;
   if (_isScreenOn) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" 8279x4 power-down");
@@ -531,8 +534,19 @@ void Uc8279X4Driver::deepSleep(EpdBus& bus) {
 // black=(0,0) and white=(1,1) are distinct buckets (the earlier raw-delta path
 // conflated them → white-text ghosting). plane0/LSB -> DTM1 (0x10),
 // plane1/MSB -> DTM2 (0x13).
+void Uc8279X4Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) {
+  _absoluteInput = false;
+  displayGrayscaleBase(bus, fb, fallback, turnOff);
+  _absoluteInput = mode == GrayscaleMode::Absolute;
+}
+
 void Uc8279X4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (!lsb) return;
+  if (_absoluteInput) {
+    bus.waitBusy(" absolute plane");
+    streamPlane(bus, CMD_DTM1, lsb, true);
+    return;
+  }
   _absoluteGrayPlanes = false;
   if (_grayBaseValid && _grayBase != nullptr) {
     // plane0 = base | maskLsb  (base bit = 1 for white, 0 for non-white).
@@ -556,6 +570,11 @@ void Uc8279X4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 
 void Uc8279X4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   if (!msb) return;
+  if (_absoluteInput) {
+    bus.waitBusy(" absolute plane");
+    streamPlane(bus, CMD_DTM2, msb, true);
+    return;
+  }
   // The MSB mask marks every grey pixel (dark=(1,1), light=(0,1)); its
   // coverage separates image passes from glyph anti-aliasing without a
   // caller-side hint (see displayGray).
@@ -647,6 +666,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
   // displayStart), scrubbing residue with a cheap DU — an explicit Half GC
   // remains the strong purge.
   _redriveAfterGray = true;
+  _absoluteInput = false;
 }
 
 void Uc8279X4Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
@@ -738,6 +758,7 @@ void Uc8279X4Driver::runGrayscalePrecondition(EpdBus& bus) {
 }
 
 void Uc8279X4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+  _absoluteInput = false;
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
   if (!bw) {
@@ -750,7 +771,7 @@ void Uc8279X4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   // to both planes; this covers callers that reach cleanup by another route.)
   streamPlane(bus, CMD_DTM1, bw);
   _oldPlaneValid = true;
-  _needFullClear = false;
+  // RAM restoration does not cancel a requested physical clean.
 }
 
 // Per-board config injection, same idiom as the other drivers: define
