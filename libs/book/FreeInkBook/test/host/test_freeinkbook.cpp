@@ -308,6 +308,19 @@ void testNotAnEpub() {
            static_cast<int>(BookStatus::NotZip));
 }
 
+// ------------------------------------------------------------------------------
+void testCssStrikethrough() {
+  // "text-decoration: line-through" must set the strikethrough bit.
+  // parseInlineStyle takes the raw declaration list (e.g. "color:red; text-decoration: line-through").
+  CssDecl d = parseInlineStyle("text-decoration: line-through");
+  CHECK_EQ(d.strikethrough, 1);
+  CHECK_EQ(d.underline, -1);  // unset
+
+  CssDecl d2 = parseInlineStyle("text-decoration: none");
+  CHECK_EQ(d2.strikethrough, 0);
+  CHECK_EQ(d2.underline, 0);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -323,6 +336,7 @@ int main(int argc, char** argv) {
   testMinimalBook("stored.epub");  // same book, stored (uncompressed) entries
   testNcxOnlyBook();
   testNotAnEpub();
+  testCssStrikethrough();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

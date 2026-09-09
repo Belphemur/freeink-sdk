@@ -956,6 +956,8 @@ class LayoutEngine : public XmlHandler {
     if (decl.styleItalic == 0) next.flags &= static_cast<uint8_t>(~StyleItalic);
     if (decl.underline == 1) next.flags |= StyleUnderline;
     if (decl.underline == 0) next.flags &= static_cast<uint8_t>(~StyleUnderline);
+    if (decl.strikethrough == 1) next.flags |= StyleStrikethrough;
+    if (decl.strikethrough == 0) next.flags &= static_cast<uint8_t>(~StyleStrikethrough);
     if (decl.vertAlign >= 0) {
       next.flags &= static_cast<uint8_t>(~(StyleSuperscript | StyleSubscript));
       if (decl.vertAlign == 1) next.flags |= StyleSuperscript;

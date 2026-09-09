@@ -21,6 +21,7 @@ enum StyleFlags : uint8_t {
   StyleUnderline = 1u << 2,
   StyleSuperscript = 1u << 3,
   StyleSubscript = 1u << 4,
+  StyleStrikethrough = 1u << 5,
 };
 
 struct GlyphBitmap {
