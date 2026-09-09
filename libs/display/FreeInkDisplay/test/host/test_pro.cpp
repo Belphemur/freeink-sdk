@@ -353,6 +353,36 @@ static void testUltraChipAbsolute(bool reverse, unsigned gateOffset, bool invert
   }
 }
 
+static void testUc8179GrayShadeSplit() {
+  Uc8179Driver driver;
+  freeink::EpdBus bus;
+  driver.begin(bus);
+  const auto bw = frame(91), lsb = frame(13), msb = frame(29);
+  for (auto mode : {GrayscaleMode::Absolute, GrayscaleMode::Overlay}) {
+    driver.beginGrayscale(bus, bw.data(), mode, RefreshMode::Half, false);
+    driver.copyGrayscaleLsb(bus, lsb.data());
+    driver.copyGrayscaleMsb(bus, msb.data());
+    bus.clear();
+    driver.displayGray(bus, bw.data(), false, nullptr, mode == GrayscaleMode::Absolute);
+    const auto light = std::find_if(bus.writes.begin(), bus.writes.end(),
+                                    [](const auto& w) { return w.command == 0x22; });
+    const auto dark = std::find_if(bus.writes.begin(), bus.writes.end(),
+                                   [](const auto& w) { return w.command == 0x23; });
+    assert(light != bus.writes.end() && dark != bus.writes.end());
+    assert(light->bytes.size() == 42 && dark->bytes.size() == 42);
+    assert(light->bytes[0] == 0x20 && light->bytes[1] == 2 && light->bytes[2] == 2);
+    if (mode == GrayscaleMode::Absolute) {
+      auto expected = light->bytes;
+      expected[2] = 1;
+      expected[3] = 2;
+      assert(dark->bytes == expected);
+    } else {
+      assert(dark->bytes == light->bytes);
+    }
+  }
+  free(driver._grayBase);
+}
+
 static void testStickyAbsolute() {
   BoardConfig::ACTIVE.board = BoardConfig::Board::Sticky;
   auto& driver = static_cast<Ssd1677Driver&>(ssd1677Driver());
@@ -384,6 +414,7 @@ int main(int argc, char**) {
     std::puts("Sticky absolute capability, activation, power-down and B/W recovery passed");
     return 0;
   }
+  testUc8179GrayShadeSplit();
   testUltraChipAbsolute<Uc8179Driver>(true, 0, false);
   for (uint8_t variant : {0x02, 0x68, 0x69}) {
     BoardConfig::ACTIVE.displayControllerVariant = variant;

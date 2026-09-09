@@ -56,6 +56,14 @@ const GrayLut kGrayLuts[5] = {
     {0x24, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTKK (black)
 };
 
+// Absolute-image calibration candidate: separate dark gray from light gray.
+// UC8179 datasheet R23h: each group is [rail selectors, four frame counts,
+// repeat count]. Shorten the VDL phase from two frames to one, moving that
+// frame to the following GND phase so the group remains six frames long.
+// Other rails, groups, and the light-gray/VCOM/black/white tables stay stock.
+constexpr uint8_t kAbsoluteDarkGrayLut[GRAY_LUT_LEN] = {
+    0x20, 0x02, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01};
+
 // OEM XTF_PRE_BW_MID conditioning waveform. Each row is command-prefixed:
 // byte 0 selects LUT register 0x20..0x24 and the remaining 42 bytes are data.
 // It runs over equal B/W planes immediately before the short AA waveform so
@@ -552,8 +560,8 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   bus.waitBusy(" 8179_gray_ready");
   _bwPlanesSynced = false;
 
-  // Custom-LUT 4-level grayscale — the EXACT stock gray_aa stream (FUN_4214ec2c),
-  // byte-for-byte apart from FreeInk's SHL orientation bit: PSR 0x3F (REG bit5=1
+  // Custom-LUT grayscale uses the stock gray_aa sequence (FUN_4214ec2c),
+  // with a separate dark-gray table for absolute images and FreeInk's SHL bit: PSR 0x3F (REG bit5=1
   // custom LUT; the B/W path masks to 0x1F/OTP) -> upload the 5 short LUTs
   // separately, 42 data bytes each) -> CDI 0x29/07 -> PON -> DRF. Unlike the
   // gray_full path, Factory.bin's gray_aa function sends no POF afterward. It
@@ -561,9 +569,10 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   bus.cmd(CMD_PANEL_SETTING);
   bus.data(_cfg.psr0);  // 0x3F: REG=1 (custom LUT) + KW + SHL
   bus.data(_cfg.psr1);
+  const bool splitImageShades = _absoluteInput && factoryMode;
   for (const auto& l : kGrayLuts) {
     bus.cmd(l.cmd);
-    bus.data(l.data, GRAY_LUT_LEN);
+    bus.data(splitImageShades && l.cmd == 0x23 ? kAbsoluteDarkGrayLut : l.data, GRAY_LUT_LEN);
   }
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   // Factory.bin FUN_4214ec2c calls vtable +0x118 unconditionally; the UC8179
@@ -579,7 +588,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     _isScreenOn = true;
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
-  bus.waitBusy(" 8179_gray_DRF");
+  bus.waitBusy(splitImageShades ? " 8179_gray_split_DRF" : " 8179_gray_DRF");
   // Deliberately remain powered. FUN_4214ec2c returns after DRF and RAM/base
   // bookkeeping without issuing command 0x02; deepSleep() still powers down.
   // Its bookkeeping writes the clean B/W base to BOTH DTM1 and DTM2. Besides
