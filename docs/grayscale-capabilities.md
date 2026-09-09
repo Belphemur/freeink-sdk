@@ -55,8 +55,10 @@ the driver, not to an application-side panel-state flag.
 
 CrossPoint automatically selects this mode for unfiltered opaque sleep images,
 EPUB sleep covers, and grayscale BMP viewing on supported panels. Gray text-AA,
-EPUB/XTC page rendering, and transparent/preserved-background images keep their
-existing overlay pipeline. The image quantizer uses evenly spaced levels for
+EPUB/XTC page rendering and regular white-as-transparent BMP overlays keep their
+existing overlay pipeline. Alpha BMP and PNG sleep overlays select absolute mode
+on supported panels, retaining the composed B/W background in both planes and
+rewriting every visible overlay pixel. No extra framebuffer is allocated. The image quantizer uses evenly spaced levels for
 absolute covers and a separate `_original` BMP cache name, so older AA-tuned
 cover caches are not silently reused. Decode/rewind failures leave the B/W
 base visible and cancel the absolute pass. No user setting or build flag is
