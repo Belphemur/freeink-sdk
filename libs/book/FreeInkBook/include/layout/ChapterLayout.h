@@ -64,8 +64,10 @@ struct PageTextRun {
   // (or the last byte of it) that terminates in a synthetic '-' (U+002D)
   // appended by the flow engine for a soft wrap — consumers that join
   // wrapped segments (e.g. dictionary lookup, selection groups) must strip
-  // it.
-  uint8_t layoutFlags = 0;
+  // it. Plain byte, no default initializer: PageTextRun is produced via
+  // Arena::allocArray (raw storage, no constructors) and every producer
+  // (emitSeg, PageCache decode) sets it explicitly — like the other fields.
+  uint8_t layoutFlags;
   static constexpr uint8_t LayoutHyphenated = 1u << 0;
 };
 
