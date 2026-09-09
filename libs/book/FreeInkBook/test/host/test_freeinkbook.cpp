@@ -5,6 +5,7 @@
 // than a hope. Run with test/host/run.sh.
 
 #include <FreeInkBook.h>
+#include <css/Css.h>
 #include <epub/PackageParsers.h>
 
 #include <cstdio>
