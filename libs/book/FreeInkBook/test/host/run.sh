@@ -53,9 +53,28 @@ head -c 4096 /dev/zero > "$BUILD_DIR/fixtures/garbage.bin"
 python3 ../fixtures/gen_omnibus.py "$BUILD_DIR/fixtures/omnibus.epub" 1700 >/dev/null
 
 # --- build ------------------------------------------------------------------
-INCLUDES="-I../../include -I../../third_party/expat -I../../third_party/miniz -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb"
+# Default (internal): compile the vendored third_party expat/miniz/etc. With
+# FREEINK_BOOK_EXTERNAL_EXPAT=1 the vendored-expat wrapper TUs compile to
+# nothing and the XML_* symbols must come from the SYSTEM libexpat — the
+# include path for third_party/expat is dropped so <expat.h> resolves to the
+# system headers (mirrors the CrossPoint firmware consumption mode; verified
+# by checking the linked XML_* symbols match the system expat).
+INCLUDES="-I../../include -I../../third_party/miniz -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb"
+VENDOR_SRCS="miniz_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl"
+if [ -n "$FREEINK_BOOK_EXTERNAL_EXPAT" ]; then
+  VENDOR_SRCS="miniz_impl unibreak_impl pngle_impl tjpgd_impl"
+else
+  INCLUDES="$INCLUDES -I../../third_party/expat"
+fi
 CC_FLAGS="-O1 -std=c99 $INCLUDES"
-for src in miniz_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl; do
+# System libexpat link (external mode only). The CrossPoint firmware provides
+# the XML_* definitions from its own lib/expat object set instead.
+if [ -n "$FREEINK_BOOK_EXTERNAL_EXPAT" ]; then
+  LD_LIBS="-lexpat"
+else
+  LD_LIBS=""
+fi
+for src in $VENDOR_SRCS; do
   cc $CC_FLAGS -c "../../src/vendor/$src.c" -o "$BUILD_DIR/obj/$src.o"
 done
 
@@ -65,33 +84,33 @@ CORE_SRCS="../../src/FreeInkBook.cpp ../../src/BookCatalog.cpp ../../src/epub/Zi
   ../../src/cache/PageCache.cpp ../../src/render/ImageRenderer.cpp ../../src/render/TtfFont.cpp ../../src/render/PageRenderer.cpp"
 
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
-  $CORE_SRCS test_freeinkbook.cpp "$BUILD_DIR"/obj/*.o \
+  $CORE_SRCS test_freeinkbook.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
   -o "$BUILD_DIR/test_freeinkbook"
 
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
-  $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o \
+  $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
   -o "$BUILD_DIR/test_layout"
 
 # The layout suite also builds and runs under the SMALL and LARGE profiles
 # (BookProfile.h) so neither tier bit-rots.
 c++ -std=c++17 -Wall -Wextra -Werror -DFREEINK_BOOK_SMALL=1 $INCLUDES \
-  $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o \
+  $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
   -o "$BUILD_DIR/test_layout_small"
 
 c++ -std=c++17 -Wall -Wextra -Werror -DFREEINK_BOOK_LARGE=1 $INCLUDES \
-  $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o \
+  $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
   -o "$BUILD_DIR/test_layout_large"
 
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
-  $CORE_SRCS test_cache.cpp "$BUILD_DIR"/obj/*.o \
+  $CORE_SRCS test_cache.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
   -o "$BUILD_DIR/test_cache"
 
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
-  $CORE_SRCS test_font.cpp "$BUILD_DIR"/obj/*.o \
+  $CORE_SRCS test_font.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
   -o "$BUILD_DIR/test_font"
 
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
-  $CORE_SRCS test_catalog.cpp "$BUILD_DIR"/obj/*.o \
+  $CORE_SRCS test_catalog.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
   -o "$BUILD_DIR/test_catalog"
 
 python3 ../../tools/hyphc.py ../../third_party/hyphen-patterns/hyph-en-us.pat.txt \
