@@ -320,6 +320,12 @@ void testCssStrikethrough() {
   CssDecl d2 = parseInlineStyle("text-decoration: none");
   CHECK_EQ(d2.strikethrough, 0);
   CHECK_EQ(d2.underline, 0);
+
+  // Regression: the reworked text-decoration chain must keep parsing
+  // the underline token, and must not touch the strikethrough field.
+  CssDecl d3 = parseInlineStyle("text-decoration: underline");
+  CHECK_EQ(d3.underline, 1);
+  CHECK_EQ(d3.strikethrough, -1);  // unset
 }
 
 }  // namespace

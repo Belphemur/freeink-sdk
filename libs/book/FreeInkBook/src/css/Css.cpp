@@ -180,8 +180,8 @@ void applyDeclaration(CssDecl* decl, const char* prop, uint32_t propLen, const c
   } else if (propIs("display")) {
     if (valueIs("none")) decl->displayNone = 1;
   } else if (propIs("text-decoration") || propIs("text-decoration-line")) {
-    // Multi-token: "underline line-through", "none", etc.
-    // Simple single-token handling (the common case in EPUBs):
+    // Single-token values only (the common EPUB case); multi-token lists
+    // like "underline line-through" are not split yet and match nothing.
     if (valueIs("underline")) decl->underline = 1;
     else if (valueIs("line-through")) decl->strikethrough = 1;
     else if (valueIs("none")) {
