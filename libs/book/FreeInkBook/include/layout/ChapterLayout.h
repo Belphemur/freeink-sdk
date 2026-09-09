@@ -61,9 +61,10 @@ struct PageTextRun {
   uint16_t sizePx;     // resolved size — headings differ from body
   uint8_t styleFlags;  // StyleFlags bits
   // Per-run layout artifacts. The first bit, LayoutHyphenated, marks a run
-  // (or the last byte of it) that terminates in a U+2010 hyphen inserted by
-  // the flow engine for a soft wrap — consumers that join wrapped segments
-  // (e.g. dictionary lookup, selection groups) must strip it.
+  // (or the last byte of it) that terminates in a synthetic '-' (U+002D)
+  // appended by the flow engine for a soft wrap — consumers that join
+  // wrapped segments (e.g. dictionary lookup, selection groups) must strip
+  // it.
   uint8_t layoutFlags = 0;
   static constexpr uint8_t LayoutHyphenated = 1u << 0;
 };
