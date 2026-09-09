@@ -287,7 +287,35 @@ static void testAbsolutePipeline() {
   assert(noAbsolute._bus.writes.empty());
 }
 
-int main() {
+static void testStickyAbsolute() {
+  BoardConfig::ACTIVE.board = BoardConfig::Board::Sticky;
+  auto& driver = static_cast<Ssd1677Driver&>(ssd1677Driver());
+  assert(driver._cfg.grayPowerUpFirst);
+  assert(driver._cfg.fullSeqOverride == 0xF7);
+  assert(driver.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  display._driver = &driver;
+  display.begin();
+  const auto bw = frame(33), lsb = frame(14), msb = frame(29);
+  std::memcpy(display.getFrameBuffer(), bw.data(), bw.size());
+  assert(display.displayGrayscaleBase(GrayscaleMode::Absolute));
+  display.copyGrayscaleBuffers(lsb.data(), msb.data());
+  display.displayGrayBuffer(false);
+  assert(lastRegister(display._bus, 0x22) == 0xC7);
+  assert(!driver._isScreenOn);
+  display.cleanupGrayscaleBuffers(bw.data());
+  display._bus.clear();
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+  assert(lastRegister(display._bus, 0x22) == 0xF7);
+  display.releaseBuffers();
+}
+
+int main(int argc, char**) {
+  if (argc > 1) {
+    testStickyAbsolute();
+    std::puts("Sticky absolute capability, activation, power-down and B/W recovery passed");
+    return 0;
+  }
   testAbsolutePipeline();
   testCapabilities();
   testStream<Uc8179Driver>(true,0);

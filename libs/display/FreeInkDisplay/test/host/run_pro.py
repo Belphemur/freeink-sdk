@@ -36,3 +36,4 @@ with tempfile.TemporaryDirectory(prefix="freeink-pro-test-") as directory:
         command += [str(root / f"src/driver/{name}Driver.cpp") for name in drivers]
         subprocess.run(command + ["-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
+        subprocess.run([str(exe), "sticky"], check=True)

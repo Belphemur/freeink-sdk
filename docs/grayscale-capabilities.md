@@ -26,8 +26,8 @@ it internally before sending controller RAM.
 `Absolute` supplies a complete four-tone image: black (0,0), dark (1,0),
 light (0,1), white (1,1). Every pixel, including text and background, must be
 present in both planes. The UC8279 X3 and the X4 SSD1677 configuration (including
-SSD1677 X4 Pro/Classic) advertise this mode by default. Other configurations,
-including Sticky and Paper Mono, retain their existing paths.
+SSD1677 X4 Pro/Classic), Sticky, and the shared Waveshare 3.97-inch configuration
+advertise this mode by default. Paper Mono retains its existing path.
 
 The X3 uploads the stock XTH4 rows to registers 20/24/22/23/21. The SSD1677
 driver complements the common host planes for the native factory selectors;

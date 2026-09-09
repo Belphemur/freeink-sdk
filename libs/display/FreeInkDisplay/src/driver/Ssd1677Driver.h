@@ -53,7 +53,7 @@ struct Ssd1677Config {
   // collapsing toward B/W). The X4 keeps the panel powered between fast
   // refreshes, so it never needs this and keeps stock behavior.
   bool grayPowerUpFirst = false;
-  // Only configurations using the verified X4 factory LUT/rails advertise it.
+  // Configurations supporting the factory four-tone LUT advertise it.
   bool absoluteGrayscale = false;
 };
 
