@@ -961,6 +961,31 @@ void testHyphenation(const Hyphenator& hyphenator) {
   CHECK_EQ(sink.geometryViolations, 0);
   // The narrow column hyphenated something ("par-ticular", "wa-tery", ...).
   CHECK(std::strstr(sink.text, "- ") != nullptr);
+  // Every run ending in the baked '-' must carry LayoutHyphenated.
+  {
+    class HyphenFlagSink : public CollectSink {
+     public:
+      using CollectSink::CollectSink;
+      bool onPage(const Page& page) override {
+        for (uint16_t r = 0; r < page.runCount; ++r) {
+          const PageTextRun& run = page.runs[r];
+          if (run.len > 0 && run.text[run.len - 1] == '-') ++hyphenRuns;
+          if (run.len > 0 && run.text[run.len - 1] == '-' &&
+              (run.layoutFlags & PageTextRun::LayoutHyphenated) == 0)
+            ++missingFlag;
+        }
+        return CollectSink::onPage(page);
+      }
+      int hyphenRuns = 0;
+      int missingFlag = 0;
+    };
+    HyphenFlagSink fsink(params, font);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                    opened.scratch, fsink, nullptr)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK(fsink.hyphenRuns > 0);            // the fixture did hyphenate
+    CHECK_EQ(fsink.missingFlag, 0);         // ...and every '-' run is flagged
+  }
 
   // Same layout without the hyphenator must produce different (worse) fill —
   // and a different generation hash.
@@ -1865,7 +1890,24 @@ void testCyrillicHyphenation(const Hyphenator& ru) {
   params.language = "ru";
   params.marginLeft = params.marginRight = 350;  // usable 100 px = 12 chars
   params.hyphenator = &ru;
-  CollectSink sink(params, font);
+  // Counting sink: also verifies the "…мо-" run carries LayoutHyphenated.
+  class RuHyphenFlagSink : public CollectSink {
+   public:
+    using CollectSink::CollectSink;
+    bool onPage(const Page& page) override {
+      for (uint16_t r = 0; r < page.runCount; ++r) {
+        const PageTextRun& run = page.runs[r];
+        if (run.len >= 3 && std::memcmp(run.text + run.len - 3, "\xD0\xBE-", 3) == 0) {
+          ++hyphenRuns;
+          if ((run.layoutFlags & PageTextRun::LayoutHyphenated) == 0) ++missingFlag;
+        }
+      }
+      return CollectSink::onPage(page);
+    }
+    int hyphenRuns = 0;
+    int missingFlag = 0;
+  };
+  RuHyphenFlagSink sink(params, font);
   char path[1024];
   std::snprintf(path, sizeof(path), "%s/cyrillic.txt", fixturesDir);
   FILE* f = std::fopen(path, "wb");
@@ -1881,6 +1923,8 @@ void testCyrillicHyphenation(const Hyphenator& ru) {
            static_cast<int>(BookStatus::Ok));
   CHECK(std::strstr(sink.text, "\xD0\xBC\xD0\xBE-") != nullptr);  // мо-
   CHECK_EQ(sink.geometryViolations, 0);
+  CHECK(sink.hyphenRuns > 0);      // "мо-" run seen
+  CHECK_EQ(sink.missingFlag, 0);   // and flagged as hyphenated
 }
 
 // Focus reading (CrossPoint parity): each word's first ~45% of characters
