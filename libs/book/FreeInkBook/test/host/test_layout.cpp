@@ -961,7 +961,13 @@ void testHyphenation(const Hyphenator& hyphenator) {
   CHECK_EQ(sink.geometryViolations, 0);
   // The narrow column hyphenated something ("par-ticular", "wa-tery", ...).
   CHECK(std::strstr(sink.text, "- ") != nullptr);
-  // Every run ending in the baked '-' must carry LayoutHyphenated.
+  // One-way invariant: every LayoutHyphenated run ends in the baked '-'
+  // (that is what the flag promises). The converse is NOT asserted — a real
+  // hyphen from the source text can also land at a run end without being a
+  // synthetic hyphenation artifact — so counting bare '-' runs here would be
+  // a false-positive trap. We still require at least one flagged run (the
+  // narrow-column fixture does hyphenate; the strstr("- ") check above pins
+  // a break, this pins the flag landing).
   {
     class HyphenFlagSink : public CollectSink {
      public:
@@ -969,22 +975,22 @@ void testHyphenation(const Hyphenator& hyphenator) {
       bool onPage(const Page& page) override {
         for (uint16_t r = 0; r < page.runCount; ++r) {
           const PageTextRun& run = page.runs[r];
-          if (run.len > 0 && run.text[run.len - 1] == '-') ++hyphenRuns;
-          if (run.len > 0 && run.text[run.len - 1] == '-' &&
-              (run.layoutFlags & PageTextRun::LayoutHyphenated) == 0)
-            ++missingFlag;
+          if (run.layoutFlags & PageTextRun::LayoutHyphenated) {
+            ++flaggedRuns;
+            if (run.len == 0 || run.text[run.len - 1] != '-') ++badTail;
+          }
         }
         return CollectSink::onPage(page);
       }
-      int hyphenRuns = 0;
-      int missingFlag = 0;
+      int flaggedRuns = 0;
+      int badTail = 0;
     };
     HyphenFlagSink fsink(params, font);
     CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                     opened.scratch, fsink, nullptr)),
              static_cast<int>(BookStatus::Ok));
-    CHECK(fsink.hyphenRuns > 0);            // the fixture did hyphenate
-    CHECK_EQ(fsink.missingFlag, 0);         // ...and every '-' run is flagged
+    CHECK(fsink.flaggedRuns > 0);      // the fixture produced flagged runs
+    CHECK_EQ(fsink.badTail, 0);        // ...and every flagged run ends in '-'
   }
 
   // Same layout without the hyphenator must produce different (worse) fill —
