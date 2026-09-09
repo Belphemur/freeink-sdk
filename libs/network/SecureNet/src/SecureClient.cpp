@@ -192,7 +192,10 @@ int SecureClient::read(uint8_t* buf, size_t size) {
   // A mid-stream failure is invisible to callers (they just see the connection
   // die); the error code distinguishes an OOM (MEMORY_E -125) from a peer
   // drop or MAC failure.
-  if (Serial) Serial.printf("[SecureClient] read failed: %d, free heap %u\n", err, (unsigned)ESP.getFreeHeap());
+  if (Serial) {
+    Serial.printf("[SecureClient] read failed: %d, free heap %u, max block %u\n", err, (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getMaxAllocHeap());
+  }
   _connected = false;
   return -1;
 }

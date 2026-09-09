@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 
+#include "../../include/GrayscaleCapabilities.h"
 #include "../bus/EpdBus.h"
 
 namespace freeink {
@@ -106,17 +107,22 @@ class PanelDriver {
   }
 
   // --- grayscale (dual-plane LSB/MSB) ---
-  virtual bool supportsStripGrayscale() const { return false; }
+  virtual GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const {
+    (void)mode;
+    return {};
+  }
+  // Compatibility queries describe Overlay mode. New callers use the descriptor.
+  virtual bool supportsStripGrayscale() const { return grayscaleCapabilities().stripUploads; }
   // True when an ordinary deferred B/W refresh is a valid base for a
-  // grayscale pass. Drivers with a dedicated grayscale-base waveform must
-  // override this even when their normal display path supports deferral.
-  virtual bool supportsAsyncGrayscaleBase() const { return false; }
+  // grayscale pass. Set asyncBase in the descriptor only when an ordinary
+  // B/W base is sufficient; a dedicated grayscale-base waveform cannot overlap.
+  virtual bool supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
   // True when displayGrayscaleBase() DEFERS the base activation so the gray
   // planes join it in a single waveform (Paper Mono). Hosts should then route the
   // grayscale base through displayGrayscaleBase() instead of display(): a
   // separate B/W refresh first makes the gray pass re-drive the whole text
   // body through the custom LUT's kick phases (a visible flash).
-  virtual bool combinesGrayscaleBase() const { return false; }
+  virtual bool combinesGrayscaleBase() const { return grayscaleCapabilities().base == GrayscaleBase::Combined; }
   // Display `fb` as the base frame for a grayscale overlay that follows.
   // X3 runs the OEM pipeline (the "AA-pre-BW(mid)" bank as a differential
   // base update with calibrated drives); panels without a dedicated base
@@ -148,7 +154,7 @@ class PanelDriver {
   // Host-retained selector planes can be copied and encoded while the previous
   // B/W waveform is BUSY. Drivers returning true must not touch SPI in either
   // writeGrayscalePlaneStrip() or prepareGrayscaleTarget().
-  virtual bool supportsBusyGrayscaleStaging() const { return false; }
+  virtual bool supportsBusyGrayscaleStaging() const { return grayscaleCapabilities().stagingWhileBusy; }
   virtual void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                         uint16_t numRows) {
     (void)bus;

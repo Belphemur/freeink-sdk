@@ -92,6 +92,10 @@ class Uc8279X4Driver : public PanelDriver {
   // B/W diff baseline unaware of AA edge charge -> white ghosting; the absolute
   // fold + post-DRF base restore (base = plane0 & plane1) fixes both. Single-byte
   // CDI (constant 0x97), PSR rewritten before DRF, panel LEFT POWERED (vendor).
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode != GrayscaleMode::Overlay) return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
+  }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;

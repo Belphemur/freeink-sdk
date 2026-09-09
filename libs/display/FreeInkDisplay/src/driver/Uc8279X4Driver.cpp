@@ -316,9 +316,12 @@ void Uc8279X4Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb,
   uint8_t row[128];
   const uint16_t wb = _wb <= sizeof(row) ? _wb : sizeof(row);
   bus.cmd(ramCmd);
+  // Licorice keeps CS asserted across a plane upload. Preserve our validated
+  // gate offset/orientation, but avoid a new SPI transaction for every row.
+  bus.beginTxn();
   // Gates before the visible window (the 120-gate offset): white.
   memset(row, 0xFF, wb);
-  for (uint16_t y = 0; y < _cfg.gateOffset; y++) bus.data(row, wb);
+  for (uint16_t y = 0; y < _cfg.gateOffset; y++) bus.rawWriteBytes(row, wb);
   // Visible rows, stock convention (hardware-confirmed upright): forward order,
   // bytes as-is. The ROWREV/XMIRROR switches (row reversal / reversed byte order
   // + reversed bits) exist for future panel sub-variants whose scan differs.
@@ -338,11 +341,12 @@ void Uc8279X4Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb,
       }
       row[i] = invert ? static_cast<uint8_t>(~b) : b;
     }
-    bus.data(row, wb);
+    bus.rawWriteBytes(row, wb);
   }
   // Gates after the visible window: white, up to the addressed gate count.
   memset(row, 0xFF, wb);
-  for (uint16_t y = _cfg.gateOffset + _h; y < _tresH; y++) bus.data(row, wb);
+  for (uint16_t y = _cfg.gateOffset + _h; y < _tresH; y++) bus.rawWriteBytes(row, wb);
+  bus.endTxn();
 }
 
 // Same geometry/mirroring as streamPlane, but each visible byte is lhs ^ rhs.
@@ -350,8 +354,9 @@ void Uc8279X4Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* 
   uint8_t row[128];
   const uint16_t wb = _wb <= sizeof(row) ? _wb : sizeof(row);
   bus.cmd(ramCmd);
+  bus.beginTxn();
   memset(row, 0xFF, wb);
-  for (uint16_t y = 0; y < _cfg.gateOffset; y++) bus.data(row, wb);
+  for (uint16_t y = 0; y < _cfg.gateOffset; y++) bus.rawWriteBytes(row, wb);
   static const uint8_t kBitRev[16] = {0x0, 0x8, 0x4, 0xC, 0x2, 0xA, 0x6, 0xE,
                                       0x1, 0x9, 0x5, 0xD, 0x3, 0xB, 0x7, 0xF};
   for (uint16_t n = 0; n < _h; n++) {
@@ -368,10 +373,11 @@ void Uc8279X4Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* 
       }
       row[i] = invert ? static_cast<uint8_t>(~b) : b;
     }
-    bus.data(row, wb);
+    bus.rawWriteBytes(row, wb);
   }
   memset(row, 0xFF, wb);
-  for (uint16_t y = _cfg.gateOffset + _h; y < _tresH; y++) bus.data(row, wb);
+  for (uint16_t y = _cfg.gateOffset + _h; y < _tresH; y++) bus.rawWriteBytes(row, wb);
+  bus.endTxn();
 }
 
 void Uc8279X4Driver::powerOnIfNeeded(EpdBus& bus, const char* tag) {
@@ -415,11 +421,7 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
     } else {
       // Full flash: seed the OLD plane white across the whole 600-gate scan for
       // the absolute GC-from-white waveform.
-      uint8_t whiteRow[128];
-      const uint16_t wb = _wb <= sizeof(whiteRow) ? _wb : sizeof(whiteRow);
-      memset(whiteRow, 0xFF, wb);
-      bus.cmd(CMD_DTM1);
-      for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
+      bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
     }
   } else if (_redriveAfterGray) {
     // Re-drive every pixel once after grayscale so the B/W transition scrubs
@@ -649,11 +651,11 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
 
 void Uc8279X4Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
   if (!fb) return;
-  // Match the UC8179 sibling: an explicit Half (the periodic ghost purge), or a
+  // Match the UC8179 sibling: an explicit Full/Half clean, or a
   // state that can't run the non-flashing transition (first AA page / no valid
   // previous / pending full clear), takes a real B/W activation via display().
   // Otherwise use stock's non-flashing prev->current transition.
-  if (fallback == RefreshMode::Half || !_grayRefreshedOnce || !_oldPlaneValid || _needFullClear) {
+  if (fallback != RefreshMode::Fast || !_grayRefreshedOnce || !_oldPlaneValid || _needFullClear) {
     display(bus, fb, nullptr, fallback, turnOff);
     return;
   }

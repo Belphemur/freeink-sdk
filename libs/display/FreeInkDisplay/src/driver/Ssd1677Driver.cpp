@@ -340,11 +340,11 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     // vendor reference — clock/analog enable + display, WITHOUT the OTP LUT reload
     // (0x10 bit clear). The enable bits are a no-op when the rails are already up
     // (the usual X4 case, where stage 1 left them on), and required when they are
-    // not, so 0xCC is correct in both states. The production driver marks power OFF
-    // after this pass; mirror that so the next refresh re-enables the rails.
+    // not, so 0xCC is correct in both states. Licorice's AA path leaves power
+    // enabled: only the low disable bits added for turnOff power it down.
     displayMode = 0xCC;
     if (turnOff) displayMode |= 0x03;
-    _isScreenOn = false;
+    _isScreenOn = !turnOff;
   } else {  // Fast
     displayMode |= 0x1C;
   }
@@ -423,9 +423,10 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       // clears the panel + seeds the baseline on its own — honor it and just consume
       // the one-shot. Only upgrade a FAST request. This keeps the boot logo (a HALF)
       // from paying an extra multi-inversion FULL-waveform flash on top of its own.
-      if (mode == RefreshMode::Fast) mode = RefreshMode::Full;
+      if (mode == RefreshMode::Fast) {
+        mode = (_cfg.halfSeqOverride != 0) ? RefreshMode::Half : RefreshMode::Full;
+      }
       _needsInitialFull = false;
-      mode = (_cfg.halfSeqOverride != 0) ? RefreshMode::Half : RefreshMode::Full;
     } else if (!_isScreenOn && _cfg.fullSeqOverride == 0) {
       // X4-class cold start: panel asleep -> a (warmed) HALF full-clear. Override
       // boards skip this — their fast sequence self-powers, so _isScreenOn is false

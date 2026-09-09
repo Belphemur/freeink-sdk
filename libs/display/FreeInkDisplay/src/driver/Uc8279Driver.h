@@ -53,10 +53,12 @@ class Uc8279Driver : public PanelDriver {
   // Two 1bpp planes (LSB -> DTM1/old, MSB -> DTM2/new) encode 4 levels; the
   // external XTF_AA LUT bank resolves them. displayGrayscaleBase / precondition
   // run the OEM XTF_PRE_BW_MID "AA-pre-BW(mid)" settle before the gray planes.
-  bool supportsStripGrayscale() const override { return true; }
-  bool supportsAsyncGrayscaleBase() const override { return false; }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode != GrayscaleMode::Overlay) return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, true, false, false};
+  }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,

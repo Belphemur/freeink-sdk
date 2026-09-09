@@ -15,6 +15,9 @@ with tempfile.TemporaryDirectory(prefix="uc8279-test-") as directory:
     for name in ("Uc8279Driver.cpp", "Uc8279Driver.h", "PanelDriver.h"):
         shutil.copy2(SOURCE / "driver" / name, root / "driver" / name)
     shutil.copy2(SOURCE / "lut/Uc8279X3Luts.h", root / "lut/Uc8279X3Luts.h")
+    shutil.copy2(SOURCE.parent / "include/GrayscaleCapabilities.h", root / "GrayscaleCapabilities.h")
+    panel = root / "driver/PanelDriver.h"
+    panel.write_text(panel.read_text().replace("../../include/GrayscaleCapabilities.h", "../GrayscaleCapabilities.h"))
     (root / "Arduino.h").write_text('''#pragma once
 #include <cstdint>
 #include <cstddef>

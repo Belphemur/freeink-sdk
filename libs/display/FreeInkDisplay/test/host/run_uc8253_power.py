@@ -15,6 +15,9 @@ with tempfile.TemporaryDirectory(prefix="uc8253_power-test-") as directory:
     for name in ("Uc8253X3Driver.cpp", "Uc8253X3Driver.h", "PanelDriver.h"):
         shutil.copy2(SOURCE / "driver" / name, root / "driver" / name)
     shutil.copy2(SOURCE / "lut/Uc8253X3Luts.h", root / "lut/Uc8253X3Luts.h")
+    shutil.copy2(SOURCE.parent / "include/GrayscaleCapabilities.h", root / "GrayscaleCapabilities.h")
+    panel = root / "driver/PanelDriver.h"
+    panel.write_text(panel.read_text().replace("../../include/GrayscaleCapabilities.h", "../GrayscaleCapabilities.h"))
     (root / "Arduino.h").write_text('''#pragma once
 #include <cstdint>
 #include <cstddef>
@@ -77,6 +80,9 @@ public:
 #include "driver/Uc8253X3Driver.h"
 int main() {
  freeink::EpdBus bus; freeink::Uc8253X3Driver d;
+ const auto caps = d.grayscaleCapabilities();
+ assert(caps.supported() && caps.stripUploads && !caps.asyncBase && !caps.stagingWhileBusy);
+ assert(!d.grayscaleCapabilities(freeink::GrayscaleMode::Absolute).supported());
  std::vector<uint8_t> fb(792/8*528, 0xAA); d.begin(bus);
  d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
  assert(bus.powerOns == 1);

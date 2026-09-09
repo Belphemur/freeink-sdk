@@ -58,8 +58,9 @@ hardware, and independently corroborated by an **app1** driver-usage RE:
 | RST | 14 |
 | BUSY | 6 (input, busy = HIGH) |
 
-SPI clock 5 MHz. Native landscape scan (`NO_FLIP`). GPIO7 is *not* a display
-enable — it is the Right nav button (see
+SDK display SPI defaults to 10 MHz across all controller batches. The older
+OEM image described here used 5 MHz. Native landscape scan (`NO_FLIP`). GPIO7 is
+*not* a display enable — it is the Right nav button (see
 [Input](#input--digital-buttons--capacitive-home)).
 
 **RE cross-check (app1 driver-usage):** confirms **CS = 13** (driven every byte

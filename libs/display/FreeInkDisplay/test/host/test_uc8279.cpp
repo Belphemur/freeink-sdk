@@ -34,6 +34,10 @@ int main() {
   std::vector<uint8_t> lsb(PANEL_BYTES, 0x22);
   std::vector<uint8_t> msb(PANEL_BYTES, 0x66);
   Uc8279Driver driver;
+  const auto caps = driver.grayscaleCapabilities();
+  assert(caps.supported() && caps.stripUploads && !caps.asyncBase && !caps.stagingWhileBusy);
+  assert(caps.base == GrayscaleBase::Separate);
+  assert(!driver.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
   driver.begin(bus);
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(!scratch && allocations == 0);

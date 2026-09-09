@@ -220,9 +220,9 @@ void Uc8179Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
   // XTF_PRE_BW_MID as the page transition itself. Our former extra equal-plane
   // pass caused the visible gray muddling seen in hardware testing and did not
   // discharge the AA residue left by the preceding page.
-  // Half is the explicit charge-scrub request. Keep it as a real B/W activation
-  // instead of replacing it with the differential stock AA transition.
-  if (fallback == RefreshMode::Half || !_grayRefreshedOnce || !_oldPlaneValid || _needFullClear) {
+  // Explicit Full/Half requests must remain real B/W clearing activations.
+  // Only Fast may be replaced by the differential stock AA transition.
+  if (fallback != RefreshMode::Fast || !_grayRefreshedOnce || !_oldPlaneValid || _needFullClear) {
     display(bus, fb, nullptr, fallback, turnOff);
     return;
   }
@@ -234,15 +234,30 @@ void Uc8179Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
 // reversal. SHL in PSR handles the horizontal panel direction for FreeInk's
 // framebuffer convention. White padding fills the non-visible gates.
 void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, bool invert) {
-  if (invert) {
-    bus.sendPlaneFlippedInverted(ramCmd, fb, _h, _wb);
-  } else {
-    bus.sendPlaneFlipped(ramCmd, fb, _h, _wb);
+  uint8_t row[128];
+  const uint16_t wb = _wb <= sizeof(row) ? _wb : sizeof(row);
+  bus.cmd(ramCmd);
+  bus.beginTxn();
+  for (int y = static_cast<int>(_h) - 1; y >= 0; y--) {
+    const uint8_t* src = fb + static_cast<uint32_t>(y) * _wb;
+    if (invert) {
+      for (uint16_t offset = 0; offset < _wb;) {
+        const uint16_t n = static_cast<uint16_t>(_wb - offset) < sizeof(row)
+                               ? static_cast<uint16_t>(_wb - offset)
+                               : static_cast<uint16_t>(sizeof(row));
+        for (uint16_t x = 0; x < n; x++) row[x] = static_cast<uint8_t>(~src[offset + x]);
+        bus.rawWriteBytes(row, n);
+        offset = static_cast<uint16_t>(offset + n);
+      }
+    } else {
+      bus.rawWriteBytes(src, _wb);
+    }
   }
-  uint8_t whiteRow[128];
-  const uint16_t wb = _wb <= sizeof(whiteRow) ? _wb : sizeof(whiteRow);
-  memset(whiteRow, 0xFF, wb);
-  for (uint16_t y = _h; y < _tresH; y++) bus.data(whiteRow, wb);
+  // Keep padding in the same burst as the visible plane. Opening a separate
+  // SPI transaction for each of the 120 padding rows adds avoidable overhead.
+  memset(row, 0xFF, wb);
+  for (uint16_t y = _h; y < _tresH; y++) bus.rawWriteBytes(row, wb);
+  bus.endTxn();
 }
 
 void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lhs, const uint8_t* rhs) {
@@ -255,9 +270,9 @@ void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lh
     for (uint16_t x = 0; x < wb; x++) row[x] = static_cast<uint8_t>(lhs[offset + x] ^ rhs[offset + x]);
     bus.rawWriteBytes(row, wb);
   }
-  bus.endTxn();
   memset(row, 0xFF, wb);
-  for (uint16_t y = _h; y < _tresH; y++) bus.data(row, wb);
+  for (uint16_t y = _h; y < _tresH; y++) bus.rawWriteBytes(row, wb);
+  bus.endTxn();
 }
 
 bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
@@ -301,11 +316,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
     } else {
       // Full/forced-first flash retains the known absolute-from-white behavior.
-      uint8_t whiteRow[128];
-      const uint16_t wb = _wb <= sizeof(whiteRow) ? _wb : sizeof(whiteRow);
-      memset(whiteRow, 0xFF, wb);
-      bus.cmd(CMD_DTM1);
-      for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
+      bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
     }
   }
   // (Ordinary Fast: OLD still holds the previous frame from displayFinish.)

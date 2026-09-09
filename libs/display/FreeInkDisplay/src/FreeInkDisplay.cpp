@@ -556,7 +556,8 @@ void FreeInkDisplay::syncPendingAsync() {
   // and leave the controller mid-pipeline.
   if (!_refreshPending) return;
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
-  _driver->displayFinish(_bus, frameBuffer);
+  _driver->displayFinish(_bus, _pendingSingleBufferFrame);
+  _pendingSingleBufferFrame = nullptr;
 #else
   _driver->displayFinish(_bus, frameBufferActive ? frameBufferActive : frameBuffer);
 #endif
@@ -567,9 +568,15 @@ bool FreeInkDisplay::supportsAsyncRefresh() const {
   return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsAsyncDisplay();
 }
 
-bool FreeInkDisplay::supportsAsyncGrayscaleBase() const {
-  return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsAsyncGrayscaleBase();
+GrayscaleCapabilities FreeInkDisplay::grayscaleCapabilities(GrayscaleMode mode) const {
+  if (_inverted || !_driver) return {};
+  auto caps = _driver->grayscaleCapabilities(mode);
+  if (!caps.supported()) return {};
+  if (_inversionDirty) caps.asyncBase = false;
+  return caps;
 }
+
+bool FreeInkDisplay::supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
 
 bool FreeInkDisplay::refreshBusy() {
   // Does NOT clear the pending state on completion: the driver's post-waveform
@@ -638,6 +645,7 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool
     // (e.g. the tiled-grayscale cleanup), so controller RAM stays the
     // baseline (prev = nullptr) and no 48 KB shadow is allocated.
     _refreshPending = _driver->displayStart(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
+    _pendingSingleBufferFrame = frameBuffer;
     _shadowValid = false;
     return;
   }
@@ -663,6 +671,7 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool
   _refreshPending =
       _driver->displayStart(_bus, frameBuffer, _shadowValid ? _asyncShadow : nullptr, toInternal(mode), turnOffScreen);
   memcpy(_asyncShadow, frameBuffer, bufferSize);
+  _pendingSingleBufferFrame = _asyncShadow;
   _shadowValid = true;
 #else
   (void)noShadow;  // dual-buffer: the secondary buffer is the baseline; no shadow exists
@@ -688,6 +697,7 @@ void FreeInkDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
   syncPendingAsync();  // finish any prior split/async refresh before starting another
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   const bool deferred = _driver->displayStart(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
+  _pendingSingleBufferFrame = frameBuffer;
   _shadowValid = false;
 #else
   // Pass frameBufferActive as the previous frame, then swap so the caller draws
@@ -852,26 +862,28 @@ void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* ro
   // Paper Mono retains these bytes in PSRAM and performs no bus access here, so
   // staging can overlap the B/W waveform. Other drivers may write controller
   // RAM and must drain the pending refresh first.
-  if (!_driver->supportsBusyGrayscaleStaging()) syncPendingAsync();
+  if (!grayscaleCapabilities().stagingWhileBusy) syncPendingAsync();
   _driver->writeGrayscalePlaneStrip(_bus, plane == GRAY_PLANE_LSB ? freeink::GrayPlane::Lsb : freeink::GrayPlane::Msb,
                                     rows, yStart, numRows);
 }
 
 bool FreeInkDisplay::supportsBusyGrayscaleStaging() const {
-  return !_inverted && _driver && _driver->supportsBusyGrayscaleStaging();
+  return grayscaleCapabilities().stagingWhileBusy;
 }
 
 void FreeInkDisplay::prepareGrayscaleTarget() {
-  if (!_inverted && _driver && _driver->supportsBusyGrayscaleStaging()) {
+  if (grayscaleCapabilities().stagingWhileBusy) {
     _driver->prepareGrayscaleTarget(frameBuffer);
   }
 }
 
 bool FreeInkDisplay::supportsStripGrayscale() const {
-  return !_inverted && _driver && _driver->supportsStripGrayscale();
+  return grayscaleCapabilities().stripUploads;
 }
 
-bool FreeInkDisplay::combinesGrayscaleBase() const { return _driver && _driver->combinesGrayscaleBase(); }
+bool FreeInkDisplay::combinesGrayscaleBase() const {
+  return grayscaleCapabilities().base == GrayscaleBase::Combined;
+}
 
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   syncPendingAsync();
