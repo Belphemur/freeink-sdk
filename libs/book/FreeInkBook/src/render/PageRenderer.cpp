@@ -271,11 +271,42 @@ void PageRenderer::renderRules(const Page& page, const FrameTarget& target) {
   }
 }
 
+uint32_t PageRenderer::renderRubies(const Page& page, FontChain& fonts, const FrameTarget& target) {
+  uint32_t missing = 0;
+  for (uint16_t r = 0; r < page.rubyCount; ++r) {
+    const PageRuby& ruby = page.rubies[r];
+    const uint32_t tLen = static_cast<uint32_t>(strlen(ruby.text));
+    int32_t penX = ruby.x;
+    uint32_t i = 0;
+    uint32_t prev = 0;
+    while (i < tLen) {  // NUL-terminated by construction (layout + cache decode)
+      const uint32_t cp = decodeUtf8(ruby.text, tLen, i);
+      if (prev != 0) penX += fonts.kerning(prev, cp, ruby.sizePx, StyleNone);
+      RenderFont* font = fonts.fontFor(cp, StyleNone, nullptr);
+      const GlyphBitmap* glyph = font != nullptr ? font->rasterize(cp, ruby.sizePx) : nullptr;
+      if (glyph == nullptr && cp != ' ' && cp != 0xA0) ++missing;
+      if (glyph != nullptr) {
+        for (uint16_t gy = 0; gy < glyph->height; ++gy) {
+          const uint8_t* srcRow = glyph->pixels + static_cast<uint32_t>(gy) * glyph->width;
+          const int32_t dy = ruby.baselineY + glyph->yoff + gy;
+          for (uint16_t gx = 0; gx < glyph->width; ++gx) {
+            inkPixel(target, penX + glyph->xoff + gx, dy, srcRow[gx]);
+          }
+        }
+      }
+      penX += fonts.advance(cp, ruby.sizePx, StyleNone);
+      prev = cp;
+    }
+  }
+  return missing;
+}
+
 BookStatus PageRenderer::render(const Page& page, FontChain& fonts, BookSource& source,
                                 const ZipCatalog& zip, Arena& scratch,
                                 const FrameTarget& target) {
   renderRules(page, target);
   renderText(page, fonts, target);
+  renderRubies(page, fonts, target);
   return renderImages(page, source, zip, scratch, target);
 }
 

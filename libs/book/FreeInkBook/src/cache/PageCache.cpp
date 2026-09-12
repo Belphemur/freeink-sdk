@@ -10,9 +10,9 @@ namespace book {
 
 namespace {
 
-constexpr uint16_t kFormatVersion = 4;  // v4: rule records (v3: link records + anchor table)
+constexpr uint16_t kFormatVersion = 5;  // v5: ruby annotation records (v4: rule records; v3: link records + anchor table)
 constexpr uint32_t kHeaderSize = 12;
-constexpr uint32_t kBlobHeaderSize = 12;  // per-page blob: charStart u32 + run/image/link/rule counts u16
+constexpr uint32_t kBlobHeaderSize = 14;  // per-page blob: charStart u32 + run/image/link/rule/ruby counts u16
 constexpr uint32_t kFooterSize = 24;  // v3: + anchors + totalChars
 // Partial (suspended-build) footer: the final footer's five u32 fields plus
 // bytesConsumed + bytesTotal, sealed with "FIBx" instead of "FIBX". Old
@@ -69,7 +69,8 @@ constexpr uint32_t kRuleRecSize = 7;
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 10;  // 10: <hr> lays out as a drawn rule
+constexpr uint32_t kLayoutRevision = 11;  // 11: ruby lines drop ascender/2, annotations render
+                                          //  (10: <hr> lays out as a drawn rule
                                           //  (9: uniform per-paragraph line grid (CrossPoint parity)
                                           //   8: inline CSS sizes/margins + line box sizing,
                                           //   7: image dimension pre-scan,
@@ -193,6 +194,7 @@ bool PageCacheWriter::onPage(const Page& page) {
   putU16(head + 6, page.imageCount);
   putU16(head + 8, page.linkCount);
   putU16(head + 10, page.ruleCount);
+  putU16(head + 12, page.rubyCount);
   if (!writeRaw(head, sizeof(head))) return false;
 
   for (uint16_t r = 0; r < page.runCount; ++r) {
@@ -242,6 +244,17 @@ bool PageCacheWriter::onPage(const Page& page) {
     putU16(rec + 4, rule.width);
     rec[6] = rule.thicknessPx;
     if (!writeRaw(rec, sizeof(rec))) return false;
+  }
+  for (uint16_t r = 0; r < page.rubyCount; ++r) {
+    const PageRuby& ruby = page.rubies[r];
+    const uint16_t tLen = static_cast<uint16_t>(strlen(ruby.text));
+    uint8_t rec[8];
+    putU16(rec, static_cast<uint16_t>(ruby.x));
+    putU16(rec + 2, static_cast<uint16_t>(ruby.baselineY));
+    putU16(rec + 4, ruby.sizePx);
+    putU16(rec + 6, tLen);
+    if (!writeRaw(rec, sizeof(rec))) return false;
+    if (!writeRaw(ruby.text, tLen)) return false;
   }
   return true;
 }
@@ -543,6 +556,7 @@ static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t
   const uint16_t imageCount = getU16(blob + 6);
   const uint16_t linkCount = getU16(blob + 8);
   const uint16_t ruleCount = getU16(blob + 10);
+  const uint16_t rubyCount = getU16(blob + 12);
   PageTextRun* runs = scratch.allocArray<PageTextRun>(runCount);
   if (runs == nullptr && runCount != 0) return BookStatus::OutOfMemory;
   PageImage* images = scratch.allocArray<PageImage>(imageCount);
@@ -620,6 +634,25 @@ static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t
     pos += kRuleRecSize;
   }
 
+  PageRuby* rubies = scratch.allocArray<PageRuby>(rubyCount);
+  if (rubies == nullptr && rubyCount != 0) return BookStatus::OutOfMemory;
+  for (uint16_t r = 0; r < rubyCount; ++r) {
+    if (pos + 8 > blobLen) return BookStatus::Stale;
+    PageRuby& ruby = rubies[r];
+    ruby.x = static_cast<int16_t>(getU16(blob + pos));
+    ruby.baselineY = static_cast<int16_t>(getU16(blob + pos + 2));
+    ruby.sizePx = getU16(blob + pos + 4);
+    const uint16_t tLen = getU16(blob + pos + 6);
+    pos += 8;
+    if (pos + tLen > blobLen) return BookStatus::Stale;
+    char* t = static_cast<char*>(scratch.alloc(tLen + 1u, 1));
+    if (t == nullptr) return BookStatus::OutOfMemory;
+    memcpy(t, blob + pos, tLen);
+    t[tLen] = 0;
+    ruby.text = t;
+    pos += tLen;
+  }
+
   out->runs = runs;
   out->runCount = runCount;
   out->images = images;
@@ -628,6 +661,8 @@ static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t
   out->linkCount = linkCount;
   out->rules = rules;
   out->ruleCount = ruleCount;
+  out->rubies = rubies;
+  out->rubyCount = rubyCount;
   out->pageIndex = pageIndex;
   out->charStart = charStart;
   return BookStatus::Ok;

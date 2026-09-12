@@ -605,6 +605,95 @@ void testRuleRoundtrip(HostCacheStorage& cache) {
   cache.remove(name);
 }
 
+void testRubyRoundtrip(HostCacheStorage& cache) {
+  HostFileSource source;
+  CHECK(source.open(fixture("minimal.epub")));
+  Arena bookArena(bookBuf, sizeof(bookBuf));
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  Book book;
+  CHECK_EQ(static_cast<int>(book.open(source, bookArena, scratch)),
+           static_cast<int>(BookStatus::Ok));
+
+  FakeFont font;
+  LayoutParams params = makeParams(font, 16);
+
+  // Direct layout: capture the first page carrying ruby annotations.
+  struct RubyPageSink : PageSink {
+    bool onPage(const Page& page) override {
+      if (rubyCount > 0 || captured) return true;
+      if (page.rubyCount > 0) {
+        captured = true;
+        pageIndex = page.pageIndex;
+        charStart = page.charStart;
+        const uint16_t cap = static_cast<uint16_t>(sizeof(rubies) / sizeof(rubies[0]));
+        rubyCount = page.rubyCount < cap ? page.rubyCount : cap;
+        for (uint16_t r = 0; r < rubyCount; ++r) rubies[r] = page.rubies[r];
+      }
+      return true;
+    }
+    bool captured = false;
+    uint16_t rubyCount = 0;
+    uint32_t pageIndex = 0;
+    uint32_t charStart = 0;
+    PageRuby rubies[16];
+    char textPool[16 * 1024];
+    uint32_t poolLen = 0;
+  } direct;
+  {
+    const size_t marked = scratch.mark();
+    const ZipEntry* entry = book.zip().find("OEBPS/text/ch10.ruby.xhtml");
+    CHECK(entry != nullptr);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, book.zip(), *entry, entry->name, params, scratch, direct,
+                                                    nullptr)),
+             static_cast<int>(BookStatus::Ok));
+    scratch.release(marked);
+  }
+  CHECK(direct.captured);
+  CHECK(direct.rubyCount > 0);
+  // Copy the texts out before the scratch release invalidates them.
+  char texts[16][128];
+  for (uint16_t r = 0; r < direct.rubyCount; ++r) {
+    CHECK(strlen(direct.rubies[r].text) < sizeof(texts[0]));
+    snprintf(texts[r], sizeof(texts[0]), "%s", direct.rubies[r].text);
+  }
+
+  // Build the cache for the same chapter, then read the ruby page back.
+  const uint32_t hash = layoutGenerationHash(params, /*fontFingerprint=*/1);
+  char name[64];
+  CHECK(pageCacheName(0, hash, name, sizeof(name)));
+  const size_t marked = scratch.mark();
+  PageCacheWriter writer;
+  CHECK(writer.begin(cache, name, hash, scratch));
+  const ZipEntry* entry = book.zip().find("OEBPS/text/ch10.ruby.xhtml");
+  CHECK(entry != nullptr);
+  uint32_t pages = 0;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, book.zip(), *entry, entry->name, params, scratch, writer,
+                                                  &pages)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(writer.finish());
+  scratch.release(marked);
+
+  Arena cacheArena(cacheBuf, sizeof(cacheBuf));
+  PageCacheReader reader;
+  CHECK_EQ(static_cast<int>(reader.open(cache, name, hash, cacheArena)), static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(reader.pageCount(), pages);
+
+  const size_t marked2 = scratch.mark();
+  Page page{};
+  CHECK_EQ(static_cast<int>(reader.readPage(direct.pageIndex, scratch, &page)),
+           static_cast<int>(BookStatus::Ok));
+  scratch.release(marked2);
+  CHECK_EQ(page.rubyCount, direct.rubyCount);
+  CHECK_EQ(page.charStart, direct.charStart);
+  for (uint16_t r = 0; r < direct.rubyCount; ++r) {
+    CHECK(std::strcmp(page.rubies[r].text, texts[r]) == 0);
+    CHECK_EQ(page.rubies[r].x, direct.rubies[r].x);
+    CHECK_EQ(page.rubies[r].baselineY, direct.rubies[r].baselineY);
+    CHECK_EQ(page.rubies[r].sizePx, direct.rubies[r].sizePx);
+  }
+  cache.remove(name);
+}
+
 int main(int argc, char** argv) {
   if (argc < 4) {
     std::printf("usage: %s <fixtures-build-dir> <cache-dir> <hyph-en-us.fibh>\n", argv[0]);
@@ -628,6 +717,7 @@ int main(int argc, char** argv) {
   testPartialCacheAndMidBuildRead(cache);
   testHyphenFlagRoundtrip(cache, hyphenator);
   testRuleRoundtrip(cache);
+  testRubyRoundtrip(cache);
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

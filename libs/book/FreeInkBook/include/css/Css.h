@@ -16,6 +16,11 @@
 // font-style, text-align, text-indent (em/px), margin-left/margin-top/
 // margin-bottom (em/px, also via the margin shorthand), display:none,
 // text-decoration (underline, line-through, none).
+//
+// Ruby annotations (<ruby>/<rt>/<rp>) are not CSS: the layout parser handles
+// them structurally (see layout/ChapterLayout.h PageRuby) — <rp> fallback
+// parens are dropped and each base group carries its annotation text as a
+// page-level record.
 
 #include <stdint.h>
 

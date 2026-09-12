@@ -101,6 +101,21 @@ struct PageRule {
   uint8_t thicknessPx;
 };
 
+// One ruby annotation (<ruby>base<rt>text</rt></ruby>): the annotation text
+// drawn small, horizontally centered over its base group's runs on this
+// page. `x` is the annotation's left edge after clamping into the page
+// margins, `baselineY` the annotation text baseline, `sizePx` the size to
+// draw at (half the base run size, CrossPoint parity). The base runs on a
+// ruby line sit ascender/2 below their normal baseline — that lift is
+// already baked into the recorded run baselineY. `text` is arena-owned with
+// the same lifetime as the page's text.
+struct PageRuby {
+  const char* text;
+  int16_t x;
+  int16_t baselineY;
+  uint16_t sizePx;
+};
+
 struct Page {
   const PageTextRun* runs;
   uint16_t runCount;
@@ -110,6 +125,8 @@ struct Page {
   uint16_t linkCount;
   const PageRule* rules;
   uint16_t ruleCount;
+  const PageRuby* rubies;
+  uint16_t rubyCount;
   uint32_t pageIndex;  // 0-based within the chapter
   // Chapter character offset (codepoints of extracted text) of this page's
   // first text run. Whitespace collapse and entity resolution are layout-
