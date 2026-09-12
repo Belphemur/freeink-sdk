@@ -580,7 +580,13 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       const int16_t labelHeight = frame.target().lineHeight(bp.text.font);
       const int16_t spareHeight = static_cast<int16_t>(keyRect.height - labelHeight - 8);
       const int16_t desiredTrim = static_cast<int16_t>(keyRect.height / 5);
-      const int16_t trim = spareHeight > 0 ? (desiredTrim < spareHeight ? desiredTrim : spareHeight) : 0;
+      int16_t trim = spareHeight > 0 ? (desiredTrim < spareHeight ? desiredTrim : spareHeight) : 0;
+      // Alternate hints need headroom above the centered primary glyph. Expand
+      // both sides equally so the highlight remains centered, and use this
+      // same geometry for hint placement in every interaction state.
+      if (key.kind == KeyKind::Normal && key.alt) {
+        trim = static_cast<int16_t>(trim > 8 ? trim - 8 : 0);
+      }
       bp.highlightInsets.top = static_cast<int16_t>(trim / 2);
       bp.highlightInsets.bottom = static_cast<int16_t>(trim - bp.highlightInsets.top);
     }

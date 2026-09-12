@@ -3341,8 +3341,8 @@ void testKeyboardHighlightPadding() {
     CHECK_EQ(interactions.data()[0].rect.height, 80);
     CHECK_EQ(draw.ops[0].kind, FakeDrawTarget::Op::Fill);
     CHECK_EQ(draw.ops[0].color, phase == 0 ? Color::White : Color::Black);
-    CHECK_EQ(draw.ops[0].rect.height, phase == 0 ? 80 : 64);
-    CHECK_EQ(draw.ops[0].rect.y, keyRect.y + (phase == 0 ? 0 : 8));
+    CHECK_EQ(draw.ops[0].rect.height, phase == 0 ? 80 : 72);
+    CHECK_EQ(draw.ops[0].rect.y, keyRect.y + (phase == 0 ? 0 : 4));
     CHECK_EQ(draw.ops[0].rect.y + draw.ops[0].rect.height / 2, keyRect.y + keyRect.height / 2);
     CHECK_EQ(draw.ops[0].rect.width, 100);
     int labels = 0;
@@ -3353,7 +3353,7 @@ void testKeyboardHighlightPadding() {
       if (labels == 1) CHECK_EQ(op.rect.height, 76); // text position stays unchanged
       if (labels == 2) {
         CHECK_EQ(keyRect.right() - op.rect.right(), 10);
-        CHECK_EQ(op.rect.y, keyRect.y + 10);
+        CHECK_EQ(op.rect.y, keyRect.y + 6);
         CHECK_EQ(op.color, phase == 0 ? Color::Black : Color::White);
         if (phase == 0) normalHint = op.rect;
         CHECK_EQ(op.rect.x, normalHint.x);

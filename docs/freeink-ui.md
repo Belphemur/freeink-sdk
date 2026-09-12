@@ -748,7 +748,9 @@ occupying the lower 416px. Rows are separated by 6px (`rowGap`), while the
 horizontal key spacing remains 2px (`gap`). Selected and pressed highlights are
 about 20% shorter and centered on the labels, without reducing hit targets; alternate
 hints keep the same position and 10px right padding in every state, inside the
-highlight area. Selecting or pressing a key changes only the hint color.
+highlight area. Selecting or pressing a key changes only the hint color. Keys with alternate
+hints reserve 4px of extra headroom above the primary glyph, with matching
+clearance below so the highlight stays centered.
 
 The keyboard is stateless like every component: Shift and mode ("?123"/"ABC")
 keys only report their actions. With `symbols` set, `shifted` selects the
