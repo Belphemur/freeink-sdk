@@ -931,6 +931,13 @@ class LayoutEngine : public XmlHandler {
     TextAlign align;
     int16_t textIndentPct;
     bool displayNone;
+    // Inherited CSS padding. Vertical % accumulates as % of em and is
+    // stripped when the owning block closes (CrossPoint v42 parity);
+    // horizontal is root-relative % of em so nested blocks compose insets.
+    uint16_t padTopPct = 0;
+    uint16_t padBottomPct = 0;
+    uint16_t padLeftRootPct = 0;
+    uint16_t padRightRootPct = 0;
   };
 
   struct ParaStyle {
@@ -941,6 +948,8 @@ class LayoutEngine : public XmlHandler {
     int16_t textIndentPct;
     uint16_t spaceBeforePct;
     uint16_t spaceAfterPct;
+    int16_t padLeftPx = 0;   // block CSS padding: per-line horizontal insets
+    int16_t padRightPx = 0;
   };
 
   // --- style stack ----------------------------------------------------------
@@ -970,6 +979,25 @@ class LayoutEngine : public XmlHandler {
     if (decl.align != TextAlign::Inherit) next.align = decl.align;
     if (decl.textIndentPct >= 0) next.textIndentPct = decl.textIndentPct;
     if (decl.displayNone == 1) next.displayNone = true;
+    // CSS padding accumulates down the open-element stack: vertical as % of
+    // em, horizontal as root-relative % of the element's own font size.
+    if (decl.paddingTopPct >= 0) {
+      next.padTopPct = clampPct(parent.padTopPct + static_cast<uint32_t>(decl.paddingTopPct));
+    }
+    if (decl.paddingBottomPct >= 0) {
+      next.padBottomPct =
+          clampPct(parent.padBottomPct + static_cast<uint32_t>(decl.paddingBottomPct));
+    }
+    if (decl.paddingLeftPct >= 0) {
+      const uint32_t own = static_cast<uint32_t>(next.sizePct) *
+                           static_cast<uint16_t>(decl.paddingLeftPct) / 100;
+      next.padLeftRootPct = clampRootPct(parent.padLeftRootPct + own);
+    }
+    if (decl.paddingRightPct >= 0) {
+      const uint32_t own = static_cast<uint32_t>(next.sizePct) *
+                           static_cast<uint16_t>(decl.paddingRightPct) / 100;
+      next.padRightRootPct = clampRootPct(parent.padRightRootPct + own);
+    }
     if (stackTop_ + 1 < kMaxElemDepth) {
       stack_[++stackTop_] = next;
     } else {
@@ -987,6 +1015,28 @@ class LayoutEngine : public XmlHandler {
 
   uint8_t currentFlags() const { return stack_[stackTop_].flags; }
   uint16_t currentSizePct() const { return stack_[stackTop_].sizePct; }
+
+  static uint16_t clampPct(uint32_t pct) {
+    return static_cast<uint16_t>(pct > 1000u ? 1000u : pct);
+  }
+
+  static uint16_t clampRootPct(uint32_t pct) {
+    return static_cast<uint16_t>(pct > 65535u ? 65535u : pct);
+  }
+
+  // One side's horizontal padding in px from the accumulated root-relative
+  // %; a single side is capped at 2 em (CrossPoint MAX_HORIZONTAL_INSET_EM).
+  int16_t padPxFromRootPct(uint16_t rootPct) const {
+    if (rootPct == 0) return 0;
+    const uint32_t cap = static_cast<uint32_t>(params_.baseSizePx) * 2;
+    uint32_t px = static_cast<uint32_t>(params_.baseSizePx) * rootPct / 100;
+    if (px > cap) px = cap;
+    return static_cast<int16_t>(px > 32767u ? 32767u : px);
+  }
+
+  static uint16_t spaceWithPadding(int16_t marginPct, uint16_t padPct) {
+    return clampPct((marginPct >= 0 ? static_cast<uint32_t>(marginPct) : 0u) + padPct);
+  }
 
   uint16_t currentPendingMarginRootPct() const {
     return pendingMarginRootPct_ > 65535u ? 65535u : static_cast<uint16_t>(pendingMarginRootPct_);
@@ -1056,9 +1106,12 @@ class LayoutEngine : public XmlHandler {
     para_.align = state.align;
     para_.indentPx = blockIndentFor(local, params_.baseSizePx);
     para_.textIndentPct = state.textIndentPct;
-    para_.spaceBeforePct = decl.marginTopPct >= 0 ? static_cast<uint16_t>(decl.marginTopPct) : 0;
-    para_.spaceAfterPct =
-        decl.marginBottomPct >= 0 ? static_cast<uint16_t>(decl.marginBottomPct) : 0;
+    para_.padLeftPx = padPxFromRootPct(state.padLeftRootPct);
+    para_.padRightPx = padPxFromRootPct(state.padRightRootPct);
+    // Vertical padding of open ancestor blocks adds to the paragraph's own
+    // block margins; closing a block strips it (CrossPoint v42 parity).
+    para_.spaceBeforePct = spaceWithPadding(decl.marginTopPct, state.padTopPct);
+    para_.spaceAfterPct = spaceWithPadding(decl.marginBottomPct, state.padBottomPct);
     resetParagraphLinks();
     parLen_ = 0;
     spanCount_ = 0;
@@ -1074,6 +1127,10 @@ class LayoutEngine : public XmlHandler {
     para_.align = state.align;
     para_.indentPx = 0;
     para_.textIndentPct = 0;
+    // Horizontal padding is inherited through the closed block; vertical is
+    // stripped (CrossPoint v42 parity).
+    para_.padLeftPx = padPxFromRootPct(state.padLeftRootPct);
+    para_.padRightPx = padPxFromRootPct(state.padRightRootPct);
     para_.spaceBeforePct = 0;
     para_.spaceAfterPct = 0;
     resetParagraphLinks();
@@ -1143,8 +1200,10 @@ class LayoutEngine : public XmlHandler {
       return;
     }
 
-    // Fit within the content box, preserving aspect, never upscaling.
-    const int32_t contentW = params_.pageWidth - params_.marginLeft - params_.marginRight;
+    // Fit within the content box (block padding insets apply), preserving
+    // aspect, never upscaling.
+    const int32_t contentW = params_.pageWidth - params_.marginLeft - params_.marginRight -
+                             para_.padLeftPx - para_.padRightPx;
     const int32_t contentH = params_.pageHeight - params_.marginTop - params_.marginBottom;
     int32_t w = info.width;
     int32_t h = info.height;
@@ -1179,7 +1238,7 @@ class LayoutEngine : public XmlHandler {
     img.href = hrefCopy;
     img.width = static_cast<uint16_t>(w);
     img.height = static_cast<uint16_t>(h);
-    img.x = static_cast<int16_t>(params_.marginLeft + (contentW - w) / 2);
+    img.x = static_cast<int16_t>(params_.marginLeft + para_.padLeftPx + (contentW - w) / 2);
     img.y = pageY_;
     if (runCount_ == 0 && imageCount_ == 1) {
       pageCharStart_ = parCharBase_;
@@ -1381,7 +1440,8 @@ class LayoutEngine : public XmlHandler {
     }
 
     const int32_t baseMaxWidth =
-        params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx;
+        params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx -
+        para_.padLeftPx - para_.padRightPx;
     const uint16_t sizePx = paragraphSizePx();
     const int32_t textIndentPx =
         static_cast<int32_t>(sizePx) * (para_.textIndentPct > 0 ? para_.textIndentPct : 0) / 100;
@@ -1584,7 +1644,8 @@ class LayoutEngine : public XmlHandler {
     }
 
     const int32_t baseMaxWidth =
-        params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx;
+        params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx -
+        para_.padLeftPx - para_.padRightPx;
     const int32_t textIndentPx =
         firstLine && !continued_ && para_.textIndentPct > 0
             ? static_cast<int32_t>(sizePx) * para_.textIndentPct / 100
@@ -1606,7 +1667,7 @@ class LayoutEngine : public XmlHandler {
       if (align == TextAlign::Left) align = TextAlign::Right;
       else if (align == TextAlign::Right) align = TextAlign::Left;
     }
-    int32_t x = params_.marginLeft + para_.indentPx +
+    int32_t x = params_.marginLeft + para_.indentPx + para_.padLeftPx +
                 (paraRtl_ ? 0 : textIndentPx);
     if (align == TextAlign::Right) {
       x += leftover + (paraRtl_ ? 0 : 0);

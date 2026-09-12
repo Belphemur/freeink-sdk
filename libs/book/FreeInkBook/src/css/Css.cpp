@@ -151,6 +151,47 @@ void applyDeclaration(CssDecl* decl, const char* prop, uint32_t propLen, const c
   } else if (propIs("margin-bottom")) {
     const int32_t pct = lengthToPct(value, valueLen);
     if (pct >= 0) decl->marginBottomPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("padding-top")) {
+    const int32_t pct = lengthToPct(value, valueLen);
+    if (pct >= 0) decl->paddingTopPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("padding-bottom")) {
+    const int32_t pct = lengthToPct(value, valueLen);
+    if (pct >= 0) decl->paddingBottomPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("padding-left")) {
+    const int32_t pct = lengthToPct(value, valueLen);
+    if (pct >= 0) decl->paddingLeftPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("padding-right")) {
+    const int32_t pct = lengthToPct(value, valueLen);
+    if (pct >= 0) decl->paddingRightPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("padding")) {
+    // Shorthand: top [right [bottom [left]]] — all four sides.
+    const char* parts[4] = {nullptr, nullptr, nullptr, nullptr};
+    uint32_t partLens[4] = {0, 0, 0, 0};
+    uint32_t count = 0;
+    uint32_t i = 0;
+    while (i < valueLen && count < 4) {
+      while (i < valueLen && isSpace(value[i])) ++i;
+      const uint32_t start = i;
+      while (i < valueLen && !isSpace(value[i])) ++i;
+      if (i > start) {
+        parts[count] = value + start;
+        partLens[count] = i - start;
+        ++count;
+      }
+    }
+    if (count > 0) {
+      const int32_t top = lengthToPct(parts[0], partLens[0]);
+      const uint32_t rightIdx = count >= 2 ? 1 : 0;
+      const int32_t right = lengthToPct(parts[rightIdx], partLens[rightIdx]);
+      const uint32_t bottomIdx = count >= 3 ? 2 : 0;
+      const int32_t bottom = lengthToPct(parts[bottomIdx], partLens[bottomIdx]);
+      const uint32_t leftIdx = count >= 4 ? 3 : rightIdx;
+      const int32_t left = lengthToPct(parts[leftIdx], partLens[leftIdx]);
+      if (top >= 0) decl->paddingTopPct = static_cast<int16_t>(top > 1000 ? 1000 : top);
+      if (right >= 0) decl->paddingRightPct = static_cast<int16_t>(right > 1000 ? 1000 : right);
+      if (bottom >= 0) decl->paddingBottomPct = static_cast<int16_t>(bottom > 1000 ? 1000 : bottom);
+      if (left >= 0) decl->paddingLeftPct = static_cast<int16_t>(left > 1000 ? 1000 : left);
+    }
   } else if (propIs("margin")) {
     // Shorthand: top [right [bottom [left]]] — we take top and bottom.
     const char* parts[4] = {nullptr, nullptr, nullptr, nullptr};
@@ -259,6 +300,10 @@ void CssDecl::applyOver(const CssDecl& over) {
   if (over.marginLeftPct >= 0) marginLeftPct = over.marginLeftPct;
   if (over.marginTopPct >= 0) marginTopPct = over.marginTopPct;
   if (over.marginBottomPct >= 0) marginBottomPct = over.marginBottomPct;
+  if (over.paddingTopPct >= 0) paddingTopPct = over.paddingTopPct;
+  if (over.paddingBottomPct >= 0) paddingBottomPct = over.paddingBottomPct;
+  if (over.paddingLeftPct >= 0) paddingLeftPct = over.paddingLeftPct;
+  if (over.paddingRightPct >= 0) paddingRightPct = over.paddingRightPct;
   if (over.displayNone >= 0) displayNone = over.displayNone;
   if (over.underline >= 0) underline = over.underline;
   if (over.strikethrough >= 0) strikethrough = over.strikethrough;
@@ -267,15 +312,34 @@ void CssDecl::applyOver(const CssDecl& over) {
 
 bool CssStylesheetBuilder::begin(Arena& arena) {
   arena_ = &arena;
-  rules_ = arena.allocArray<CssRule>(kMaxRules);
+  rules_ = nullptr;
   ruleCount_ = 0;
+  ruleCapacity_ = 0;
   skippedSheets_ = 0;
   contentHash_ = 2166136261u;
-  return rules_ != nullptr;
+  return true;
+}
+
+bool CssStylesheetBuilder::reserveRule() {
+  if (ruleCount_ < ruleCapacity_) return true;
+  if (ruleCapacity_ >= kMaxRules) return false;
+  // One modest first chunk for the common small sheet; the next step jumps
+  // straight to the final capacity so growing books strand at most one
+  // chunk (the old block cannot be freed once later allocations follow it).
+  const uint16_t next =
+      ruleCapacity_ == 0 ? kFirstRuleChunk : kMaxRules;
+  CssRule* grown = arena_->allocArray<CssRule>(next);
+  if (grown == nullptr) return false;
+  if (ruleCount_ > 0) {
+    memcpy(grown, rules_, static_cast<uint32_t>(ruleCount_) * sizeof(CssRule));
+  }
+  rules_ = grown;
+  ruleCapacity_ = next;
+  return true;
 }
 
 void CssStylesheetBuilder::addText(const char* css, uint32_t len) {
-  if (rules_ == nullptr) return;  // begin() failed — stay inert
+  if (arena_ == nullptr) return;  // begin() failed — stay inert
   for (uint32_t i = 0; i < len; ++i) {
     contentHash_ ^= static_cast<uint8_t>(css[i]);
     contentHash_ *= 16777619u;
@@ -336,8 +400,7 @@ void CssStylesheetBuilder::addText(const char* css, uint32_t len) {
       uint32_t classHash = 0;
       if (tokEnd > tokStart &&
           parseSimpleSelector(tokStart, static_cast<uint32_t>(tokEnd - tokStart), &elemHash,
-                              &classHash) &&
-          ruleCount_ < kMaxRules) {
+                              &classHash) && reserveRule()) {
         rules_[ruleCount_++] = CssRule{elemHash, classHash, decl};
       }
       s = comma != nullptr ? comma + 1 : selEnd;

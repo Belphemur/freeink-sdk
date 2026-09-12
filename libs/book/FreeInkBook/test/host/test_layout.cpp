@@ -712,6 +712,154 @@ void testStyledChapter() {
   CHECK((inlineBold->styleFlags & StyleBold) != 0);
 }
 
+void testCssPaddingParse() {
+  uint8_t buf[32 * 1024];
+  Arena arena(buf, sizeof(buf));
+  CssStylesheetBuilder builder;
+  CHECK(builder.begin(arena));
+  const char css[] =
+      "div.p { padding: 1em 2em 3em 4px }\n"
+      "p.s { padding: 10% }\n"
+      "p.t { padding-top: 0.5em }\n";
+  builder.addText(css, sizeof(css) - 1);
+  const CssStylesheet sheet = builder.finish();
+
+  // 4-value shorthand: top right bottom left.
+  CssDecl d = cascadeFor(sheet, "div", "p", nullptr);
+  CHECK_EQ(d.paddingTopPct, 100);
+  CHECK_EQ(d.paddingRightPct, 200);
+  CHECK_EQ(d.paddingBottomPct, 300);
+  CHECK_EQ(d.paddingLeftPct, 25);  // 4px → 4/16 em
+
+  // 1-value shorthand applies to all four sides.
+  CssDecl s = cascadeFor(sheet, "p", "s", nullptr);
+  CHECK_EQ(s.paddingTopPct, 10);
+  CHECK_EQ(s.paddingRightPct, 10);
+  CHECK_EQ(s.paddingBottomPct, 10);
+  CHECK_EQ(s.paddingLeftPct, 10);
+
+  // Elements without padding declarations stay unset.
+  CssDecl none = cascadeFor(sheet, "blockquote", nullptr, nullptr);
+  CHECK_EQ(none.paddingTopPct, -1);
+  CHECK_EQ(none.paddingLeftPct, -1);
+
+  // Longhand padding-top on p.t: class rule matches only that class.
+  CssDecl t = cascadeFor(sheet, "p", "t", nullptr);
+  CHECK_EQ(t.paddingTopPct, 50);
+  CHECK_EQ(t.paddingBottomPct, -1);
+
+  // Inline style overrides the class side it declares; others survive.
+  const CssDecl inlineDecl = parseInlineStyle("padding-top: 0.25em; padding-bottom: 2rem");
+  CssDecl withInline = cascadeFor(sheet, "p", "s", &inlineDecl);
+  CHECK_EQ(withInline.paddingTopPct, 25);
+  CHECK_EQ(withInline.paddingBottomPct, 200);
+  CHECK_EQ(withInline.paddingLeftPct, 10);
+}
+
+void testCssPaddingLayout() {
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+  static uint8_t sheetBuf[32 * 1024];
+  Arena sheetArena(sheetBuf, sizeof(sheetBuf));
+  const CssStylesheet sheet = buildBookStylesheet(opened, sheetArena);
+  params.stylesheet = &sheet;
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch10.pad.xhtml");
+  CHECK(entry != nullptr);
+
+  struct RunSink : PageSink {
+    bool onPage(const Page& page) override {
+      for (uint16_t r = 0; r < page.runCount && count < 256; ++r) {
+        runs[count] = page.runs[r];
+        char* copy = text + textUsed;
+        std::memcpy(copy, page.runs[r].text, page.runs[r].len);
+        copy[page.runs[r].len] = '\0';
+        textUsed += page.runs[r].len + 1;
+        runText[count] = copy;
+        ++count;
+      }
+      return true;
+    }
+    PageTextRun runs[256];
+    const char* runText[256];
+    uint32_t count = 0;
+    char text[32 * 1024];
+    uint32_t textUsed = 0;
+  };
+  RunSink rs;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                  entry->name, params, opened.scratch, rs,
+                                                  nullptr)),
+           static_cast<int>(BookStatus::Ok));
+
+  auto findRun = [&](RunSink& sink, const char* prefix) -> const PageTextRun* {
+    for (uint32_t r = 0; r < sink.count; ++r) {
+      if (std::strstr(sink.runText[r], prefix) != nullptr) return &sink.runs[r];
+    }
+    return nullptr;
+  };
+  auto lineRightEdge = [&](RunSink& sink, const PageTextRun* first) -> int32_t {
+    int32_t edge = 0;
+    for (uint32_t r = 0; r < sink.count; ++r) {
+      if (sink.runs[r].baselineY != first->baselineY) continue;
+      int32_t width = 0;
+      uint32_t i = 0;
+      while (i < sink.runs[r].len) {
+        const uint32_t cp = static_cast<uint8_t>(sink.runText[r][i]);
+        i += cp >= 0xF0 ? 4 : cp >= 0xE0 ? 3 : cp >= 0xC0 ? 2 : 1;
+        width += font.advance(cp, sink.runs[r].sizePx, sink.runs[r].styleFlags);
+      }
+      if (sink.runs[r].x + width > edge) edge = sink.runs[r].x + width;
+    }
+    return edge;
+  };
+
+  // p { text-indent: 1.2em } = 19 px; .padded { padding-left: 2em } = 32 px.
+  const PageTextRun* inside = findRun(rs, "INSIDE-MARKER");
+  CHECK(inside != nullptr);
+  CHECK_EQ(inside->x, params.marginLeft + 32 + 19);
+
+  // The nested container inherits the open padded block's insets.
+  const PageTextRun* nested = findRun(rs, "NESTED-MARKER");
+  CHECK(nested != nullptr);
+  CHECK_EQ(nested->x, params.marginLeft + 32 + 19);
+
+  // Horizontal padding survives a nested block close.
+  const PageTextRun* afterClose = findRun(rs, "AFTER-CLOSE-MARKER");
+  CHECK(afterClose != nullptr);
+  CHECK_EQ(afterClose->x, params.marginLeft + 32 + 19);
+
+  // After the padded container itself closes, its padding is gone.
+  const PageTextRun* outside = findRun(rs, "OUTSIDE-MARKER");
+  CHECK(outside != nullptr);
+  CHECK_EQ(outside->x, params.marginLeft + 19);
+
+  // .padded { padding-right: 1.5em } = 24 px: justified non-last lines stop
+  // short of the page's right margin by the padded inset (1 px justify
+  // rounding slack).
+  CHECK(lineRightEdge(rs, inside) <= params.pageWidth - params.marginRight - 23);
+
+  // Vertical: without the stylesheet the .padded padding disappears, so the
+  // INSIDE paragraph's first baseline sits exactly one padding-top (1em =
+  // 16 px) lower with the stylesheet than without. Run the baseline layout
+  // AFTER the assertions above — the second layout reuses the shared
+  // scratch arena and invalidates rs's text pointers.
+  const int16_t insideBaseline = inside->baselineY;
+  LayoutParams bare = stickyParams(font);
+  RunSink rsBare;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                  entry->name, bare, opened.scratch, rsBare,
+                                                  nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  const PageTextRun* insideBare = findRun(rsBare, "INSIDE-MARKER");
+  CHECK(insideBare != nullptr);
+  CHECK_EQ(static_cast<int>(insideBaseline) - static_cast<int>(insideBare->baselineY), 16);
+
+  // Bare geometry stays margin-clean (no padding anywhere).
+  CHECK_EQ(insideBare->x, params.marginLeft);
+}
+
 void testInlineFontSizes() {
   OpenedBook opened;
   CHECK(opened.open("minimal.epub"));
@@ -2135,6 +2283,8 @@ int main(int argc, char** argv) {
   testChapterLayoutSession();
   testCssUnit();
   testStyledChapter();
+  testCssPaddingParse();
+  testCssPaddingLayout();
   testInlineFontSizes();
   testInlineSizesKeepLineGrid();
   testHyphenation(hyphenator);

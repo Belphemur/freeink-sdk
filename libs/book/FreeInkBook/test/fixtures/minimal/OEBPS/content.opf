@@ -19,6 +19,7 @@
     <item id="ch7" href="text/ch7.xhtml" media-type="application/xhtml+xml"/>
     <item id="ch8" href="text/ch8.xhtml" media-type="application/xhtml+xml"/>
     <item id="ch9" href="text/ch9.hr.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch10" href="text/ch10.pad.xhtml" media-type="application/xhtml+xml"/>
     <item id="css" href="styles.css" media-type="text/css"/>
     <item id="img1" href="images/pattern.png" media-type="image/png"/>
     <item id="img2" href="images/pattern.jpg" media-type="image/jpeg"/>
@@ -33,5 +34,6 @@
     <itemref idref="ch7"/>
     <itemref idref="ch8"/>
     <itemref idref="ch9"/>
+    <itemref idref="ch10"/>
   </spine>
 </package>

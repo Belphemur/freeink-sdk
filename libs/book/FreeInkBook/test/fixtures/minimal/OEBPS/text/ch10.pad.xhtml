@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>Chapter Ten</title></head>
+<body>
+  <h1>Padded blocks</h1>
+  <div class="padded">
+    <p>INSIDE-MARKER first padded paragraph, and the sentence continues long enough that the line wraps once, then wraps again, and finally stops right here.</p>
+    <div>
+      <p>NESTED-MARKER paragraph inside a nested container inside the padded one, long enough to wrap across at least two full lines before it ends.</p>
+    </div>
+    <p>AFTER-CLOSE-MARKER text flowing after the nested container closed, still inside the padded one.</p>
+  </div>
+  <p>OUTSIDE-MARKER paragraph following the padded container close, back at the left margin.</p>
+</body>
+</html>

@@ -14,8 +14,10 @@
 //
 // Supported properties: font-size (em/%/px/pt/rem + keywords), font-weight,
 // font-style, text-align, text-indent (em/px), margin-left/margin-top/
-// margin-bottom (em/px, also via the margin shorthand), display:none,
-// text-decoration (underline, line-through, none).
+// margin-bottom (em/px, also via the margin shorthand), padding-top/
+// padding-bottom/padding-left/padding-right (em/%/px/pt, also via the
+// padding shorthand), display:none, text-decoration (underline,
+// line-through, none).
 
 #include <stdint.h>
 
@@ -41,6 +43,10 @@ struct CssDecl {
   int16_t marginLeftPct = -1;   // -1 unset; % of em, applied as inline/block start margin
   int16_t marginTopPct = -1;   // -1 unset; % of em
   int16_t marginBottomPct = -1;
+  int16_t paddingTopPct = -1;   // -1 unset; % of em
+  int16_t paddingBottomPct = -1;
+  int16_t paddingLeftPct = -1;  // -1 unset; % of em, block-level left inset
+  int16_t paddingRightPct = -1;  // -1 unset; % of em, block-level right inset
   int8_t displayNone = -1;     // -1 unset, 1 = display:none
   int8_t underline = -1;       // -1 unset, 0 none, 1 underline
   int8_t strikethrough = -1;   // -1 unset, 0 none, 1 strikethrough
@@ -63,7 +69,11 @@ struct CssStylesheet {
 };
 
 // Accumulates rules from one or more CSS files into a single stylesheet.
-// Rules and the builder's working copy live in `arena`.
+// Rules live in `arena` and grow on demand (64 slots, then the final
+// kMaxRules capacity) instead of reserving the full table up front — the
+// chapter builder allocates from the layout arena, where the reservation
+// would crowd out the PSRAM-less split-arena budget even for books with no
+// chapter-embedded styles.
 class CssStylesheetBuilder {
  public:
   bool begin(Arena& arena);
@@ -81,10 +91,16 @@ class CssStylesheetBuilder {
 
  private:
   static constexpr uint16_t kMaxRules = 512;
+  static constexpr uint16_t kFirstRuleChunk = 64;
+
+  // Ensures room for one more rule. Returns false when the arena refuses
+  // (or kMaxRules is reached); the declaration is then skipped, never fatal.
+  bool reserveRule();
 
   Arena* arena_ = nullptr;
   CssRule* rules_ = nullptr;
   uint16_t ruleCount_ = 0;
+  uint16_t ruleCapacity_ = 0;
   uint16_t skippedSheets_ = 0;
   uint32_t contentHash_ = 2166136261u;
 };

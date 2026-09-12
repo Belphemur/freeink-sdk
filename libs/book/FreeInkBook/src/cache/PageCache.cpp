@@ -71,8 +71,9 @@ constexpr uint32_t kRuleRecSize = 7;
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 10;  // 10: <hr> lays out as a drawn rule
-                                          //  (9: uniform per-paragraph line grid (CrossPoint parity)
+constexpr uint32_t kLayoutRevision = 11;  // 11: CSS padding folds into block geometry
+                                          //  (10: <hr> lays out as a drawn rule
+                                          //   9: uniform per-paragraph line grid (CrossPoint parity)
                                           //   8: inline CSS sizes/margins + line box sizing,
                                           //   7: image dimension pre-scan,
                                           //   6: focus reading + non-ASCII hyphenation,
