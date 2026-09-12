@@ -10,7 +10,9 @@ namespace book {
 
 namespace {
 
-constexpr uint16_t kFormatVersion = 4;  // v4: rule records (v3: link records + anchor table)
+constexpr uint16_t kFormatVersion = 5;  // v5: per-run chapter anchoring — charStart/charLen +
+                                        //     continuation layoutFlags
+                                        //     (v4: rule records, v3: link records + anchor table)
 constexpr uint32_t kHeaderSize = 12;
 constexpr uint32_t kBlobHeaderSize = 12;  // per-page blob: charStart u32 + run/image/link/rule counts u16
 constexpr uint32_t kFooterSize = 24;  // v3: + anchors + totalChars
@@ -197,13 +199,15 @@ bool PageCacheWriter::onPage(const Page& page) {
 
   for (uint16_t r = 0; r < page.runCount; ++r) {
     const PageTextRun& run = page.runs[r];
-    uint8_t rec[10];
+    uint8_t rec[16];
     putU16(rec, static_cast<uint16_t>(run.x));
     putU16(rec + 2, static_cast<uint16_t>(run.baselineY));
     putU16(rec + 4, run.sizePx);
     rec[6] = run.styleFlags;
     rec[7] = run.layoutFlags;
     putU16(rec + 8, run.len);
+    putU32(rec + 10, run.charStart);
+    putU16(rec + 14, run.charLen);
     if (!writeRaw(rec, sizeof(rec))) return false;
     if (!writeRaw(run.text, run.len)) return false;
   }
@@ -550,15 +554,17 @@ static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t
 
   uint32_t pos = kBlobHeaderSize;
   for (uint16_t r = 0; r < runCount; ++r) {
-    if (pos + 10 > blobLen) return BookStatus::Stale;
+    if (pos + 16 > blobLen) return BookStatus::Stale;
     PageTextRun& run = runs[r];
     run.x = static_cast<int16_t>(getU16(blob + pos));
     run.baselineY = static_cast<int16_t>(getU16(blob + pos + 2));
     run.sizePx = getU16(blob + pos + 4);
     run.styleFlags = blob[pos + 6];
-    run.layoutFlags = blob[pos + 7];  // reserved-0 in v4 files written before LayoutHyphenated
+    run.layoutFlags = blob[pos + 7];  // continuation bits live here since v5
     run.len = getU16(blob + pos + 8);
-    pos += 10;
+    run.charStart = getU32(blob + pos + 10);
+    run.charLen = getU16(blob + pos + 14);
+    pos += 16;
     if (pos + run.len > blobLen) return BookStatus::Stale;
     run.text = reinterpret_cast<const char*>(blob + pos);  // in-place, no copy
     pos += run.len;

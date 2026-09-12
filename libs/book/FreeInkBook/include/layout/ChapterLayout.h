@@ -55,10 +55,15 @@ struct LayoutParams {
 // and is valid only while the owning PageSink::onPage() call runs.
 struct PageTextRun {
   const char* text;
+  // charStart sits beside the pointer so charLen packs with the other
+  // u16 fields — no tail padding either way (24 B on 64-bit hosts, 20 B on
+  // 32-bit MCUs, matching the pre-anchoring 16/24 B arenas + 4).
+  uint32_t charStart;  // chapter codepoint of the run's first character
   uint16_t len;        // bytes of UTF-8
   int16_t x;
   int16_t baselineY;
   uint16_t sizePx;     // resolved size — headings differ from body
+  uint16_t charLen;    // chapter codepoints covered (see below)
   uint8_t styleFlags;  // StyleFlags bits
   // Per-run layout artifacts. The first bit, LayoutHyphenated, marks a run
   // (or the last byte of it) that terminates in a synthetic '-' (U+002D)
@@ -69,6 +74,37 @@ struct PageTextRun {
   // (emitSeg, PageCache decode) sets it explicitly — like the other fields.
   uint8_t layoutFlags;
   static constexpr uint8_t LayoutHyphenated = 1u << 0;
+  // Word-continuation bits for run-granular hit-testing (dictionary lookup,
+  // selection groups). A logical word is the whitespace-delimited stretch of
+  // chapter text; when layout splits it across a line, a capacity page
+  // split, or a paragraph-segment flush, the two fragments land in adjacent
+  // runs (in stream order) and BOTH bits mark that shared boundary:
+  // LayoutLastContinues on the run whose last character's word continues
+  // past the boundary, LayoutFirstContinues on the run that begins inside
+  // that word. The boundary is mid-word exactly when the paragraph
+  // characters on both sides of it are non-whitespace, so for stream-
+  // adjacent runs the two bits always agree, and the joined pair satisfies
+  // prev.charStart + prev.charLen == next.charStart. Because the bits ride
+  // every run boundary (not just line ends), a consumer joins fragments by
+  // walking runs in order and merging run r's last token with run r+1's
+  // first token whenever the bits are set. CJK boundaries count as mid-word
+  // (source text has no spaces there) — grouping policy stays with the
+  // consumer. A firstContinues run whose head fragment lives on a previous
+  // page pairs with nothing on this page: the consumer treats it as a lone
+  // fragment, matching the legacy per-page behavior.
+  static constexpr uint8_t LayoutFirstContinues = 1u << 1;
+  static constexpr uint8_t LayoutLastContinues = 1u << 2;
+  // Chapter character anchoring, in codepoints of extracted text (the same
+  // coordinate as Page::charStart). charStart addresses the run's first
+  // character; charLen counts the chapter codepoints its logical range
+  // covers. Both are engine-computed because re-encoded `text` no longer
+  // maps 1:1 onto the chapter: soft hyphens drop, ligature pairs bake into
+  // one glyph, and right-to-left runs are stored in visual order (UAX #9
+  // L2/L4) while charStart..charStart+charLen stays in logical order. The
+  // synthetic hyphen of a LayoutHyphenated run is presentation-only and
+  // outside the range (charLen covers the pre-wrap source characters). A
+  // consumer measures token widths with its own font — the same font that
+  // rendered the page — exactly like the legacy word-selection path.
 };
 
 // One placed image. `href` is the container path of the image entry,
