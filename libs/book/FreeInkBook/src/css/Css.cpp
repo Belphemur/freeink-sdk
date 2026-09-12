@@ -267,15 +267,34 @@ void CssDecl::applyOver(const CssDecl& over) {
 
 bool CssStylesheetBuilder::begin(Arena& arena) {
   arena_ = &arena;
-  rules_ = arena.allocArray<CssRule>(kMaxRules);
+  rules_ = nullptr;
   ruleCount_ = 0;
+  ruleCapacity_ = 0;
   skippedSheets_ = 0;
   contentHash_ = 2166136261u;
-  return rules_ != nullptr;
+  return true;
+}
+
+bool CssStylesheetBuilder::reserveRule() {
+  if (ruleCount_ < ruleCapacity_) return true;
+  if (ruleCapacity_ >= kMaxRules) return false;
+  // One modest first chunk for the common small sheet; the next step jumps
+  // straight to the final capacity so growing books strand at most one
+  // chunk (the old block cannot be freed once later allocations follow it).
+  const uint16_t next =
+      ruleCapacity_ == 0 ? kFirstRuleChunk : kMaxRules;
+  CssRule* grown = arena_->allocArray<CssRule>(next);
+  if (grown == nullptr) return false;
+  if (ruleCount_ > 0) {
+    memcpy(grown, rules_, static_cast<uint32_t>(ruleCount_) * sizeof(CssRule));
+  }
+  rules_ = grown;
+  ruleCapacity_ = next;
+  return true;
 }
 
 void CssStylesheetBuilder::addText(const char* css, uint32_t len) {
-  if (rules_ == nullptr) return;  // begin() failed — stay inert
+  if (arena_ == nullptr) return;  // begin() failed — stay inert
   for (uint32_t i = 0; i < len; ++i) {
     contentHash_ ^= static_cast<uint8_t>(css[i]);
     contentHash_ *= 16777619u;
@@ -336,8 +355,7 @@ void CssStylesheetBuilder::addText(const char* css, uint32_t len) {
       uint32_t classHash = 0;
       if (tokEnd > tokStart &&
           parseSimpleSelector(tokStart, static_cast<uint32_t>(tokEnd - tokStart), &elemHash,
-                              &classHash) &&
-          ruleCount_ < kMaxRules) {
+                              &classHash) && reserveRule()) {
         rules_[ruleCount_++] = CssRule{elemHash, classHash, decl};
       }
       s = comma != nullptr ? comma + 1 : selEnd;

@@ -63,7 +63,11 @@ struct CssStylesheet {
 };
 
 // Accumulates rules from one or more CSS files into a single stylesheet.
-// Rules and the builder's working copy live in `arena`.
+// Rules live in `arena` and grow on demand (64 slots, then the final
+// kMaxRules capacity) instead of reserving the full table up front — the
+// chapter builder allocates from the layout arena, where the reservation
+// would crowd out the PSRAM-less split-arena budget even for books with no
+// chapter-embedded styles.
 class CssStylesheetBuilder {
  public:
   bool begin(Arena& arena);
@@ -81,10 +85,16 @@ class CssStylesheetBuilder {
 
  private:
   static constexpr uint16_t kMaxRules = 512;
+  static constexpr uint16_t kFirstRuleChunk = 64;
+
+  // Ensures room for one more rule. Returns false when the arena refuses
+  // (or kMaxRules is reached); the declaration is then skipped, never fatal.
+  bool reserveRule();
 
   Arena* arena_ = nullptr;
   CssRule* rules_ = nullptr;
   uint16_t ruleCount_ = 0;
+  uint16_t ruleCapacity_ = 0;
   uint16_t skippedSheets_ = 0;
   uint32_t contentHash_ = 2166136261u;
 };
