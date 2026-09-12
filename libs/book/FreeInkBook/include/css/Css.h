@@ -14,8 +14,10 @@
 //
 // Supported properties: font-size (em/%/px/pt/rem + keywords), font-weight,
 // font-style, text-align, text-indent (em/px), margin-left/margin-top/
-// margin-bottom (em/px, also via the margin shorthand), display:none,
-// text-decoration (underline, line-through, none).
+// margin-bottom (em/px, also via the margin shorthand), padding-top/
+// padding-bottom/padding-left/padding-right (em/%/px/pt, also via the
+// padding shorthand), display:none, text-decoration (underline,
+// line-through, none).
 
 #include <stdint.h>
 
@@ -41,6 +43,10 @@ struct CssDecl {
   int16_t marginLeftPct = -1;   // -1 unset; % of em, applied as inline/block start margin
   int16_t marginTopPct = -1;   // -1 unset; % of em
   int16_t marginBottomPct = -1;
+  int16_t paddingTopPct = -1;   // -1 unset; % of em
+  int16_t paddingBottomPct = -1;
+  int16_t paddingLeftPct = -1;  // -1 unset; % of em, block-level left inset
+  int16_t paddingRightPct = -1;  // -1 unset; % of em, block-level right inset
   int8_t displayNone = -1;     // -1 unset, 1 = display:none
   int8_t underline = -1;       // -1 unset, 0 none, 1 underline
   int8_t strikethrough = -1;   // -1 unset, 0 none, 1 strikethrough

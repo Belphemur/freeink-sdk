@@ -151,6 +151,47 @@ void applyDeclaration(CssDecl* decl, const char* prop, uint32_t propLen, const c
   } else if (propIs("margin-bottom")) {
     const int32_t pct = lengthToPct(value, valueLen);
     if (pct >= 0) decl->marginBottomPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("padding-top")) {
+    const int32_t pct = lengthToPct(value, valueLen);
+    if (pct >= 0) decl->paddingTopPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("padding-bottom")) {
+    const int32_t pct = lengthToPct(value, valueLen);
+    if (pct >= 0) decl->paddingBottomPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("padding-left")) {
+    const int32_t pct = lengthToPct(value, valueLen);
+    if (pct >= 0) decl->paddingLeftPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("padding-right")) {
+    const int32_t pct = lengthToPct(value, valueLen);
+    if (pct >= 0) decl->paddingRightPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("padding")) {
+    // Shorthand: top [right [bottom [left]]] — all four sides.
+    const char* parts[4] = {nullptr, nullptr, nullptr, nullptr};
+    uint32_t partLens[4] = {0, 0, 0, 0};
+    uint32_t count = 0;
+    uint32_t i = 0;
+    while (i < valueLen && count < 4) {
+      while (i < valueLen && isSpace(value[i])) ++i;
+      const uint32_t start = i;
+      while (i < valueLen && !isSpace(value[i])) ++i;
+      if (i > start) {
+        parts[count] = value + start;
+        partLens[count] = i - start;
+        ++count;
+      }
+    }
+    if (count > 0) {
+      const int32_t top = lengthToPct(parts[0], partLens[0]);
+      const uint32_t rightIdx = count >= 2 ? 1 : 0;
+      const int32_t right = lengthToPct(parts[rightIdx], partLens[rightIdx]);
+      const uint32_t bottomIdx = count >= 3 ? 2 : 0;
+      const int32_t bottom = lengthToPct(parts[bottomIdx], partLens[bottomIdx]);
+      const uint32_t leftIdx = count >= 4 ? 3 : rightIdx;
+      const int32_t left = lengthToPct(parts[leftIdx], partLens[leftIdx]);
+      if (top >= 0) decl->paddingTopPct = static_cast<int16_t>(top > 1000 ? 1000 : top);
+      if (right >= 0) decl->paddingRightPct = static_cast<int16_t>(right > 1000 ? 1000 : right);
+      if (bottom >= 0) decl->paddingBottomPct = static_cast<int16_t>(bottom > 1000 ? 1000 : bottom);
+      if (left >= 0) decl->paddingLeftPct = static_cast<int16_t>(left > 1000 ? 1000 : left);
+    }
   } else if (propIs("margin")) {
     // Shorthand: top [right [bottom [left]]] — we take top and bottom.
     const char* parts[4] = {nullptr, nullptr, nullptr, nullptr};
@@ -259,6 +300,10 @@ void CssDecl::applyOver(const CssDecl& over) {
   if (over.marginLeftPct >= 0) marginLeftPct = over.marginLeftPct;
   if (over.marginTopPct >= 0) marginTopPct = over.marginTopPct;
   if (over.marginBottomPct >= 0) marginBottomPct = over.marginBottomPct;
+  if (over.paddingTopPct >= 0) paddingTopPct = over.paddingTopPct;
+  if (over.paddingBottomPct >= 0) paddingBottomPct = over.paddingBottomPct;
+  if (over.paddingLeftPct >= 0) paddingLeftPct = over.paddingLeftPct;
+  if (over.paddingRightPct >= 0) paddingRightPct = over.paddingRightPct;
   if (over.displayNone >= 0) displayNone = over.displayNone;
   if (over.underline >= 0) underline = over.underline;
   if (over.strikethrough >= 0) strikethrough = over.strikethrough;
