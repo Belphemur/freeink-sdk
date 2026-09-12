@@ -13,11 +13,17 @@
 //
 // File format (little-endian, all fields packed):
 //   header : 'F''I''B''P' u16 version u16 reserved u32 generationHash
-//   blobs  : per page — u32 charStart, u16 runCount, u16 reserved, then runs
+//   blobs  : per page — u32 charStart, u16 runCount, u16 imageCount,
+//            u16 linkCount, u16 ruleCount, u16 rubyCount, then runs
 //            {i16 x, i16 baselineY, u16 sizePx, u8 flags, u8 reserved,
+//             u16 textLen, bytes}, images {i16 x, i16 y, u16 w, u16 h,
+//             u16 hrefLen, bytes}, links {i16 x, i16 y, u16 w, u16 h,
+//             u16 targetLen, u16 fragmentLen, bytes}, rules {i16 x, i16 y,
+//             u16 w, u8 thickness}, rubies {i16 x, i16 baselineY, u16 sizePx,
 //             u16 textLen, bytes}
 //   index  : per page — u32 blobOffset, u32 charStart
-//   footer : u32 indexOffset, u32 pageCount, 'F''I''B''X'
+//   footer : u32 indexOffset, u32 pageCount, u32 anchorOffset,
+//            u32 anchorCount, u32 totalChars, 'F''I''B''X'
 // The index and footer live at the end so the writer streams blobs without
 // knowing the page count up front.
 
