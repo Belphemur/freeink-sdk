@@ -55,6 +55,9 @@ constexpr uint16_t kMaxLinksPerPage = 16;
 constexpr uint8_t kMaxLinksPerPar = 6;
 constexpr uint32_t kStyleTextCap = 3 * 1024;
 constexpr uint16_t kMaxProbedImages = 96;
+constexpr uint16_t kMaxRubyPerPar = 4;   // ruby annotations buffered per paragraph
+constexpr uint16_t kRubyTextCap = 64;    // bytes per ruby annotation incl. NUL
+constexpr uint16_t kMaxRubiesPerPage = 8;
 #elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
 constexpr uint32_t kParTextCap = 16384;
 constexpr uint16_t kMaxSpans = 192;
@@ -68,6 +71,9 @@ constexpr uint16_t kMaxLinksPerPage = 48;
 constexpr uint8_t kMaxLinksPerPar = 12;
 constexpr uint32_t kStyleTextCap = 24 * 1024;
 constexpr uint16_t kMaxProbedImages = 512;
+constexpr uint16_t kMaxRubyPerPar = 32;
+constexpr uint16_t kRubyTextCap = 128;
+constexpr uint16_t kMaxRubiesPerPage = 48;
 #else
 constexpr uint32_t kParTextCap = 8192;
 constexpr uint16_t kMaxSpans = 128;
@@ -81,6 +87,9 @@ constexpr uint16_t kMaxLinksPerPage = 24;
 constexpr uint8_t kMaxLinksPerPar = 8;
 constexpr uint32_t kStyleTextCap = 12 * 1024;  // chapter-embedded <style> blocks
 constexpr uint16_t kMaxProbedImages = 256;
+constexpr uint16_t kMaxRubyPerPar = 16;
+constexpr uint16_t kRubyTextCap = 96;
+constexpr uint16_t kMaxRubiesPerPage = 24;
 #endif
 
 // --- image dimension pre-scan ---------------------------------------------------
@@ -715,6 +724,9 @@ class LayoutEngine : public XmlHandler {
     links_ = scratch_.allocArray<PageLink>(kMaxLinksPerPage);
     rules_ = scratch_.allocArray<PageRule>(kMaxRulesPerPage);
     lines_ = scratch_.allocArray<LineRec>(kMaxLinesPerPar);
+    rubies_ = scratch_.allocArray<PageRuby>(kMaxRubiesPerPage);
+    anns_ = scratch_.allocArray<RubyAnn>(kMaxRubyPerPar);
+    rubyBuf_ = static_cast<char*>(scratch_.alloc(kRubyTextCap, 1));
     // Page-run text lives in its own sub-arena, NOT in `scratch_`: the XML
     // parse that drives this engine keeps its inflate window and parser
     // buffers live in `scratch_` for the whole chapter, and those are
@@ -724,7 +736,8 @@ class LayoutEngine : public XmlHandler {
     chapterCssOk_ = styleText_ != nullptr && chapterBuilder_.begin(scratch_);
     void* pageBlock = scratch_.alloc(kPageArenaCap, alignof(max_align_t));
     if (parText_ == nullptr || breaks_ == nullptr || levels_ == nullptr || spans_ == nullptr || runs_ == nullptr ||
-        images_ == nullptr || links_ == nullptr || rules_ == nullptr || lines_ == nullptr || pageBlock == nullptr) {
+        images_ == nullptr || links_ == nullptr || rules_ == nullptr || lines_ == nullptr || pageBlock == nullptr ||
+        rubies_ == nullptr || anns_ == nullptr || rubyBuf_ == nullptr) {
       return false;
     }
     pageArena_.init(pageBlock, kPageArenaCap);
@@ -814,6 +827,15 @@ class LayoutEngine : public XmlHandler {
       }
     }
 
+    if (strcmp(local, "ruby") == 0 && !stack_[stackTop_].displayNone) {
+      inRuby_ = true;
+      rubyGroupByteAbs_ = parByteBase_ + parLen_;
+    } else if (strcmp(local, "rt") == 0 && inRuby_) {
+      openRubyGroup();
+    } else if (strcmp(local, "rp") == 0 && inRuby_) {
+      ++rpDepth_;
+    }
+
     if (isBlockElement(local)) {
       flushParagraph();
       latchParagraph(local, decl);
@@ -861,6 +883,14 @@ class LayoutEngine : public XmlHandler {
       currentLink_ = 0;
       noteStyleChange();
     }
+    if (strcmp(local, "rt") == 0) {
+      if (collectingRubyText_) closeRubyText();
+    } else if (strcmp(local, "ruby") == 0 && inRuby_) {
+      inRuby_ = false;
+      rubyGroupByteAbs_ = 0;
+    } else if (strcmp(local, "rp") == 0 && rpDepth_ > 0) {
+      --rpDepth_;
+    }
 
     if (isBlockElement(local)) {
       flushParagraph();
@@ -881,6 +911,11 @@ class LayoutEngine : public XmlHandler {
     if (stack_[stackTop_].displayNone) return;
     for (int i = 0; i < len; ++i) {
       const char c = text[i];
+      if (rpDepth_ > 0) continue;  // <rp> fallback parens: suppressed under <ruby>
+      if (collectingRubyText_) {
+        if (rubyBufLen_ + 1 < kRubyTextCap) rubyBuf_[rubyBufLen_++] = c;
+        continue;
+      }
       if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
         pendingSpace_ = parLen_ > 0;  // collapse runs; drop leading whitespace
       } else {
@@ -950,6 +985,18 @@ class LayoutEngine : public XmlHandler {
     uint16_t spaceAfterPct;
     int16_t padLeftPx = 0;   // block CSS padding: per-line horizontal insets
     int16_t padRightPx = 0;
+  };
+
+  // A pending ruby annotation: base byte range plus the annotation text.
+  // Positions are absolute chapter byte offsets so a capacity split
+  // (flushParagraph mid-paragraph) never invalidates them; lineIdx is
+  // resolved once the paragraph's lines are measured.
+  struct RubyAnn {
+    uint32_t byteStartAbs;
+    uint32_t byteEndAbs;
+    uint16_t textLen;
+    uint16_t lineIdx;
+    char text[kRubyTextCap];
   };
 
   // --- style stack ----------------------------------------------------------
@@ -1094,6 +1141,77 @@ class LayoutEngine : public XmlHandler {
     parText_[parLen_++] = c;
   }
 
+  // --- ruby annotations -------------------------------------------------------
+
+  void openRubyGroup() {
+    collectingRubyText_ = true;
+    rubyBufLen_ = 0;
+    rubyEmptyBase_ = rubyGroupByteAbs_ == parByteBase_ + parLen_;
+  }
+
+  void appendRubyText(RubyAnn& ann, const char* text, uint32_t len) {
+    for (uint32_t i = 0; i < len && ann.textLen + 1 < kRubyTextCap; ++i) {
+      ann.text[ann.textLen++] = text[i];
+    }
+  }
+
+  void closeRubyText() {
+    collectingRubyText_ = false;
+    // Trim + collapse whitespace runs, mirroring the legacy reader.
+    uint32_t start = 0;
+    while (start < rubyBufLen_ && (rubyBuf_[start] == ' ' || rubyBuf_[start] == '\t' ||
+                                   rubyBuf_[start] == '\n' || rubyBuf_[start] == '\r')) {
+      ++start;
+    }
+    uint32_t end = rubyBufLen_;
+    while (end > start && (rubyBuf_[end - 1] == ' ' || rubyBuf_[end - 1] == '\t' ||
+                           rubyBuf_[end - 1] == '\n' || rubyBuf_[end - 1] == '\r')) {
+      --end;
+    }
+    if (start != end) {
+      char clean[kRubyTextCap];
+      uint32_t cleanLen = 0;
+      bool inSpace = false;
+      for (uint32_t i = start; i < end && cleanLen + 1 < kRubyTextCap; ++i) {
+        const char c = rubyBuf_[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+          if (!inSpace) {
+            clean[cleanLen++] = ' ';
+            inSpace = true;
+          }
+        } else {
+          clean[cleanLen++] = c;
+          inSpace = false;
+        }
+      }
+      if (rubyEmptyBase_) {
+        // No new base since the last <rt>: extend the previous annotation
+        // (legacy multi-rt concatenation, e.g. <ruby>漢<rt>かん</rt><rt>じ</rt></ruby>).
+        if (annCount_ > 0) appendRubyText(anns_[annCount_ - 1], clean, cleanLen);
+      } else if (annCount_ < kMaxRubyPerPar) {
+        RubyAnn& ann = anns_[annCount_++];
+        ann.byteStartAbs = rubyGroupByteAbs_;
+        ann.byteEndAbs = parByteBase_ + parLen_;
+        ann.textLen = 0;
+        ann.lineIdx = 0;
+        appendRubyText(ann, clean, cleanLen);
+      }
+    }
+    rubyBufLen_ = 0;
+    rubyEmptyBase_ = false;
+    rubyGroupByteAbs_ = parByteBase_ + parLen_;  // next group's base starts here
+  }
+
+  void resetRuby() {
+    annCount_ = 0;
+    inRuby_ = false;
+    collectingRubyText_ = false;
+    rubyBufLen_ = 0;
+    rubyGroupByteAbs_ = 0;
+    rubyEmptyBase_ = false;
+    rpDepth_ = 0;
+  }
+
   void resetParagraphLinks() {
     parLinkCount_ = 0;
     currentLink_ = 0;
@@ -1113,6 +1231,7 @@ class LayoutEngine : public XmlHandler {
     para_.spaceBeforePct = spaceWithPadding(decl.marginTopPct, state.padTopPct);
     para_.spaceAfterPct = spaceWithPadding(decl.marginBottomPct, state.padBottomPct);
     resetParagraphLinks();
+    resetRuby();
     parLen_ = 0;
     spanCount_ = 0;
     pendingMarginRootPct_ = 0;
@@ -1134,6 +1253,7 @@ class LayoutEngine : public XmlHandler {
     para_.spaceBeforePct = 0;
     para_.spaceAfterPct = 0;
     resetParagraphLinks();
+    resetRuby();
     parLen_ = 0;
     spanCount_ = 0;
     pendingMarginRootPct_ = 0;
@@ -1417,6 +1537,19 @@ class LayoutEngine : public XmlHandler {
     if (hasArabic) shapeArabic(parText_, parLen_, levels_, params_.font);
     if (params_.focusReading) markFocusWords(parText_, parLen_, levels_);
 
+    // Ruby groups never split across lines (legacy parity: the whole group
+    // stays together): demote break opportunities inside each annotation's
+    // base range. A break after the group's last byte stays allowed.
+    for (uint16_t a = 0; a < annCount_; ++a) {
+      const uint32_t relStart =
+          anns_[a].byteStartAbs > parByteBase_ ? anns_[a].byteStartAbs - parByteBase_ : 0;
+      uint32_t relEnd = anns_[a].byteEndAbs > parByteBase_ ? anns_[a].byteEndAbs - parByteBase_ : 0;
+      if (relEnd > parLen_) relEnd = parLen_;
+      for (uint32_t i = relStart; i + 1 < relEnd; ++i) {
+        if (breaks_[i] == LINEBREAK_ALLOWBREAK) breaks_[i] = LINEBREAK_NOBREAK;
+      }
+    }
+
     // "ko-keep-all": word-unit breaking (CSS word-break: keep-all). UAX #14
     // allows breaks between Hangul syllables; this style demotes them so
     // Korean lines break only at spaces (libunibreak still sees "ko" for its
@@ -1594,7 +1727,7 @@ class LayoutEngine : public XmlHandler {
       }
 
       for (uint32_t l = 0; l < take && !failed_ && !stopParse; ++l) {
-        placeLine(lines_[idx + l], sizePx, lineHeight, idx + l == 0);
+        placeLine(lines_[idx + l], sizePx, lineHeight, idx + l == 0, idx + l);
       }
       idx += take;
       if (idx < lineCount_ && !stopParse) emitPage();
@@ -1602,9 +1735,25 @@ class LayoutEngine : public XmlHandler {
 
     advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceAfterPct *
                                   params_.paragraphSpacingPct / 10000));
+    // Resolve each annotation's line anchor, then retire the paragraph's
+    // ruby state with the buffer itself.
+    for (uint16_t a = 0; a < annCount_; ++a) {
+      const uint32_t relStart =
+          anns_[a].byteStartAbs > parByteBase_ ? anns_[a].byteStartAbs - parByteBase_ : 0;
+      uint16_t line = lineCount_ > 0 ? static_cast<uint16_t>(lineCount_ - 1) : 0;
+      for (uint32_t l = 0; l < lineCount_; ++l) {
+        if (lines_[l].start <= relStart && relStart < lines_[l].end) {
+          line = static_cast<uint16_t>(l);
+          break;
+        }
+      }
+      anns_[a].lineIdx = line;
+    }
     parCharBase_ += countChars(parText_, parLen_);
+    parByteBase_ += parLen_;
     parLen_ = 0;
     spanCount_ = 0;
+    annCount_ = 0;
     pendingMarginRootPct_ = 0;
     pendingSpace_ = false;
     continued_ = false;
@@ -1633,7 +1782,23 @@ class LayoutEngine : public XmlHandler {
   // UTF-8 continuation bytes nor any multi-byte lead byte equals ' '/'\n'.
   static bool isWsByte(char c) { return c == ' ' || c == '\n'; }
 
-  void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine) {
+  // Width of a byte range with kerning resets, exactly as emitSeg measures
+  // (same span, same walk). Used to place ruby annotations over base text.
+  int32_t advRange(uint32_t from, uint32_t to, const Span& span) const {
+    int32_t w = 0;
+    uint32_t i = from;
+    uint32_t prev = 0;
+    while (i < to) {
+      const uint32_t pos = i;
+      const uint32_t cp = decodeShaped(to, i, span);
+      w += advanceFor(cp, prev, span, focusExtra(pos));
+      prev = cp;
+    }
+    return w;
+  }
+
+  void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine,
+                 uint32_t lineIdx) {
     if (rec.end == rec.start) {  // blank line (e.g. double <br/>)
       pageY_ += lineHeight;
       return;
@@ -1677,7 +1842,18 @@ class LayoutEngine : public XmlHandler {
     const int32_t perGap = justify ? leftover / static_cast<int32_t>(gaps) : 0;
     int32_t gapRemainder = justify ? leftover % static_cast<int32_t>(gaps) : 0;
 
-    int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
+    // Ruby lift: a line carrying ruby annotations drops its baseline by
+    // ascender/2 so the annotation fits in the air above (legacy TextBlock
+    // getRubyShift parity); the annotation's own baseline sits ascender/2
+    // above the normal line baseline.
+    int16_t rubyLift = 0;
+    uint16_t lineAnnCount = 0;
+    for (uint16_t a = 0; a < annCount_; ++a) {
+      if (anns_[a].lineIdx == lineIdx && anns_[a].textLen > 0) ++lineAnnCount;
+    }
+    if (lineAnnCount > 0) rubyLift = static_cast<int16_t>(params_.font->ascent(sizePx) / 2);
+
+    int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx) + rubyLift);
 
     // --- collect segments in LOGICAL order -----------------------------------
     Seg segs[64];
@@ -1801,6 +1977,8 @@ class LayoutEngine : public XmlHandler {
     }
 
     // --- emit in visual order -------------------------------------------------
+    const uint32_t pageAtLineStart = pageCount_;
+    int32_t segX[64];
     for (uint32_t v = 0; v < segCount; ++v) {
       const Seg& sg = segs[order[v]];
       // Gap handling follows VISUAL adjacency: apply the logical gap cost of
@@ -1827,15 +2005,20 @@ class LayoutEngine : public XmlHandler {
       }
       const bool lastLogical = sg.end == rec.end;
       const bool addHyphen = lastLogical && (rec.flags & kLineHyphen) != 0 && !paraRtl_;
-      if (!emitSeg(sg, addHyphen, baselineY, x, sizePx)) return;
+      segX[v] = x;
+      if (!emitSeg(sg, addHyphen, baselineY, x, sizePx, rubyLift)) return;
     }
+    placeRubyAnnotations(lineIdx, lineAnnCount, segs, order, segCount, segX, sizePx,
+                         rubyLift, pageAtLineStart);
     pageY_ += lineHeight;
   }
 
   // Emits one segment as a page run at x (advancing it). Splits pages when
-  // run/arena capacity is hit. Returns false on stop/failure.
+  // run/arena capacity is hit. Returns false on stop/failure. rubyLift is
+  // this line's ruby baseline drop, re-applied if a split re-anchors the
+  // baseline.
   bool emitSeg(const Seg& sg, bool addHyphen, int16_t& baselineY, int32_t& x,
-               uint16_t sizePx) {
+               uint16_t sizePx, int16_t rubyLift) {
     // Measure the segment (kerning resets at its start, matching natural
     // width accounting at gap boundaries).
     int32_t segWidth = 0;
@@ -1854,13 +2037,13 @@ class LayoutEngine : public XmlHandler {
     if (runCount_ >= kMaxRunsPerPage) {
       emitPage();
       if (stopParse) return false;
-      baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
+      baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx) + rubyLift);
     }
     char* copy = static_cast<char*>(pageArena_.alloc(copyLen, 1));
     if (copy == nullptr) {
       emitPage();
       if (stopParse) return false;
-      baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
+      baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx) + rubyLift);
       copy = static_cast<char*>(pageArena_.alloc(copyLen, 1));
       if (copy == nullptr) {
         failed_ = true;
@@ -1919,15 +2102,89 @@ class LayoutEngine : public XmlHandler {
     return true;
   }
 
+  // Places this line's ruby annotations as page records: annotation text
+  // drawn half-size, horizontally centered over its base group's runs and
+  // clamped into the page margins (legacy TextBlock.cpp:134-174 parity).
+  // Skipped if a capacity split fired mid-line — the records would land on
+  // the wrong page. rubyLift is this line's baseline drop (ascender/2); the
+  // annotation baseline sits that much above the normal line baseline.
+  void placeRubyAnnotations(uint32_t lineIdx, uint16_t lineAnnCount, const Seg* segs,
+                            const uint8_t* order, uint32_t segCount, const int32_t* segX,
+                            uint16_t lineSizePx, int16_t rubyLift, uint32_t pageAtLineStart) {
+    if (lineAnnCount == 0 || pageCount_ != pageAtLineStart) return;
+    for (uint16_t a = 0; a < annCount_ && rubyCount_ < kMaxRubiesPerPage; ++a) {
+      const RubyAnn& ann = anns_[a];
+      if (ann.lineIdx != lineIdx || ann.textLen == 0) continue;
+      const uint32_t relStart =
+          ann.byteStartAbs > parByteBase_ ? ann.byteStartAbs - parByteBase_ : 0;
+      uint32_t relEnd = ann.byteEndAbs > parByteBase_ ? ann.byteEndAbs - parByteBase_ : 0;
+      if (relEnd > parLen_) relEnd = parLen_;
+      if (relEnd <= relStart) continue;
+      // Walk the overlapping segs in visual order: the group's left/right
+      // edges are the min/max of its per-seg visual extents. Within a seg
+      // the offset is measured from the seg start (logical order), mirrored
+      // for RTL segs whose bytes are stored reversed.
+      int32_t groupLeft = -1, groupRight = -1;
+      const Span* groupSpan = nullptr;
+      for (uint32_t v = 0; v < segCount; ++v) {
+        const Seg& sg = segs[order[v]];
+        if (sg.end <= relStart || sg.start >= relEnd) continue;
+        if (groupSpan == nullptr) groupSpan = sg.span;
+        const uint32_t ovStart = sg.start > relStart ? sg.start : relStart;
+        const uint32_t ovEnd = sg.end < relEnd ? sg.end : relEnd;
+        const int32_t wA = advRange(sg.start, ovStart, *sg.span);
+        const int32_t wB = advRange(sg.start, ovEnd, *sg.span);
+        int32_t xLeft, xRight;
+        if (sg.level & 1) {
+          const int32_t wFull = advRange(sg.start, sg.end, *sg.span);
+          xLeft = segX[v] + (wFull - wB);
+          xRight = segX[v] + (wFull - wA);
+        } else {
+          xLeft = segX[v] + wA;
+          xRight = segX[v] + wB;
+        }
+        if (groupLeft < 0 || xLeft < groupLeft) groupLeft = xLeft;
+        if (xRight > groupRight) groupRight = xRight;
+      }
+      if (groupSpan == nullptr || groupLeft < 0 || groupRight <= groupLeft) continue;
+      const uint16_t spanPx = spanSizePx(*groupSpan);
+      const uint16_t rubySize = spanPx / 2 > 0 ? static_cast<uint16_t>(spanPx / 2) : 1;
+      const int32_t groupWidth = groupRight - groupLeft;
+      int32_t rubyWidth = 0;
+      for (uint32_t i = 0; i < ann.textLen;) {
+        uint32_t next = i;
+        const uint32_t cp = decodeUtf8(ann.text, ann.textLen, next);
+        rubyWidth += params_.font->advance(cp, rubySize, groupSpan->flags);
+        i = next;
+      }
+      int32_t rx = groupLeft - (rubyWidth - groupWidth) / 2;
+      if (rx < params_.marginLeft) rx = params_.marginLeft;
+      const int32_t rightLimit =
+          static_cast<int32_t>(params_.pageWidth - params_.marginRight) - rubyWidth;
+      if (rx > rightLimit) rx = rightLimit;
+      char* copy = static_cast<char*>(pageArena_.alloc(static_cast<uint32_t>(ann.textLen) + 1, 1));
+      if (copy == nullptr) break;
+      memcpy(copy, ann.text, ann.textLen);
+      copy[ann.textLen] = '\0';
+      PageRuby& pr = rubies_[rubyCount_++];
+      pr.text = copy;
+      pr.x = static_cast<int16_t>(rx);
+      pr.baselineY =
+          static_cast<int16_t>(pageY_ + params_.font->ascent(lineSizePx) - rubyLift);
+      pr.sizePx = rubySize;
+    }
+  }
+
   void emitPage() {
     Page page{runs_, runCount_, images_, imageCount_, links_, linkCount_, rules_, ruleCount_,
-              pageCount_, pageCharStart_};
+              rubies_, rubyCount_, pageCount_, pageCharStart_};
     ++pageCount_;
     if (!sink_.onPage(page)) stopParse = true;
     runCount_ = 0;
     imageCount_ = 0;
     linkCount_ = 0;
     ruleCount_ = 0;
+    rubyCount_ = 0;
     pageArena_.reset();
     pageY_ = params_.marginTop;
     // A mid-line capacity split continues the line on the next page without
@@ -1991,6 +2248,18 @@ class LayoutEngine : public XmlHandler {
   uint16_t linkCount_ = 0;
   PageRule* rules_ = nullptr;
   uint16_t ruleCount_ = 0;
+  PageRuby* rubies_ = nullptr;
+  uint16_t rubyCount_ = 0;
+  RubyAnn* anns_ = nullptr;
+  uint16_t annCount_ = 0;
+  uint32_t parByteBase_ = 0;      // chapter bytes before the current paragraph buffer
+  uint32_t rubyGroupByteAbs_ = 0; // absolute byte where the current ruby group's base starts
+  char* rubyBuf_ = nullptr;
+  uint16_t rubyBufLen_ = 0;
+  bool inRuby_ = false;
+  bool collectingRubyText_ = false;
+  bool rubyEmptyBase_ = false;    // <rt> with no base since the last one: extend the previous
+  uint8_t rpDepth_ = 0;           // <rp> fallback parens suppressed while inside <ruby>
   const ProbedImage* probed_ = nullptr;  // pre-scanned image dimensions
   uint16_t probedCount_ = 0;
   bool lastBreakShy_ = false;   // last ALLOWBREAK sat on a soft hyphen
