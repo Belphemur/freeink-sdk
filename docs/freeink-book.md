@@ -231,7 +231,9 @@ omnibuses with 1,800 ZIP entries need ~450 KB. Exhaustion is a clean
 
 ## Cache format and invalidation
 
-Cache files are versioned (`FIBP` v3) and keyed by
+Cache files are versioned (`FIBP` v5 — v5 added per-run chapter character
+anchoring: `charStart`/`charLen` and word-continuation bits for
+run-granular hit-testing) and keyed by
 `layoutGenerationHash()` — a hash of every layout-relevant input: page
 geometry, margins, base size, spacing, alignment, orphan/widow, stylesheet
 content, hyphenator presence, language, the caller's font fingerprint, plus

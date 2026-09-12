@@ -1000,6 +1000,81 @@ void testHyphenation(const Hyphenator& hyphenator) {
   CHECK(layoutGenerationHash(params, 1) != layoutGenerationHash(plain, 1));
 }
 
+// Run-granular hit-testing substrate (dictionary lookup / selection
+// groups): every run carries a chapter char range and word-continuation
+// bits pairing the fragments of a word that layout split across a line /
+// capacity page split / paragraph-segment flush.
+void testRunCharAnchoring(const Hyphenator& hyphenator) {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  params.pageWidth = 240;  // narrow column: words wrap mid-word
+  params.hyphenator = &hyphenator;
+  constexpr uint32_t kMaxAnchors = 8192;
+
+  class AnchorSink : public PageSink {
+   public:
+    bool onPage(const Page& page) override {
+      ++pages;
+      if (page.runCount > 0) {
+        // The page anchor is the chapter offset of its first text run —
+        // including on pages opened by a mid-line capacity split.
+        CHECK_EQ(page.runs[0].charStart, page.charStart);
+      }
+      for (uint16_t r = 0; r < page.runCount; ++r) {
+        const PageTextRun& run = page.runs[r];
+        CHECK(run.charLen > 0);  // every seg covers at least one chapter char
+        if (run.layoutFlags & PageTextRun::LayoutLastContinues) {
+          tails[tailCount++] = run.charStart + run.charLen;
+        }
+        if (run.layoutFlags & PageTextRun::LayoutFirstContinues) {
+          heads[headCount++] = run.charStart;
+        }
+        // A flagged hyphen tail must end in the baked '-' the flag promises;
+        // its char range excludes that synthetic hyphen (re-encoded text is
+        // one codepoint longer than the logical range's rendering).
+        if ((run.layoutFlags & (PageTextRun::LayoutHyphenated | PageTextRun::LayoutLastContinues)) ==
+            (PageTextRun::LayoutHyphenated | PageTextRun::LayoutLastContinues)) {
+          CHECK(run.len > 0 && run.text[run.len - 1] == '-');
+          ++hyphenTails;
+        }
+        runsCollected++;
+      }
+      return true;
+    }
+    uint32_t tails[kMaxAnchors] = {};
+    uint32_t heads[kMaxAnchors] = {};
+    uint32_t tailCount = 0;
+    uint32_t headCount = 0;
+    uint32_t pages = 0;
+    uint32_t runsCollected = 0;
+    uint32_t hyphenTails = 0;
+  };
+
+  AnchorSink sink;
+  const ZipEntry* entry = opened.book.zip().find(opened.book.spineItem(0)->href);
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name,
+                                                  params, opened.scratch, sink, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(sink.pages > 0);
+  CHECK(sink.runsCollected > 0);
+  CHECK(sink.hyphenTails > 0);       // the narrow column hyphenates something
+  CHECK(sink.tailCount > 0);         // ...and wraps words across boundaries
+  // Pairing is a bijection on the split boundary: every continuation head
+  // matches exactly one tail ending at the same chapter offset (and vice
+  // versa). Matching by offset — not stream adjacency — keeps the check
+  // valid when a bidi reorder separates logically adjacent segs.
+  CHECK_EQ(sink.tailCount, sink.headCount);
+  for (uint32_t t = 0; t < sink.tailCount; ++t) {
+    uint32_t matches = 0;
+    for (uint32_t h = 0; h < sink.headCount; ++h) {
+      if (sink.tails[t] == sink.heads[h]) ++matches;
+    }
+    CHECK_EQ(matches, 1);
+  }
+}
+
 void testKerningAffectsMeasurement() {
   class KerningFont : public FakeFont {
    public:
@@ -2063,6 +2138,7 @@ int main(int argc, char** argv) {
   testInlineFontSizes();
   testInlineSizesKeepLineGrid();
   testHyphenation(hyphenator);
+  testRunCharAnchoring(hyphenator);
   testKerningAffectsMeasurement();
   testWidowOrphan();
   testImages();
