@@ -18,6 +18,11 @@
 // padding-bottom/padding-left/padding-right (em/%/px/pt, also via the
 // padding shorthand), display:none, text-decoration (underline,
 // line-through, none).
+//
+// Ruby annotations (<ruby>/<rt>/<rp>) are not CSS: the layout parser handles
+// them structurally (see layout/ChapterLayout.h PageRuby) — <rp> fallback
+// parens are dropped and each base group carries its annotation text as a
+// page-level record.
 
 #include <stdint.h>
 

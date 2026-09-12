@@ -68,6 +68,10 @@ class PageRenderer {
   // Draws the page's horizontal rules as filled ink rectangles.
   static void renderRules(const Page& page, const FrameTarget& target);
 
+  // Draws the page's ruby annotations at their recorded half-size positions.
+  // Returns the number of codepoints no chain font could rasterize.
+  static uint32_t renderRubies(const Page& page, FontChain& fonts, const FrameTarget& target);
+
   // Text + images.
   static BookStatus render(const Page& page, FontChain& fonts, BookSource& source,
                            const ZipCatalog& zip, Arena& scratch, const FrameTarget& target);

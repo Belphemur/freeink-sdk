@@ -2183,6 +2183,106 @@ void testFocusReading() {
 // 2px ink, a quarter of the content width, centered, half a line of air above
 // and below. Geometry is checked with FakeFont (lineHeight = size + 4, base
 // 16 → 20): air = 10, rule height = 2, advance = 22.
+void testRubyAnnotations() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+
+  // FakeFont: advance = sizePx/2 (+1 bold), ascent = sizePx. Base size 16:
+  // ruby lift = 8, ruby records render at 8px with 4px advances.
+  struct RubySink : PageSink {
+    bool onPage(const Page& page) override {
+      for (uint16_t r = 0; r < page.rubyCount && count < 16; ++r) {
+        rubies[count] = page.rubies[r];
+        pages[count] = page.pageIndex;
+        ++count;
+      }
+      for (uint16_t r = 0; r < page.runCount && textLen + page.runs[r].len < sizeof(text); ++r) {
+        std::memcpy(text + textLen, page.runs[r].text, page.runs[r].len);
+        textLen += page.runs[r].len;
+      }
+      text[textLen] = '\0';
+      return true;
+    }
+    PageRuby rubies[16];
+    uint32_t pages[16];
+    uint32_t count = 0;
+    char text[16 * 1024];
+    uint32_t textLen = 0;
+  } sink;
+
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch11.ruby.xhtml");
+  CHECK(entry != nullptr);
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, sink, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(opened.scratch.used(), 0u);
+
+  // Four annotations total: かんじ (漢字), にほんご (日本語) on the pure-CJK
+  // line; かん+じ (empty-base <rt> appends to 漢), じ (字) on the prose line.
+  CHECK_EQ(sink.count, 4u);
+
+  // Base text flows intact; <rp> fallback parens are suppressed.
+  CHECK(std::strstr(sink.text, "漢字と日本語の本") != nullptr);
+  CHECK(std::strstr(sink.text, "漢字") != nullptr);
+  CHECK(std::strstr(sink.text, "works here.") != nullptr);
+  CHECK(std::strstr(sink.text, "（") == nullptr);
+  CHECK(std::strstr(sink.text, "(") == nullptr);
+
+  // The first paragraph is one pure-CJK line: x=24, one run, width 64.
+  // Group 1 (漢字, 16px) gets かんじ (12px wide) centered: 24 - (12-16)/2 = 26.
+  // Group 2 (日本語, 24px) starts at 24+16+8 = 48 and gets にほんご (16px):
+  // 48 - (16-24)/2 = 52.
+  int32_t seen26 = 0, seen52 = 0, seen64 = 0;
+  for (uint32_t i = 0; i < sink.count; ++i) {
+    const PageRuby& ruby = sink.rubies[i];
+    CHECK_EQ(static_cast<int>(ruby.sizePx), 8);
+    CHECK(ruby.x >= params.marginLeft);
+    CHECK(ruby.x + 64 <= params.pageWidth - params.marginRight);
+    if (std::memcmp(ruby.text, "かんじ", 10) == 0) {
+      seen64 = ruby.baselineY;
+      if (ruby.x == 26) ++seen26;
+    }
+    if (std::memcmp(ruby.text, "にほんご", 13) == 0) {
+      CHECK_EQ(static_cast<int>(ruby.x), 52);
+      ++seen52;
+    }
+  }
+  CHECK_EQ(seen26, 1);  // かんじ over 漢字, centered at x=26
+  // The pure-CJK line: lifted run baseline = pageY + ascent + 8; the ruby
+  // baseline sits 16 above the run's (both derivable without pageY tracking
+  // by diffing the two records sharing the line).
+  CHECK(seen64 != 0);
+  CHECK_EQ(seen52, 1);  // にほんご centered at x=52
+
+  // Every ruby record's baseline is exactly 16 (one base-size ascent) above
+  // some run baseline on the same page — the lifted-line parity invariant.
+  // (Re-scan pages to pair them.)
+  struct LineScanSink : PageSink {
+    bool onPage(const Page& page) override {
+      for (uint16_t r = 0; r < page.rubyCount; ++r) {
+        bool paired = false;
+        for (uint16_t u = 0; u < page.runCount; ++u) {
+          if (page.runs[u].baselineY - page.rubies[r].baselineY == 16) paired = true;
+        }
+        CHECK(paired);
+      }
+      return true;
+    }
+  } scan;
+  {
+    const size_t marked = opened.scratch.mark();
+    const ZipEntry* e2 = opened.book.zip().find("OEBPS/text/ch11.ruby.xhtml");
+    CHECK(e2 != nullptr);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *e2, e2->name, params,
+                                                    opened.scratch, scan, nullptr)),
+             static_cast<int>(BookStatus::Ok));
+    opened.scratch.release(marked);
+  }
+}
+
 void testHorizontalRule() {
   OpenedBook opened;
   CHECK(opened.open("minimal.epub"));
@@ -2303,6 +2403,7 @@ int main(int argc, char** argv) {
   testCjkLatinGap();
   testFocusReading();
   testHorizontalRule();
+  testRubyAnnotations();
   if (argc > 3) {
     static uint8_t ruBuf[4096];
     Hyphenator ru;
