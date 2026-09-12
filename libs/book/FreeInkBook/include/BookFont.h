@@ -87,6 +87,21 @@ class RenderFont : public BookFont {
  public:
   virtual bool hasGlyph(uint32_t codepoint) const = 0;
   bool covers(uint32_t codepoint) override { return hasGlyph(codepoint); }
+  // Ink bounds without rasterizing: xoff/yoff relative to the pen position
+  // and baseline plus width/height — the same box rasterize() returns, at a
+  // fraction of the cost (no pixel generation, no arena traffic). Returns
+  // false when unknown (missing glyph or unsupported face); callers fall
+  // back to rasterize-then-inspect.
+  virtual bool glyphBounds(uint32_t codepoint, uint16_t sizePx, int16_t& xoff, int16_t& yoff,
+                           uint16_t& width, uint16_t& height) const {
+    (void)codepoint;
+    (void)sizePx;
+    (void)xoff;
+    (void)yoff;
+    (void)width;
+    (void)height;
+    return false;
+  }
   // Returns nullptr for missing glyphs. The bitmap must stay valid until the
   // next rasterize() call on the same font.
   virtual const GlyphBitmap* rasterize(uint32_t codepoint, uint16_t sizePx) = 0;

@@ -82,6 +82,27 @@ bool TtfFont::hasGlyph(uint32_t codepoint) const {
   return ready_ && glyphIndexFor(codepoint) != 0;
 }
 
+bool TtfFont::glyphBounds(uint32_t codepoint, uint16_t sizePx, int16_t& xoff, int16_t& yoff,
+                          uint16_t& width, uint16_t& height) const {
+  if (!ready_) return false;
+  // Through the advance cache, same as rasterize()/hasGlyph() — no repeated
+  // cmap work. stbtt_GetGlyphBitmapBox scales the outline box only; it does
+  // no pixel generation and touches no arena.
+  const int glyph = glyphIndexFor(codepoint);
+  if (glyph == 0) return false;
+  const float scale = scaleFor(sizePx);
+  int x0 = 0;
+  int y0 = 0;
+  int x1 = 0;
+  int y1 = 0;
+  stbtt_GetGlyphBitmapBox(fontOf(fontInfo_), glyph, scale, scale, &x0, &y0, &x1, &y1);
+  xoff = static_cast<int16_t>(x0);
+  yoff = static_cast<int16_t>(y0);
+  width = static_cast<uint16_t>(x1 > x0 ? x1 - x0 : 0);
+  height = static_cast<uint16_t>(y1 > y0 ? y1 - y0 : 0);
+  return true;
+}
+
 int16_t TtfFont::advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) {
   (void)styleFlags;
   if (!ready_) return 0;

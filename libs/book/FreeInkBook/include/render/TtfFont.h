@@ -43,6 +43,8 @@ class TtfFont : public RenderFont {
   bool ready() const { return ready_; }
 
   bool hasGlyph(uint32_t codepoint) const override;
+  bool glyphBounds(uint32_t codepoint, uint16_t sizePx, int16_t& xoff, int16_t& yoff, uint16_t& width,
+                   uint16_t& height) const override;
 
   // BookFont metrics.
   int16_t advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) override;
