@@ -520,8 +520,90 @@ void testHyphenFlagRoundtrip(HostCacheStorage& cache, const Hyphenator& hyphenat
   cache.remove(name);
 }
 
+// Per-run chapter anchoring (v5): charStart/charLen and the word-
+// continuation bits survive a cache encode/decode round-trip identical to
+// the live layout, so hit-testing built from cached pages matches the live
+// layout.
+void testRunAnchorRoundtrip(HostCacheStorage& cache, const Hyphenator& hyphenator) {
+  HostFileSource source;
+  CHECK(source.open(fixture("minimal.epub")));
+  Arena bookArena(bookBuf, sizeof(bookBuf));
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  Book book;
+  CHECK_EQ(static_cast<int>(book.open(source, bookArena, scratch)),
+           static_cast<int>(BookStatus::Ok));
+
+  FakeFont font;
+  LayoutParams params = makeParams(font, 16);
+  params.pageWidth = 240;  // narrow column: words wrap mid-word
+  params.hyphenator = &hyphenator;
+  constexpr uint32_t kMaxRuns = 16384;
+  const uint32_t hash = buildCache(source, book, cache, params, scratch, nullptr);
+  char name[64];
+  CHECK(pageCacheName(1, hash, name, sizeof(name)));
+
+  class AnchorRecordSink : public PageSink {
+   public:
+    bool onPage(const Page& page) override {
+      for (uint16_t r = 0; r < page.runCount; ++r) {
+        const PageTextRun& run = page.runs[r];
+        if (count < kMaxRuns) {
+          charStart[count] = run.charStart;
+          charLen[count] = run.charLen;
+          flags[count] = run.layoutFlags;
+          ++count;
+        }
+      }
+      return true;
+    }
+    uint32_t charStart[kMaxRuns] = {};
+    uint16_t charLen[kMaxRuns] = {};
+    uint8_t flags[kMaxRuns] = {};
+    uint32_t count = 0;
+  };
+
+  AnchorRecordSink live;
+  {
+    const size_t marked = scratch.mark();
+    const ZipEntry* entry = book.zip().find(book.spineItem(1)->href);
+    CHECK(entry != nullptr);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, book.zip(), *entry, entry->name, params,
+                                                    scratch, live, nullptr)),
+             static_cast<int>(BookStatus::Ok));
+    scratch.release(marked);
+  }
+  CHECK(live.count > 0);
+
+  Arena cacheArena(cacheBuf, sizeof(cacheBuf));
+  PageCacheReader reader;
+  CHECK_EQ(static_cast<int>(reader.open(cache, name, hash, cacheArena)),
+           static_cast<int>(BookStatus::Ok));
+  AnchorRecordSink cached;
+  for (uint32_t p = 0; p < reader.pageCount(); ++p) {
+    const size_t marked = scratch.mark();
+    Page page{};
+    CHECK_EQ(static_cast<int>(reader.readPage(p, scratch, &page)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK(cached.onPage(page));
+    scratch.release(marked);
+  }
+  CHECK_EQ(cached.count, live.count);
+  uint32_t contRuns = 0;
+  for (uint32_t r = 0; r < live.count; ++r) {
+    CHECK_EQ(cached.charStart[r], live.charStart[r]);
+    CHECK_EQ(cached.charLen[r], live.charLen[r]);
+    CHECK_EQ(cached.flags[r], live.flags[r]);
+    if (live.flags[r] & (PageTextRun::LayoutFirstContinues | PageTextRun::LayoutLastContinues)) {
+      ++contRuns;
+    }
+  }
+  CHECK(contRuns > 0);  // the narrow column actually wrapped words
+
+  cache.remove(name);
+}
+
 // A <hr> page round-trips its rule records through the cache byte-identical:
-// v4 cache format, rules appended after links in the page blob.
+// rules appended after links in the page blob.
 void testRuleRoundtrip(HostCacheStorage& cache) {
   HostFileSource source;
   CHECK(source.open(fixture("minimal.epub")));
@@ -627,6 +709,7 @@ int main(int argc, char** argv) {
   testPositionMigration(cache);
   testPartialCacheAndMidBuildRead(cache);
   testHyphenFlagRoundtrip(cache, hyphenator);
+  testRunAnchorRoundtrip(cache, hyphenator);
   testRuleRoundtrip(cache);
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);

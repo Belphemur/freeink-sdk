@@ -1073,11 +1073,18 @@ class LayoutEngine : public XmlHandler {
   void appendRaw(char c) {
     if (parLen_ + 1 >= kParTextCap) {
       // Pathological paragraph: flush what we have and continue seamlessly.
+      // The boundary is mid-word when the last buffered char and the char
+      // that overflowed the buffer are both non-whitespace — both the tail
+      // flag of this flush's last line and the head flag of the next
+      // flush's first line derive from it.
+      const bool midWord =
+          parLen_ > 0 && !isWsByte(parText_[parLen_ - 1]) && !isWsByte(c);
       const ParaStyle style = para_;
-      flushParagraph();
+      flushParagraph(midWord);
       para_ = style;
       para_.spaceBeforePct = 0;
       continued_ = true;  // continuation lines get no first-line indent
+      pendingWordContinuation_ = midWord;
     }
     if (spanCount_ == 0) {
       spans_[spanCount_++] = {0, currentFlags(), currentSizePct(),
@@ -1110,6 +1117,7 @@ class LayoutEngine : public XmlHandler {
     spanCount_ = 0;
     pendingMarginRootPct_ = 0;
     pendingSpace_ = false;
+    pendingWordContinuation_ = false;  // new paragraph: no flush carries over
   }
 
   void latchParagraphFromStack() {
@@ -1130,6 +1138,7 @@ class LayoutEngine : public XmlHandler {
     spanCount_ = 0;
     pendingMarginRootPct_ = 0;
     pendingSpace_ = false;
+    pendingWordContinuation_ = false;  // new paragraph: no flush carries over
   }
 
   int16_t lineHeightFor(uint16_t sizePx) const {
@@ -1231,7 +1240,10 @@ class LayoutEngine : public XmlHandler {
     img.height = static_cast<uint16_t>(h);
     img.x = static_cast<int16_t>(params_.marginLeft + para_.padLeftPx + (contentW - w) / 2);
     img.y = pageY_;
-    if (runCount_ == 0 && imageCount_ == 1) pageCharStart_ = parCharBase_;
+    if (runCount_ == 0 && imageCount_ == 1) {
+      pageCharStart_ = parCharBase_;
+      pageAnchorStale_ = false;
+    }
     pageY_ = static_cast<int16_t>(pageY_ + h + params_.baseSizePx / 2);
   }
 
@@ -1261,7 +1273,10 @@ class LayoutEngine : public XmlHandler {
     rule.width = static_cast<uint16_t>(contentW / 4);
     rule.y = static_cast<int16_t>(pageY_ + air);
     rule.thicknessPx = thickness;
-    if (runCount_ == 0 && imageCount_ == 0 && ruleCount_ == 1) pageCharStart_ = parCharBase_;
+    if (runCount_ == 0 && imageCount_ == 0 && ruleCount_ == 1) {
+      pageCharStart_ = parCharBase_;
+      pageAnchorStale_ = false;
+    }
     pageY_ = static_cast<int16_t>(pageY_ + totalHeight);
     if (pageY_ > static_cast<int16_t>(params_.marginTop + contentH)) {
       pageY_ = static_cast<int16_t>(params_.marginTop + contentH);  // clamp: the next rule breaks the page
@@ -1531,7 +1546,12 @@ class LayoutEngine : public XmlHandler {
 
   // --- place phase -------------------------------------------------------------
 
-  void flushParagraph() {
+  // boundaryMidWord: for a segment flush (pathological paragraph overflow)
+  // — true when the word containing the buffer's last char continues into
+  // the next flush, so the final line's last run carries the matching
+  // LayoutLastContinues bit.
+  void flushParagraph(bool boundaryMidWord = false) {
+    flushBoundaryMidWord_ = boundaryMidWord;
     if (parLen_ == 0) {
       continued_ = false;
       return;
@@ -1602,7 +1622,16 @@ class LayoutEngine : public XmlHandler {
     bool scriptGap;       // quarter-em CJK/Latin air precedes it
     bool compressBefore;  // punctuation pair: half an em comes OUT before it
     uint8_t extraFlags;   // style added beyond the span's (focus-reading bold)
+    // Chapter anchoring + word-continuation bits, filled during logical
+    // collection (before the visual reorder permutes `order`).
+    uint32_t charStart;
+    uint16_t charLen;
+    uint8_t contFlags;  // PageTextRun::LayoutFirst/LastContinues bits
   };
+
+  // Whitespace test on the paragraph buffer. Byte-level is safe: neither
+  // UTF-8 continuation bytes nor any multi-byte lead byte equals ' '/'\n'.
+  static bool isWsByte(char c) { return c == ' ' || c == '\n'; }
 
   void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine) {
     if (rec.end == rec.start) {  // blank line (e.g. double <br/>)
@@ -1611,6 +1640,7 @@ class LayoutEngine : public XmlHandler {
     }
     if (runCount_ == 0) {
       pageCharStart_ = parCharBase_ + countChars(parText_, rec.start);
+      pageAnchorStale_ = false;
     }
 
     const int32_t baseMaxWidth =
@@ -1652,6 +1682,11 @@ class LayoutEngine : public XmlHandler {
     // --- collect segments in LOGICAL order -----------------------------------
     Seg segs[64];
     uint32_t segCount = 0;
+    // Chapter-codepoint cursor: each closed seg counts its raw range so the
+    // anchors stay exact across ligature baking and soft-hyphen drops in the
+    // later re-encode. Segs tile the line (only inter-seg gaps skip chars),
+    // so this costs one countChars pass over the line in total.
+    uint32_t charAcc = parCharBase_ + countChars(parText_, rec.start);
     {
       uint32_t segStart = rec.start;
       const Span* segSpan = &spanAt(rec.start);
@@ -1662,9 +1697,32 @@ class LayoutEngine : public XmlHandler {
       uint32_t i = rec.start;
       auto close = [&](uint32_t endPos, bool nextGap, bool nextSpace, bool nextScript,
                        bool nextCompress) {
-        if (endPos > segStart && segCount < 64) {
-          segs[segCount++] = {segStart, endPos, segSpan, segLevel,
-                              gapBefore, spaceBefore, scriptGap, compressBefore, segExtra};
+        if (endPos > segStart) {
+          if (segCount < 64) {
+            Seg& sg = segs[segCount++];
+            sg = {segStart, endPos, segSpan, segLevel,
+                  gapBefore, spaceBefore, scriptGap, compressBefore, segExtra,
+                  0, 0, 0};
+            sg.charStart = charAcc;
+            sg.charLen = static_cast<uint16_t>(countChars(parText_ + segStart, endPos - segStart));
+            charAcc += sg.charLen;
+            // Continuation bits: a boundary is mid-word exactly when the
+            // paragraph characters on both sides are non-whitespace. Byte
+            // tests suffice (see isWsByte); a soft hyphen counts as mid-word.
+            sg.contFlags = 0;
+            if (segStart > 0 ? !isWsByte(parText_[segStart - 1]) : pendingWordContinuation_) {
+              if (!isWsByte(parText_[segStart])) sg.contFlags |= PageTextRun::LayoutFirstContinues;
+            }
+            if (endPos < parLen_
+                ? (!isWsByte(parText_[endPos]) && !isWsByte(parText_[endPos - 1]))
+                : flushBoundaryMidWord_) {
+              sg.contFlags |= PageTextRun::LayoutLastContinues;
+            }
+          } else {
+            // Seg dropped on capacity: keep the anchor cursor advancing so
+            // later segs still carry correct chapter offsets.
+            charAcc += countChars(parText_ + segStart, endPos - segStart);
+          }
         }
         gapBefore = nextGap;
         spaceBefore = nextSpace;
@@ -1830,13 +1888,21 @@ class LayoutEngine : public XmlHandler {
     } else if (sg.span->flags & StyleSubscript) {
       runBaseline = static_cast<int16_t>(baselineY + (spanSizePx(*sg.span) * 12) / 100);
     }
-    runs_[runCount_++] = {copy,
-                          static_cast<uint16_t>(outLen),
-                          static_cast<int16_t>(x),
-                          runBaseline,
-                          spanSizePx(*sg.span),
-                          runFlags,
-                          addHyphen ? static_cast<uint8_t>(PageTextRun::LayoutHyphenated) : uint8_t{0}};
+    PageTextRun& run = runs_[runCount_++];
+    if (pageAnchorStale_) {
+      pageCharStart_ = sg.charStart;  // mid-line page split: first run anchors the fresh page
+      pageAnchorStale_ = false;
+    }
+    run.text = copy;
+    run.len = static_cast<uint16_t>(outLen);
+    run.x = static_cast<int16_t>(x);
+    run.baselineY = runBaseline;
+    run.sizePx = spanSizePx(*sg.span);
+    run.styleFlags = runFlags;
+    run.layoutFlags = static_cast<uint8_t>(
+        (addHyphen ? PageTextRun::LayoutHyphenated : uint8_t{0}) | sg.contFlags);
+    run.charStart = sg.charStart;
+    run.charLen = sg.charLen;
     if (sg.span->link != 0 && linkCount_ < kMaxLinksPerPage) {
       const uint8_t li = static_cast<uint8_t>(sg.span->link - 1);
       const uint16_t sz = spanSizePx(*sg.span);
@@ -1864,6 +1930,9 @@ class LayoutEngine : public XmlHandler {
     ruleCount_ = 0;
     pageArena_.reset();
     pageY_ = params_.marginTop;
+    // A mid-line capacity split continues the line on the next page without
+    // re-entering placeLine — the next run must re-anchor the fresh page.
+    pageAnchorStale_ = true;
   }
 
   BookSource& source_;
@@ -1891,6 +1960,11 @@ class LayoutEngine : public XmlHandler {
   ParaStyle para_{100, StyleNone, TextAlign::Left, 0, 0, 0, 40};
   bool pendingSpace_ = false;
   bool continued_ = false;
+  // Word-continuation state across a mid-paragraph segment flush (see
+  // appendRaw): pendingWordContinuation_ feeds the NEXT flush's first-line
+  // head bit; flushBoundaryMidWord_ feeds the current flush's tail bit.
+  bool pendingWordContinuation_ = false;
+  bool flushBoundaryMidWord_ = false;
 
   ElemState stack_[kMaxElemDepth];
   uint8_t stackTop_ = 0;
@@ -1922,6 +1996,7 @@ class LayoutEngine : public XmlHandler {
   bool lastBreakShy_ = false;   // last ALLOWBREAK sat on a soft hyphen
   uint32_t parCharBase_ = 0;    // chapter chars before the current paragraph
   uint32_t pageCharStart_ = 0;  // anchor of the page being assembled
+  bool pageAnchorStale_ = false;  // set by emitPage until the page's first record lands
   bool failed_ = false;
 };
 
