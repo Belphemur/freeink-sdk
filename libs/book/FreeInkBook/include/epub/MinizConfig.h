@@ -26,6 +26,7 @@
 #define mz_crc32 freeink_mz_crc32
 #define mz_adler32 freeink_mz_adler32
 #define mz_free freeink_mz_free
+#define mz_error freeink_mz_error
 
 // Include the vendored miniz by relative path: ESP-IDF ships a ROM miniz.h
 // with the SAME include guard but a different (TINFL_LESS_MEMORY) struct
