@@ -600,6 +600,28 @@ static const KeyboardRow KK_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0},
                                                 {KK_SHIFT_ROW3, 11, 0},
                                                 {LANG_ROW4, 4, 0}};
 
+// Arabic (standard 101 arrangement). Like Hebrew: no letter case, so one layer
+// and no shift key. Right-to-left is the renderer's job -- the layout inserts
+// code points in logical order.
+//
+// All 28 letters have their own key, plus the hamza carriers (ء ئ ؤ أ إ), ta
+// marbuta and alef maqsura, which a reader types often enough that hiding them
+// behind long-press would be wrong. Only alef madda is a long-press, on أ: it is
+// the rarest of the alef forms and the row is already 12 wide, the maximum this
+// panel fits (same constraint that puts Kazakh's extra letters on long-press).
+static const KeyboardKey AR_ROW1[] = {K("ض", "ض", 0x636), K("ص", "ص", 0x635), K("ث", "ث", 0x62B),
+                                      K("ق", "ق", 0x642), K("ف", "ف", 0x641), K("غ", "غ", 0x63A),
+                                      K("ع", "ع", 0x639), K("ه", "ه", 0x647), K("خ", "خ", 0x62E),
+                                      K("ح", "ح", 0x62D), K("ج", "ج", 0x62C), K("د", "د", 0x62F)};
+static const KeyboardKey AR_ROW2[] = {K("ش", "ش", 0x634), K("س", "س", 0x633), K("ي", "ي", 0x64A),
+                                      K("ب", "ب", 0x628), K("ل", "ل", 0x644), K("ا", "ا", 0x627),
+                                      K("ت", "ت", 0x62A), K("ن", "ن", 0x646), K("م", "م", 0x645),
+                                      K("ك", "ك", 0x643), K("ط", "ط", 0x637)};
+static const KeyboardKey AR_ROW3[] = {K("ذ", "ذ", 0x630),  K("ئ", "ئ", 0x626), K("ء", "ء", 0x621),
+                                      K("ؤ", "ؤ", 0x624),  K("ر", "ر", 0x631), K("ى", "ى", 0x649),
+                                      K("ة", "ة", 0x629),  K("و", "و", 0x648), K("ز", "ز", 0x632),
+                                      K("ظ", "ظ", 0x638),  KA("أ", "أ", 0x623, "آ"), K("إ", "إ", 0x625)};
+
 static const KeyboardRow HE_ROWS[] = {
     {HE_ROW1, 10, 0}, {HE_ROW2, 9, 1}, {HE_ROW3, 10, 0}, {LANG_ROW4, 4, 0}};
 static const KeyboardRow HE_NUM_ROWS[] = {{NUM_ROW, 10, 0},
@@ -608,6 +630,14 @@ static const KeyboardRow HE_NUM_ROWS[] = {{NUM_ROW, 10, 0},
                                           {HE_ROW3, 10, 0},
                                           {LANG_ROW4, 4, 0}};
 
+
+static const KeyboardRow AR_ROWS[] = {
+    {AR_ROW1, 12, 0}, {AR_ROW2, 11, 0}, {AR_ROW3, 12, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow AR_NUM_ROWS[] = {{NUM_ROW, 10, 0},
+                                          {AR_ROW1, 12, 0},
+                                          {AR_ROW2, 11, 0},
+                                          {AR_ROW3, 12, 0},
+                                          {LANG_ROW4, 4, 0}};
 
 static const KeyboardRow FR_LANG_ROWS[] = {{FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
 static const KeyboardRow FR_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
@@ -663,6 +693,8 @@ static const KeyboardLayout KK_LAYOUT{KK_ROWS, 4};
 static const KeyboardLayout KK_SHIFT_LAYOUT{KK_SHIFT_ROWS, 4};
 static const KeyboardLayout KK_NUM_LAYOUT{KK_NUM_ROWS, 5};
 static const KeyboardLayout KK_SHIFT_NUM_LAYOUT{KK_SHIFT_NUM_ROWS, 5};
+static const KeyboardLayout AR_LAYOUT{AR_ROWS, 4};
+static const KeyboardLayout AR_NUM_LAYOUT{AR_NUM_ROWS, 5};
 static const KeyboardLayout HE_LAYOUT{HE_ROWS, 4};
 static const KeyboardLayout HE_NUM_LAYOUT{HE_NUM_ROWS, 5};
 static const KeyboardLayout FR_LANG_LAYOUT{FR_LANG_ROWS, 4};
@@ -722,6 +754,8 @@ const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, b
   }
   // Hebrew has no case, so shift is ignored -- there is only one letter layer.
   if (id == KeyboardLayoutId::HebrewIl) return numberRow ? HE_NUM_LAYOUT : HE_LAYOUT;
+  // Arabic has no case either, so shift is ignored here too.
+  if (id == KeyboardLayoutId::ArabicAr) return numberRow ? AR_NUM_LAYOUT : AR_LAYOUT;
   if (id == KeyboardLayoutId::QwertyEn && langKey) {
     if (shifted) return numberRow ? EN_SHIFT_LANG_NUM_LAYOUT : EN_SHIFT_LANG_LAYOUT;
     return numberRow ? EN_LANG_NUM_LAYOUT : EN_LANG_LAYOUT;
