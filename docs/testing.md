@@ -19,6 +19,10 @@ checks skip when those converters are unavailable. It builds layout tests for
 the default, SMALL, and LARGE memory profiles. Build outputs go under the system
 temporary directory.
 
+The book engine consumes `esp_full_miniz` as a nested submodule. Clone with
+`git clone --recurse-submodules`, or run `git submodule update --init --recursive`
+first; the suite fails immediately if that checkout is missing.
+
 ## Display drivers
 
 ```sh

@@ -4,6 +4,16 @@
 # system `zip` (mimetype stored first, per the EPUB OCF spec).
 set -e
 cd "$(dirname "$0")"
+
+# The miniz fork is a nested submodule. Fail loudly rather than producing a
+# confusing missing-header/compiler error from an empty gitlink directory.
+SDK_ROOT="$(cd ../../../../.. && pwd)"
+if [ ! -f "$SDK_ROOT/libs/book/FreeInkBook/third_party/miniz/include/full_miniz.h" ]; then
+  echo "error: esp_full_miniz submodule is not checked out" >&2
+  echo "run: git -C '$SDK_ROOT' submodule update --init --recursive" >&2
+  exit 1
+fi
+
 BUILD_DIR="${TMPDIR:-/tmp}/freeinkbook-tests"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/fixtures" "$BUILD_DIR/obj"
