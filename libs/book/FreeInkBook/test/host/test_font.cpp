@@ -151,6 +151,34 @@ void testRasterization(TtfFont& font) {
   CHECK_EQ(again->width, a->width);
 }
 
+void testGlyphBounds(TtfFont& font) {
+  int16_t xoff = 0;
+  int16_t yoff = 0;
+  uint16_t w = 0;
+  uint16_t h = 0;
+
+  // Bounds match the rasterized box exactly — the point of the API is a
+  // cheap pre-rasterize cull, so it must agree with the bitmap it predicts.
+  CHECK(font.glyphBounds('A', 32, xoff, yoff, w, h));
+  const GlyphBitmap* a = font.rasterize('A', 32);
+  CHECK(a != nullptr);
+  CHECK_EQ(xoff, a->xoff);
+  CHECK_EQ(yoff, a->yoff);
+  CHECK_EQ(w, a->width);
+  CHECK_EQ(h, a->height);
+
+  // Missing glyph: unknown, not a zero box.
+  CHECK(!font.glyphBounds(0x732B, 32, xoff, yoff, w, h));  // 猫 — no CJK in DejaVu
+
+  // Zero-ink glyph (space): known box, zero extent.
+  CHECK(font.glyphBounds(' ', 32, xoff, yoff, w, h));
+  CHECK_EQ(w, 0);
+
+  // A huge sizePx pushes stbtt's int box past the int16/uint16 public ranges;
+  // the call must report failure rather than wrap the narrowing casts.
+  CHECK(!font.glyphBounds('A', 65535, xoff, yoff, w, h));
+}
+
 void testFontChain(TtfFont& font, TtfFont& second) {
   FontChain chain;
   CHECK(chain.add(&font));
@@ -364,6 +392,7 @@ int main(int argc, char** argv) {
 
   testMetrics(font);
   testRasterization(font);
+  testGlyphBounds(font);
   testFontChain(font, second);
   testLayoutWithRealFont(argv[1], font);
   testPageRenderer(argv[1], font);
