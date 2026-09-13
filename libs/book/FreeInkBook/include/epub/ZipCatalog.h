@@ -22,12 +22,14 @@ namespace freeink {
 namespace book {
 
 struct ZipEntry {
+  // Non-owning view: owned by the catalog's book arena, which outlives every
+  // reader/session carrying this record (arenas are never reset mid-session).
   const char* name = nullptr;  // path inside the container, arena-owned
   uint32_t nameHash = 0;       // FNV-1a of name
   uint32_t compressedSize = 0;
   uint32_t uncompressedSize = 0;
   uint32_t localHeaderOffset = 0;
-  uint16_t method = 0;         // 0 = stored, 8 = deflate
+  uint16_t method = 0;  // 0 = stored, 8 = deflate
 };
 
 // find()/findByHash() are virtual so an SD-backed catalog (BookCatalog) can
@@ -46,17 +48,15 @@ class ZipCatalog {
   // image/link targets through pre-hashed hrefs, so this is the hot form.
   virtual const ZipEntry* findByHash(uint32_t nameHash) const;
   size_t entryCount() const { return count_; }
-  const ZipEntry* entry(size_t index) const {
-    return index < count_ ? &entries_[index] : nullptr;
-  }
+  const ZipEntry* entry(size_t index) const { return index < count_ ? &entries_[index] : nullptr; }
   BookSource* source() const { return source_; }
 
   static uint32_t hashPath(const char* path);
 
   // Locates the end-of-central-directory record -- shared by open() and the
   // container fingerprint that keys the SD-backed catalog.
-  static BookStatus locateCentralDirectory(BookSource& source, uint32_t* dirOffsetOut,
-                                           uint32_t* dirSizeOut, uint16_t* entryCountOut);
+  static BookStatus locateCentralDirectory(BookSource& source, uint32_t* dirOffsetOut, uint32_t* dirSizeOut,
+                                           uint16_t* entryCountOut);
 
  private:
   BookSource* source_ = nullptr;
@@ -92,14 +92,18 @@ class ZipEntryReader {
   BookStatus open(BookSource& source, const ZipEntry& entry, Arena& scratch);
   int32_t read(void* dst, uint32_t len);
   uint32_t totalProduced() const { return produced_; }
-  const ZipEntry* entry() const { return entry_; }
+  const ZipEntry* entry() const { return &entry_; }
 
  private:
   int32_t readStored(uint8_t* dst, uint32_t len);
   int32_t readDeflated(uint8_t* dst, uint32_t len);
 
   BookSource* source_ = nullptr;
-  const ZipEntry* entry_ = nullptr;
+  // Owned copy: callers may pass a stack-local entry (resumable SAX sessions
+  // keep this reader alive across later step() calls). Only the scalar
+  // fields are truly owned — name stays a view into the book arena (see
+  // ZipEntry::name).
+  ZipEntry entry_ = {};
   uint64_t dataOffset_ = 0;
   uint32_t produced_ = 0;
 
