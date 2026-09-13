@@ -1,5 +1,5 @@
 /* Compiles the vendored esp_full_miniz tinfl/tdefl cores (miniz_cores.c,
- * v1.15 fork @ 7c3d708) for the FreeInkBook engine. The fork guards this file
+ * v1.15 fork @ a6bf8fc) for the FreeInkBook engine. The fork guards this file
  * with !ESP_PLATFORM because its intended consumers bind the cores to the
  * ESP32 mask ROM; the engine deliberately compiles its own renamed cores in
  * RAM instead (see MinizConfig.h for the ROM-binding hazard), so the guard is

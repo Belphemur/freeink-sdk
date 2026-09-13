@@ -25,9 +25,9 @@
 #endif
 
 // Provenance of the nested esp_full_miniz submodule (Belphemur fork at
-// 7c3d708, upstream v1.15 r4), reported by vendorVersions() so the active
-// miniz lineage is observable at runtime.
-#define FREEINK_MINIZ_FORK "esp_full_miniz 7c3d708"
+// a6bf8fc, based on upstream v1.15 r4), reported by vendorVersions() so the
+// active miniz lineage is observable at runtime.
+#define FREEINK_MINIZ_FORK "esp_full_miniz a6bf8fc"
 
 // The ESP32 mask ROM exports tinfl_* at fixed addresses via DIRECT linker
 // script assignments (esp32s3.rom.ld: "tinfl_decompress = 0x40000828;"),
