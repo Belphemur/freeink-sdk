@@ -281,6 +281,20 @@ int32_t ZipEntryReader::readStored(uint8_t* dst, uint32_t len) {
 
 int32_t ZipEntryReader::readDeflated(uint8_t* dst, uint32_t len) {
   tinfl_decompressor* decomp = static_cast<tinfl_decompressor*>(decompressor_);
+  // Delivered output is capped at the central-directory uncompressedSize
+  // (parity with readStored()): v1.15 tinfl zero-pads exhausted input
+  // (TINFL_GET_BYTE pads 0's, miniz_cores.c:109-123), so a corrupt stream
+  // whose trailing zero bits keep decoding would otherwise loop forever.
+  // The tinfl call itself still gets the full window space — shrinking
+  // *pOut_buf_size would change the wrapping-window mask (miniz_cores.c:183)
+  // and break its power-of-2 requirement (line 186).
+  const uint32_t budget =
+      entry_->uncompressedSize > produced_ ? entry_->uncompressedSize - produced_ : 0;
+  if (budget == 0) {
+    done_ = true;
+    return 0;
+  }
+  if (len > budget) len = budget;
   uint32_t out = 0;
   while (out < len) {
     if (pendingLen_ > 0) {
@@ -312,7 +326,10 @@ int32_t ZipEntryReader::readDeflated(uint8_t* dst, uint32_t len) {
     inAvail_ -= static_cast<uint32_t>(inBytes);
     pendingPos_ = windowPos_;
     pendingLen_ = static_cast<uint32_t>(outBytes);
-    windowPos_ = (windowPos_ + static_cast<uint32_t>(outBytes)) & (TINFL_LZ_DICT_SIZE - 1);
+    // Drop only decoded output beyond the declared size (corrupt streams);
+    // legit streams decode exactly uncompressedSize, so this never fires.
+    if (pendingLen_ > budget - out) pendingLen_ = budget - out;
+    windowPos_ = (windowPos_ + pendingLen_) & (TINFL_LZ_DICT_SIZE - 1);
 
     if (status == TINFL_STATUS_DONE) {
       done_ = true;

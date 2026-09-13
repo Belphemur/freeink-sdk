@@ -110,6 +110,10 @@ c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_catalog.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
   -o "$BUILD_DIR/test_catalog"
 
+c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
+  $CORE_SRCS test_deflate_robustness.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
+  -o "$BUILD_DIR/test_deflate_robustness"
+
 python3 ../../tools/hyphc.py ../../third_party/hyphen-patterns/hyph-en-us.pat.txt \
   "$BUILD_DIR/hyph-en-us.fibh"
 python3 ../../tools/hyphc.py ../fixtures/hyph-test-ru.pat.txt \
@@ -123,3 +127,4 @@ mkdir -p "$BUILD_DIR/cache"
 "$BUILD_DIR/test_cache" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache" "$BUILD_DIR/hyph-en-us.fibh"
 "$BUILD_DIR/test_font" "$BUILD_DIR/fixtures" ../fixtures/fonts/DejaVuSans.ttf
 "$BUILD_DIR/test_catalog" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache"
+"$BUILD_DIR/test_deflate_robustness" "$BUILD_DIR/fixtures"
