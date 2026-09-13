@@ -1,3 +1,6 @@
 [submodule "libs/assets/Icons/lucide"]
 	path = libs/assets/Icons/lucide
 	url = https://github.com/lucide-icons/lucide
+[submodule "libs/book/FreeInkBook/third_party/miniz"]
+	path = libs/book/FreeInkBook/third_party/miniz
+	url = https://github.com/Belphemur/esp_full_miniz.git

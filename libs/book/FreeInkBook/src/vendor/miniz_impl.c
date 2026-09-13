@@ -5,4 +5,4 @@
  * layout hazard, see MinizConfig.h), so src/vendor/miniz_cores_impl.c
  * compiles the cores locally with the freeink_* renames active. */
 #include "epub/MinizConfig.h"
-#include "../../third_party/miniz/miniz.c"
+#include "../../third_party/miniz/src/miniz.c"

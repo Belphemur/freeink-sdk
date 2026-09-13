@@ -59,7 +59,7 @@ python3 ../fixtures/gen_omnibus.py "$BUILD_DIR/fixtures/omnibus.epub" 1700 >/dev
 # include path for third_party/expat is dropped so <expat.h> resolves to the
 # system headers (mirrors the CrossPoint firmware consumption mode; verified
 # by checking the linked XML_* symbols match the system expat).
-INCLUDES="-I../../include -I../../third_party/miniz -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb"
+INCLUDES="-I../../include -I../../third_party/miniz/include -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb"
 VENDOR_SRCS="miniz_impl miniz_cores_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl"
 if [ -n "$FREEINK_BOOK_EXTERNAL_EXPAT" ]; then
   CC_FLAGS="-O1 -std=c99 -DFREEINK_BOOK_EXTERNAL_EXPAT=1 $INCLUDES"

@@ -10,4 +10,4 @@
 #ifdef ESP_PLATFORM
 #undef ESP_PLATFORM
 #endif
-#include "../../third_party/miniz/miniz_cores.c"
+#include "../../third_party/miniz/src/miniz_cores.c"

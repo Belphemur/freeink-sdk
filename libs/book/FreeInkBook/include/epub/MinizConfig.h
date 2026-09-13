@@ -24,9 +24,9 @@
 #define MZ_VERSION "9.1.15"
 #endif
 
-// Provenance of the vendored inflate source (a tree copy of
-// Belphemur/esp_full_miniz at 7c3d708, upstream v1.15 r4), reported by
-// vendorVersions() so the active miniz lineage is observable at runtime.
+// Provenance of the nested esp_full_miniz submodule (Belphemur fork at
+// 7c3d708, upstream v1.15 r4), reported by vendorVersions() so the active
+// miniz lineage is observable at runtime.
 #define FREEINK_MINIZ_FORK "esp_full_miniz 7c3d708"
 
 // The ESP32 mask ROM exports tinfl_* at fixed addresses via DIRECT linker
@@ -45,8 +45,9 @@
 #define mz_free freeink_mz_free
 #define mz_error freeink_mz_error
 
-// Include the vendored miniz by relative path: ESP-IDF ships a ROM miniz.h
-// with the SAME include guard but a different (TINFL_LESS_MEMORY) struct
-// layout — resolving <miniz.h> through the platform include path would
-// silently compile against the wrong structures.
-#include "../../third_party/miniz/miniz.h"  // wrapper -> vendored full_miniz.h
+// Include the fork header directly: ESP-IDF ships a ROM miniz.h with the
+// SAME include guard but a different (TINFL_LESS_MEMORY) struct layout —
+// resolving <miniz.h> through the platform include path would silently
+// compile against the wrong structures. <full_miniz.h> exists only in the
+// fork's include/ directory.
+#include <full_miniz.h>
