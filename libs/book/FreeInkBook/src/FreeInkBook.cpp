@@ -20,8 +20,8 @@ using xmlutil::EncryptionScan;
 
 const char* vendorVersions() {
   static char buf[96];
-  snprintf(buf, sizeof(buf), "miniz %s expat %d.%d.%d", MZ_VERSION, XML_MAJOR_VERSION,
-           XML_MINOR_VERSION, XML_MICRO_VERSION);
+  snprintf(buf, sizeof(buf), "miniz %s (%s) expat %d.%d.%d", MZ_VERSION, FREEINK_MINIZ_FORK,
+           XML_MAJOR_VERSION, XML_MINOR_VERSION, XML_MICRO_VERSION);
   return buf;
 }
 
