@@ -9,6 +9,10 @@
  * Source: richgel999/miniz commit 28f5066e3325 (v1.15 r4, 2013-10-13), the
  * vintage the ROM cores were built from; sliced at the section boundaries
  * upstream esp_full_miniz used when it stripped the cores.
+ *
+ * Local patch: the tdefl compressor core (below) is additionally guarded by
+ * MINIZ_NO_ZLIB_APIS so inflate-only consumers (FreeInkBook) drop the dead
+ * compressor and its un-renamed tdefl_* symbols.
  */
 
 #if !defined(ESP_PLATFORM)
@@ -479,6 +483,7 @@ int tinfl_decompress_mem_to_callback(const void *pIn_buf, size_t *pIn_buf_size, 
 // Purposely making these tables static for faster init and thread safety.
 
 /* --- tdefl: v1.15 compressor core (ROM provides this on ESP) --- */
+#ifndef MINIZ_NO_ZLIB_APIS
 
 // Purposely making these tables static for faster init and thread safety.
 static const mz_uint16 s_tdefl_len_sym[256] = {
@@ -1499,6 +1504,7 @@ void *tdefl_write_image_to_png_file_in_memory(const void *pImage, int w, int h, 
   // Level 6 corresponds to TDEFL_DEFAULT_MAX_PROBES or MZ_DEFAULT_LEVEL (but we can't depend on MZ_DEFAULT_LEVEL being available in case the zlib API's where #defined out)
   return tdefl_write_image_to_png_file_in_memory_ex(pImage, w, h, num_chans, pLen_out, 6, MZ_FALSE);
 }
+#endif // MINIZ_NO_ZLIB_APIS
 
 #ifdef _MSC_VER
 #pragma warning (pop)

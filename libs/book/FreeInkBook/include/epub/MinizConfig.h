@@ -1,5 +1,5 @@
 /* FreeInkBook only needs miniz's low-level streaming inflate (tinfl). The
- * archive, deflate, stdio, and zlib-compatibility layers are compiled out so
+ * archive, stdio, time, and zlib-compatibility layers are compiled out so
  * the vendored library stays small and never touches the filesystem or clock.
  * Include this header instead of <miniz.h> so every translation unit sees the
  * same configuration. */
@@ -9,8 +9,20 @@
 #define MINIZ_NO_TIME
 #define MINIZ_NO_ARCHIVE_APIS
 #define MINIZ_NO_ARCHIVE_WRITING_APIS
-#define MINIZ_NO_DEFLATE_APIS
+// v1.15 has no MINIZ_NO_DEFLATE_APIS; MINIZ_NO_ZLIB_APIS is the flag that
+// gates the mz_deflate/mz_compress/tdefl-wrapper layer (full_miniz.h:181,
+// 248-465; miniz.c:84-440, 741-758) and miniz_cores.c carries a matching
+// guard around the tdefl compressor core, so this both drops the dead
+// compressor code and keeps un-renamed tdefl_* out of the firmware.
+#define MINIZ_NO_ZLIB_APIS
 #define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
+
+// v1.15 scopes MZ_VERSION inside #ifndef MINIZ_NO_ZLIB_APIS (full_miniz.h:248,
+// 256); anything that still references the version string would fail to link.
+// Provide the upstream v1.15 value unconditionally.
+#ifndef MZ_VERSION
+#define MZ_VERSION "9.1.15"
+#endif
 
 // Provenance of the vendored inflate source (a tree copy of
 // Belphemur/esp_full_miniz at 7c3d708, upstream v1.15 r4), reported by
