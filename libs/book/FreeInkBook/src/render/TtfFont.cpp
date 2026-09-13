@@ -2,6 +2,7 @@
 
 #include "render/TtfFont.h"
 
+#include <limits>
 #include <string.h>
 
 #define STBTT_STATIC
@@ -96,10 +97,22 @@ bool TtfFont::glyphBounds(uint32_t codepoint, uint16_t sizePx, int16_t& xoff, in
   int x1 = 0;
   int y1 = 0;
   stbtt_GetGlyphBitmapBox(fontOf(fontInfo_), glyph, scale, scale, &x0, &y0, &x1, &y1);
+  // stbtt returns int coordinates; the public contract narrows to int16 offsets
+  // and uint16 extents. Reject boxes that cannot be represented instead of
+  // letting the casts wrap (reachable via a huge sizePx).
+  const int w = x1 > x0 ? x1 - x0 : 0;
+  const int h = y1 > y0 ? y1 - y0 : 0;
+  constexpr int kOffMin = std::numeric_limits<int16_t>::min();
+  constexpr int kOffMax = std::numeric_limits<int16_t>::max();
+  constexpr int kExtentMax = std::numeric_limits<uint16_t>::max();
+  if (x0 < kOffMin || x0 > kOffMax || y0 < kOffMin || y0 > kOffMax || w > kExtentMax ||
+      h > kExtentMax) {
+    return false;
+  }
   xoff = static_cast<int16_t>(x0);
   yoff = static_cast<int16_t>(y0);
-  width = static_cast<uint16_t>(x1 > x0 ? x1 - x0 : 0);
-  height = static_cast<uint16_t>(y1 > y0 ? y1 - y0 : 0);
+  width = static_cast<uint16_t>(w);
+  height = static_cast<uint16_t>(h);
   return true;
 }
 

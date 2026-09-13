@@ -173,6 +173,10 @@ void testGlyphBounds(TtfFont& font) {
   // Zero-ink glyph (space): known box, zero extent.
   CHECK(font.glyphBounds(' ', 32, xoff, yoff, w, h));
   CHECK_EQ(w, 0);
+
+  // A huge sizePx pushes stbtt's int box past the int16/uint16 public ranges;
+  // the call must report failure rather than wrap the narrowing casts.
+  CHECK(!font.glyphBounds('A', 65535, xoff, yoff, w, h));
 }
 
 void testFontChain(TtfFont& font, TtfFont& second) {
