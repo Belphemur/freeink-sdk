@@ -315,6 +315,7 @@ struct Case {
   const char* name;
   std::vector<uint8_t> (*stream)();
   uint32_t uncompSize;
+  uint32_t maxProduced;
 };
 
 }  // namespace
@@ -327,12 +328,15 @@ int main(int argc, char** argv) {
   fixturesDir = argv[1];
 
   const Case cases[] = {
-      {"truncated-stored", truncatedStoredBlock, 64},
-      {"empty-deflate", emptyDeflate, 10},
-      {"oversized-distance", oversizedDistance, 8},
-      {"zero-padding-escape", zeroPaddingEscape, 8},
-      {"empty-cl-table", emptyCodeLengthTable, 8},
-      {"oversubscribed-table", oversubscribedTable, 8},
+      {"truncated-stored", truncatedStoredBlock, 64, UINT32_MAX},
+      {"empty-deflate", emptyDeflate, 10, UINT32_MAX},
+      {"oversized-distance", oversizedDistance, 8, UINT32_MAX},
+      {"zero-padding-escape", zeroPaddingEscape, 8, UINT32_MAX},
+      // Same escape with a phantom near-4GiB declared size: the reader must
+      // stop at the compressed-size expansion ceiling, not the declared size.
+      {"zero-padding-phantom-4gib", zeroPaddingEscape, 0xFFFFFFFFu, 256 * 1024},
+      {"empty-cl-table", emptyCodeLengthTable, 8, UINT32_MAX},
+      {"oversubscribed-table", oversubscribedTable, 8, UINT32_MAX},
   };
 
   static uint8_t scratchBuf[256 * 1024];
@@ -380,7 +384,14 @@ int main(int argc, char** argv) {
       std::printf("FAIL %s: produced %u > declared %u\n", c.name, r.produced, c.uncompSize);
       continue;
     }
-    std::printf("  %-22s produced %u/%u B, clean %s\n", c.name, r.produced, c.uncompSize,
+    ++checksRun;
+    if (r.produced > c.maxProduced) {
+      ++checksFailed;
+      std::printf("FAIL %s: produced %u > expansion ceiling %u\n", c.name, r.produced,
+                  c.maxProduced);
+      continue;
+    }
+    std::printf("  %-27s produced %u/%u B, clean %s\n", c.name, r.produced, c.uncompSize,
                 r.errored ? "error" : "end");
   }
 

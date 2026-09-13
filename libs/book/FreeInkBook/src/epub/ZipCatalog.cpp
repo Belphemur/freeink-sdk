@@ -38,6 +38,13 @@ constexpr size_t kMaxNameLen = 1024;
 constexpr uint32_t kInBufSize = 2048;
 constexpr uint16_t kMethodStored = 0;
 constexpr uint16_t kMethodDeflate = 8;
+// DEFLATE's theoretical worst-case expansion is 1032:1. The reader's output
+// limit is therefore anchored to the compressed bytes the container declares,
+// not only to the attacker-controlled uncompressedSize — tinfl's zero-padding
+// of exhausted input would otherwise decode indefinitely under a huge declared
+// size.
+constexpr uint64_t kDeflateMaxExpansion = 1032;
+constexpr uint64_t kDeflateOutputSlack = 64;
 
 uint16_t le16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
 
@@ -252,6 +259,16 @@ BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena
   }
   if (entry.method != kMethodDeflate) return BookStatus::Unsupported;
 
+  // Cap decoded output at min(declared uncompressedSize, the maximum output
+  // explainable by the declared compressed size). Both central-directory
+  // fields are attacker-controlled; the expansion ratio makes a huge declared
+  // uncompressedSize harmless, and a huge declared compressedSize is bounded
+  // by the finite source (readAt fails at EOF).
+  uint64_t outputLimit = entry.compressedSize * kDeflateMaxExpansion + kDeflateOutputSlack;
+  if (outputLimit > UINT32_MAX) outputLimit = UINT32_MAX;
+  if (outputLimit > entry.uncompressedSize) outputLimit = entry.uncompressedSize;
+  inflateOutputLimit_ = static_cast<uint32_t>(outputLimit);
+
   decompressor_ = scratch.alloc(sizeof(tinfl_decompressor), alignof(uint64_t));
   window_ = static_cast<uint8_t*>(scratch.alloc(TINFL_LZ_DICT_SIZE, 16));
   inBuf_ = static_cast<uint8_t*>(scratch.alloc(kInBufSize, 16));
@@ -281,15 +298,21 @@ int32_t ZipEntryReader::readStored(uint8_t* dst, uint32_t len) {
 
 int32_t ZipEntryReader::readDeflated(uint8_t* dst, uint32_t len) {
   tinfl_decompressor* decomp = static_cast<tinfl_decompressor*>(decompressor_);
-  // Delivered output is capped at the central-directory uncompressedSize
-  // (parity with readStored()): v1.15 tinfl zero-pads exhausted input
-  // (TINFL_GET_BYTE pads 0's, miniz_cores.c:109-123), so a corrupt stream
-  // whose trailing zero bits keep decoding would otherwise loop forever.
-  // The tinfl call itself still gets the full window space — shrinking
+  // Delivered output is capped at min(central-directory uncompressedSize,
+  // compressedSize * DEFLATE's maximum expansion): tinfl zero-pads exhausted
+  // input (TINFL_GET_BYTE pads 0's, miniz_cores.c:109-123), so the declared
+  // uncompressedSize alone is not a sufficient work bound for a hostile
+  // stream. The tinfl call itself still gets the full window space — shrinking
   // *pOut_buf_size would change the wrapping-window mask (miniz_cores.c:183)
   // and break its power-of-2 requirement (line 186).
-  const uint32_t budget =
-      entry_->uncompressedSize > produced_ ? entry_->uncompressedSize - produced_ : 0;
+  if (produced_ >= inflateOutputLimit_) {
+    done_ = true;
+    return 0;
+  }
+  uint32_t budget = inflateOutputLimit_ - produced_;
+  if (budget > entry_->uncompressedSize - produced_) {
+    budget = entry_->uncompressedSize - produced_;
+  }
   if (budget == 0) {
     done_ = true;
     return 0;
@@ -326,8 +349,8 @@ int32_t ZipEntryReader::readDeflated(uint8_t* dst, uint32_t len) {
     inAvail_ -= static_cast<uint32_t>(inBytes);
     pendingPos_ = windowPos_;
     pendingLen_ = static_cast<uint32_t>(outBytes);
-    // Drop only decoded output beyond the declared size (corrupt streams);
-    // legit streams decode exactly uncompressedSize, so this never fires.
+    // Drop only decoded output beyond the output limit (corrupt streams);
+    // legit streams decode within the expansion ceiling, so this never fires.
     if (pendingLen_ > budget - out) pendingLen_ = budget - out;
     windowPos_ = (windowPos_ + pendingLen_) & (TINFL_LZ_DICT_SIZE - 1);
 
