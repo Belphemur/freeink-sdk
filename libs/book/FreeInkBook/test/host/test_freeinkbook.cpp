@@ -370,6 +370,13 @@ void testCssStrikethrough() {
   }
 }
 
+void testVendorVersion() {
+  // The engine inflates through the esp_full_miniz fork (v1.15 lineage);
+  // fail loudly if the vendored inflate source is swapped out.
+  const char* v = vendorVersions();
+  CHECK(std::strstr(v, "miniz 9.1.15 (esp_full_miniz") == v);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -379,6 +386,7 @@ int main(int argc, char** argv) {
   }
   fixturesDir = argv[1];
 
+  testVendorVersion();
   testArena();
   testResolveHref();
   testMinimalBook("minimal.epub");

@@ -12,6 +12,11 @@
 #define MINIZ_NO_DEFLATE_APIS
 #define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
 
+// Provenance of the vendored inflate source (a tree copy of
+// Belphemur/esp_full_miniz at 7c3d708, upstream v1.15 r4), reported by
+// vendorVersions() so the active miniz lineage is observable at runtime.
+#define FREEINK_MINIZ_FORK "esp_full_miniz 7c3d708"
+
 // The ESP32 mask ROM exports tinfl_* at fixed addresses via DIRECT linker
 // script assignments (esp32s3.rom.ld: "tinfl_decompress = 0x40000828;"),
 // which override object-file definitions — without these renames the
@@ -32,4 +37,4 @@
 // with the SAME include guard but a different (TINFL_LESS_MEMORY) struct
 // layout — resolving <miniz.h> through the platform include path would
 // silently compile against the wrong structures.
-#include "../../third_party/miniz/miniz.h"
+#include "../../third_party/miniz/miniz.h"  // wrapper -> vendored full_miniz.h
