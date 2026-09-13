@@ -86,6 +86,27 @@ static void testSsd() {
     d.display(bus,b.data(),nullptr,RefreshMode::Fast,false);
     assert(lastRegister(bus,0x22)==0xfc);
   }
+  // The first-paint-after-boot/wake promotion must survive turnOff. A caller that powers
+  // the panel down on every refresh (CrossPoint's sunlight fading fix) otherwise never
+  // consumes the one-shot, and its differential FAST cannot clear the sleep screen.
+  {
+    EpdBus bus;
+    Ssd1677Driver d;
+    d.begin(bus);
+    // The activation value is not the LAST 0x22 write here: 0xfc does not self-power-off,
+    // so the driver follows it with the separate 0x22=0x03 power-down sequence.
+    const auto activated = [&bus](uint8_t seq) {
+      for (const auto& w : bus.writes)
+        if (w.command == 0x22 && !w.bytes.empty() && w.bytes[0] == seq) return true;
+      return false;
+    };
+    bus.clear();
+    d.display(bus,b.data(),nullptr,RefreshMode::Fast,true);
+    assert(activated(0xd7) && !activated(0xfc));
+    bus.clear();
+    d.display(bus,b.data(),nullptr,RefreshMode::Fast,true);
+    assert(activated(0xfc) && !activated(0xd7));
+  }
   EpdBus bus;
   Ssd1677Driver d;
   d.begin(bus);
