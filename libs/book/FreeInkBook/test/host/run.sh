@@ -4,6 +4,16 @@
 # system `zip` (mimetype stored first, per the EPUB OCF spec).
 set -e
 cd "$(dirname "$0")"
+
+# The miniz fork is a nested submodule. Fail loudly rather than producing a
+# confusing missing-header/compiler error from an empty gitlink directory.
+SDK_ROOT="$(cd ../../../../.. && pwd)"
+if [ ! -f "$SDK_ROOT/libs/book/FreeInkBook/third_party/miniz/include/full_miniz.h" ]; then
+  echo "error: esp_full_miniz submodule is not checked out" >&2
+  echo "run: git -C '$SDK_ROOT' submodule update --init --recursive" >&2
+  exit 1
+fi
+
 BUILD_DIR="${TMPDIR:-/tmp}/freeinkbook-tests"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/fixtures" "$BUILD_DIR/obj"
@@ -59,16 +69,16 @@ python3 ../fixtures/gen_omnibus.py "$BUILD_DIR/fixtures/omnibus.epub" 1700 >/dev
 # include path for third_party/expat is dropped so <expat.h> resolves to the
 # system headers (mirrors the CrossPoint firmware consumption mode; verified
 # by checking the linked XML_* symbols match the system expat).
-INCLUDES="-I../../include -I../../third_party/miniz -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb"
-VENDOR_SRCS="miniz_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl"
+INCLUDES="-I../../include -I../../third_party/miniz/include -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb"
+VENDOR_SRCS="miniz_impl miniz_cores_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl"
 if [ -n "$FREEINK_BOOK_EXTERNAL_EXPAT" ]; then
   CC_FLAGS="-O1 -std=c99 -DFREEINK_BOOK_EXTERNAL_EXPAT=1 $INCLUDES"
   LD_LIBS="-lexpat"
-  VENDOR_SRCS="miniz_impl unibreak_impl pngle_impl tjpgd_impl"
+  VENDOR_SRCS="miniz_impl miniz_cores_impl unibreak_impl pngle_impl tjpgd_impl"
 else
   CC_FLAGS="-O1 -std=c99 $INCLUDES"
   LD_LIBS=""
-  VENDOR_SRCS="miniz_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl"
+  VENDOR_SRCS="miniz_impl miniz_cores_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl"
   INCLUDES="$INCLUDES -I../../third_party/expat"
 fi
 for src in $VENDOR_SRCS; do
@@ -110,6 +120,10 @@ c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_catalog.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
   -o "$BUILD_DIR/test_catalog"
 
+c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
+  $CORE_SRCS test_deflate_robustness.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
+  -o "$BUILD_DIR/test_deflate_robustness"
+
 python3 ../../tools/hyphc.py ../../third_party/hyphen-patterns/hyph-en-us.pat.txt \
   "$BUILD_DIR/hyph-en-us.fibh"
 python3 ../../tools/hyphc.py ../fixtures/hyph-test-ru.pat.txt \
@@ -123,3 +137,4 @@ mkdir -p "$BUILD_DIR/cache"
 "$BUILD_DIR/test_cache" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache" "$BUILD_DIR/hyph-en-us.fibh"
 "$BUILD_DIR/test_font" "$BUILD_DIR/fixtures" ../fixtures/fonts/DejaVuSans.ttf
 "$BUILD_DIR/test_catalog" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache"
+"$BUILD_DIR/test_deflate_robustness" "$BUILD_DIR/fixtures"

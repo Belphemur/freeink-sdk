@@ -110,6 +110,7 @@ class ZipEntryReader {
   uint32_t inPos_ = 0;
   uint32_t inAvail_ = 0;
   uint32_t compConsumed_ = 0;
+  uint32_t inflateOutputLimit_ = 0;
   uint32_t windowPos_ = 0;   // next write position in the 32 KB window
   uint32_t pendingPos_ = 0;  // start of decoded-but-undelivered bytes
   uint32_t pendingLen_ = 0;

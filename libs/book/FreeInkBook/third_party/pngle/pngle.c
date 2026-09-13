@@ -27,7 +27,7 @@
 #include <stdlib.h>
 #include <math.h>
 
-#include "../miniz/miniz.h" /* FreeInkBook: vendored miniz, not ESP-IDF ROM miniz */
+#include "../../src/vendor/miniz.h" /* FreeInkBook provenance wrapper -> nested esp_full_miniz submodule, not ESP-IDF ROM miniz */
 #include "pngle.h"
 
 #ifndef MIN
