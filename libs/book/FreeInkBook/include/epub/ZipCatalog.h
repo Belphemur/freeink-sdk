@@ -29,7 +29,11 @@ struct ZipEntry {
   uint32_t compressedSize = 0;
   uint32_t uncompressedSize = 0;
   uint32_t localHeaderOffset = 0;
-  uint16_t method = 0;  // 0 = stored, 8 = deflate
+  // No default member initializer: Arena::allocArray returns raw storage and
+  // never runs constructors, so catalog-resident entries must not rely on
+  // NSDMIs. Every construction/deserialization site assigns method
+  // explicitly.
+  uint16_t method;  // 0 = stored, 8 = deflate
 };
 
 // find()/findByHash() are virtual so an SD-backed catalog (BookCatalog) can
@@ -92,13 +96,16 @@ class ZipEntryReader {
   BookStatus open(BookSource& source, const ZipEntry& entry, Arena& scratch);
   int32_t read(void* dst, uint32_t len);
   uint32_t totalProduced() const { return produced_; }
-  const ZipEntry* entry() const { return &entry_; }
+  bool isOpen() const { return opened_; }
+  // Null until open() succeeded; owned copy of the entry passed to open().
+  const ZipEntry* entry() const { return opened_ ? &entry_ : nullptr; }
 
  private:
   int32_t readStored(uint8_t* dst, uint32_t len);
   int32_t readDeflated(uint8_t* dst, uint32_t len);
 
   BookSource* source_ = nullptr;
+  bool opened_ = false;
   // Owned copy: callers may pass a stack-local entry (resumable SAX sessions
   // keep this reader alive across later step() calls). Only the scalar
   // fields are truly owned — name stays a view into the book arena (see

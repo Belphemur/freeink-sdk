@@ -221,6 +221,7 @@ const ZipEntry* ZipCatalog::findByHash(const uint32_t nameHash) const {
 
 BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena& scratch) {
   source_ = &source;
+  opened_ = false;
   entry_ = entry;  // owned copy: the caller's entry may be a stack local (see header)
   produced_ = 0;
   inPos_ = inAvail_ = compConsumed_ = 0;
@@ -237,6 +238,7 @@ BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena
       return BookStatus::Unsupported;
     }
     dataOffset_ = 0;
+    opened_ = true;
     return BookStatus::Ok;
   }
 
@@ -254,6 +256,7 @@ BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena
 
   if (entry.method == kMethodStored) {
     if (entry.compressedSize != entry.uncompressedSize) return BookStatus::Truncated;
+    opened_ = true;
     return BookStatus::Ok;
   }
   if (entry.method != kMethodDeflate) return BookStatus::Unsupported;
@@ -275,11 +278,12 @@ BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena
     return BookStatus::OutOfMemory;
   }
   tinfl_init(static_cast<tinfl_decompressor*>(decompressor_));
+  opened_ = true;
   return BookStatus::Ok;
 }
 
 int32_t ZipEntryReader::read(void* dst, uint32_t len) {
-  if (source_ == nullptr) return -1;
+  if (!opened_) return -1;
   if (len == 0) return 0;
   return entry_.method == kMethodStored ? readStored(static_cast<uint8_t*>(dst), len)
                                         : readDeflated(static_cast<uint8_t*>(dst), len);

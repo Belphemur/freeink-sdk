@@ -2425,6 +2425,34 @@ void testResumableSessionOwnsBeginLocals() {
   }
 }
 
+// entry()/read() keep the pre-owned-copy nullptr contract: nothing is visible
+// until an open() actually succeeds, and a failed open re-closes the reader.
+void testZipEntryReaderOpenContract() {
+  HostFileSource source;
+  CHECK(source.open(fixture("minimal.epub")));
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  ZipEntryReader reader;
+  char byte = 0;
+
+  CHECK(!reader.isOpen());
+  CHECK(reader.entry() == nullptr);
+  CHECK_EQ(reader.read(&byte, 1), -1);
+
+  ZipEntry bad = ZipEntryReader::rawEntry(16);
+  bad.method = 8;  // raw synthetic entries are stored-only
+  CHECK_EQ(static_cast<int>(reader.open(source, bad, scratch)), static_cast<int>(BookStatus::Unsupported));
+  CHECK(!reader.isOpen());
+  CHECK(reader.entry() == nullptr);
+  CHECK_EQ(reader.read(&byte, 1), -1);
+
+  const ZipEntry ok = ZipEntryReader::rawEntry(4);
+  CHECK_EQ(static_cast<int>(reader.open(source, ok, scratch)), static_cast<int>(BookStatus::Ok));
+  CHECK(reader.isOpen());
+  CHECK(reader.entry() != nullptr);
+  CHECK_EQ(reader.entry()->uncompressedSize, 4u);
+  CHECK_EQ(reader.read(&byte, 1), 1);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2459,6 +2487,7 @@ int main(int argc, char** argv) {
   testSplitParseArena();
   testChapterLayoutSession();
   testResumableSessionOwnsBeginLocals();
+  testZipEntryReaderOpenContract();
   testCssUnit();
   testStyledChapter();
   testCssPaddingParse();
