@@ -35,6 +35,9 @@ class UsbMassStorage {
   bool active() const { return _active; }
   UsbMassStorageState state() const;
   bool hostConnected() const;
+  // Suspend can mean host sleep or cable removal on boards without VBUS sensing.
+  // The application decides whether and when a suspended session should end.
+  bool hostSuspended() const;
   // Soft-disconnect the USB device from the host. Call from application/task
   // context, never from an MSC callback; end() still owns final teardown.
   bool disconnectHost() const;
@@ -63,6 +66,7 @@ class UsbMassStorage {
   bool active() const { return false; }
   UsbMassStorageState state() const { return UsbMassStorageState::Idle; }
   bool hostConnected() const { return false; }
+  bool hostSuspended() const { return false; }
   bool disconnectHost() const { return false; }
 };
 }  // namespace freeink

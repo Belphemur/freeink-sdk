@@ -1004,20 +1004,71 @@ layout routinely fits fewer indexes than `listVisibleRows()` estimates. Screens
 that scroll (swipe or button navigation) should therefore own a `ListNav` and
 call `nav.syncToProps(body, rowHeight, rowGap, count, props)` right before
 `list()`. `list()` reports the viewport it actually laid out back through
-`props.nav`, which gives the nav the real page size (`pageRows()`, the delta to
-page by) and lets it keep a clipped tail reachable. Because that feedback
-arrives only after a layout, a nav-managed screen must render in a small loop:
+`props.nav`. Rendering, hit targets, preview rows, and the scroll indicator
+share that measurement. The indicator uses the current layout immediately.
+A selection that falls below variable-height rows may require another layout;
+clear and rebuild before displaying:
 
 ```cpp
 for (int pass = 0; pass < 8; ++pass) {
+  // Clear the framebuffer and redraw chrome here.
   app.render();
   if (!nav.consumeRebuildNeeded()) break;
 }
 ```
 
-Without the loop a clipped list can paint one frame with the selection or the
-scroll indicator missing. Callers repaint each pass over the previous one, so
-`list()` keeps the row geometry stable across the passes of a single render.
+For input and rendering on separate tasks, submit navigation without acquiring
+an e-ink refresh lock:
+
+```cpp
+// Input task: logical selection changes immediately, including for Confirm.
+nav.requestSelection(nextIndex);
+// Or scroll without changing selection; multiple pending deltas accumulate.
+nav.requestScroll(nav.inputPageRows());
+// Notify/schedule a render after either request.
+```
+
+`requestSelection()` supersedes pending scroll deltas. A subsequent
+`requestScroll()` applies after following that selection. `syncToProps()`
+consumes requests on the render task and captures the selection used by that
+frame, so input arriving during drawing cannot change its layout feedback.
+When data shrinks, an atomic compare-and-exchange clamps a stale selection
+without overwriting a newer input request.
+`inputPageRows()` is an atomic snapshot of the most recently measured page
+(initially 1). Pending scroll deltas saturate at ±65,535 rows.
+
+Use one input producer and one render consumer. `selected` and `followOnBuild`
+are atomic; use `nav.selected.load()` when passing the value to a template such
+as `std::min`, or when capturing it with `auto`. Other fields, `follow()`,
+`scrollBy()`, and `pageRows()`/`pageRowsFor()` remain render-owned. Resetting or
+copying a nav requires quiescent access. List items and their strings must
+remain valid and stable during the build; atomics do not synchronize app data.
+For a tab ring with index 0 reserved for the tab bar, pass `selectionOffset = 1`
+to `syncToProps()`; layout and follow feedback then use row indexes consistently.
+
+Set `rowPaddingY` to an explicit pixel value to size rows as the greater of
+`rowHeight` and measured content plus vertical padding. For example, a dense
+file browser can use one small-font line plus 8 pixels as its minimum,
+`rowPaddingY = 4`, and `labelText.maxLines = 2`; only names that actually wrap
+need a taller row. Touch screens should retain their minimum touch row height.
+The default `rowPaddingY = -1` preserves legacy height-derived padding.
+
+With `partialTrailingRow = true`, the next row uses exactly the same text,
+value, icon, and toggle layout as a full row. It is clipped at the viewport
+edge and contributes neither an interaction nor a navigation row. A row whose
+bottom exactly meets the viewport edge is a full, selectable row; no trailing
+gap is required. A preview clips the entire next section block, including its
+inline heading. The heading itself can signal that more content follows even
+when the book beneath it is still outside the viewport. Decorative section
+padding does not count toward `partialTrailingMinHeight`. Section and row
+spacing remain unchanged, and previews remain non-interactive.
+
+Pixel clipping is optional for custom `DrawTarget` implementations: implement
+`clipRect()` and `setClipRect()` to enable previews. `DisplayTarget` supports
+it, `InvertedDrawTarget` forwards it, and `GfxRendererTarget` supports it when
+the application's renderer provides `setClipRect(x, y, width, height)`.
+Targets without clipping omit partial rows. A preview restores the previous
+clip after drawing, so it cannot spill into a footer or alter later painting.
 
 ### Dialogs
 

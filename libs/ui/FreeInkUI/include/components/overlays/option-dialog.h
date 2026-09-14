@@ -51,7 +51,10 @@ inline int16_t optionDialogHeight(const DrawTarget& target, const OptionDialogPr
   const int16_t contentW = static_cast<int16_t>(width - props.padding.left - props.padding.right);
   int16_t height = static_cast<int16_t>(props.padding.top + props.padding.bottom);
   if (props.title) {
-    height = static_cast<int16_t>(height + target.lineHeight(props.titleText.font) + props.gap);
+    // Honors titleText.maxLines (default 1), so long captions can opt in to
+    // wrapping and the panel grows to match.
+    height = static_cast<int16_t>(height + measureWrappedText(target, props.title, props.titleText, contentW).height +
+                                  props.gap);
   }
   if (props.headline) {
     height = static_cast<int16_t>(height + measureWrappedText(target, props.headline, props.headlineText, contentW).height +
@@ -85,9 +88,19 @@ void optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
   Rect content = rect.inset(props.padding);
   int16_t cursorY = content.y;
   if (props.title) {
+    // Same one-pass wrap-and-draw as the headline below, so the height
+    // reserved by optionDialogHeight always matches the rendered lines.
     const int16_t lh = frame.target().lineHeight(props.titleText.font);
-    drawText(frame.target(), Rect{content.x, cursorY, content.width, lh}, props.title, props.titleText);
-    cursorY = static_cast<int16_t>(cursorY + lh + props.gap);
+    TextStyle lineStyle = props.titleText;
+    lineStyle.align = TextAlign::Left;  // runs arrive already positioned
+    lineStyle.maxLines = 1;
+    int16_t lines = 0;
+    layoutText(frame.target(), Rect{content.x, cursorY, content.width, 1}, props.title, props.titleText,
+               [&](const char* line, Rect r) {
+                 frame.target().text(r, line, lineStyle);
+                 ++lines;
+               });
+    cursorY = static_cast<int16_t>(cursorY + lines * lh + props.gap);
   }
 
   if (props.headline) {

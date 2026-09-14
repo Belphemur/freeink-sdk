@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <thread>
 
 namespace {
 
@@ -899,6 +900,357 @@ void testListInlineSectionHeadingDoesNotOrphan() {
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 0u);
 }
 
+// A refresh can be in flight while input advances the logical selection. The
+// old frame must report against its own selection and retain the new request.
+void testListDeferredInput() {
+  ListNav nav;
+  ListProps props;
+  const Rect body{0, 0, 160, 60};
+  nav.syncToProps(body, 20, 0, 100, props);
+  nav.onListRendered(0, 3, true);
+  CHECK_EQ(nav.inputPageRows(), 3);
+  for (int i = 0; i < 6; ++i)
+    nav.requestSelection(nav.selected.load() + 1);
+  CHECK_EQ(nav.selected.load(), 6); // Confirm sees all six presses immediately
+  CHECK_EQ(nav.top, 0);            // input never mutates the render viewport
+  nav.syncToProps(body, 20, 0, 100, props);
+  CHECK_EQ(props.selectedIndex, 6);
+  CHECK_EQ(props.topIndex, 4);
+  nav.requestSelection(8);         // arrives while the frame for 6 is drawing
+  nav.onListRendered(4, 3, true);
+  CHECK(!nav.consumeRebuildNeeded());
+  CHECK(nav.followOnBuild.load());
+  nav.syncToProps(body, 20, 0, 100, props);
+  CHECK_EQ(props.selectedIndex, 8);
+  CHECK_EQ(props.topIndex, 6);
+  nav.onListRendered(6, 3, true);
+
+  nav.requestScroll(3);
+  nav.requestScroll(3);
+  CHECK_EQ(nav.top, 6);
+  nav.syncToProps(body, 20, 0, 100, props);
+  CHECK_EQ(nav.top, 12);
+  CHECK_EQ(nav.selected.load(), 8); // scrolling does not move selection
+  CHECK(!nav.followPending);
+  nav.requestScroll(30);
+  nav.requestSelection(1);         // following supersedes queued scrolling
+  nav.syncToProps(body, 20, 0, 100, props);
+  CHECK_EQ(nav.top, 1);
+  nav.requestScroll(-1000);
+  nav.syncToProps(body, 20, 0, 100, props);
+  CHECK_EQ(nav.top, 0);
+
+  // A tab's ring index stays input-owned; layout follows its row index.
+  nav.requestSelection(7);
+  nav.syncToProps(body, 20, 0, 100, props, 1);
+  CHECK_EQ(props.selectedIndex, 6);
+  nav.onListRendered(props.topIndex, 2, false);
+  CHECK(nav.consumeRebuildNeeded());
+  CHECK_EQ(nav.top, 5);
+  nav.requestSelection(0);
+  nav.syncToProps(body, 20, 0, 100, props, 1);
+  CHECK_EQ(props.selectedIndex, -1);
+  CHECK_EQ(props.topIndex, 0);
+  nav.requestSelection(10);
+  nav.syncToProps(body, 20, 0, 2, props, 1);
+  CHECK_EQ(props.selectedIndex, 1);
+  CHECK_EQ(nav.selected.load(), 2); // stale ring selection clamps to the last row
+}
+
+void testListConcurrentScrollRequests() {
+  ListNav nav;
+  ListProps props;
+  const Rect body{0, 0, 160, 20};
+  nav.syncToProps(body, 20, 0, 30000, props);
+  nav.onListRendered(0, 1, true);
+  std::atomic<bool> done{false};
+  std::thread input([&] {
+    for (int i = 0; i < 10000; ++i) {
+      nav.requestScroll(1);
+      (void)nav.inputPageRows();
+    }
+    done.store(true);
+  });
+  do {
+    nav.syncToProps(body, 20, 0, 30000, props);
+    nav.onListRendered(props.topIndex, 1, false);
+  } while (!done.load());
+  input.join();
+  nav.syncToProps(body, 20, 0, 30000, props);
+  CHECK_EQ(nav.top, 10000);
+}
+
+void testListMeasuredHeadersAndUnsupportedPreview() {
+  FakeDrawTarget draw;
+  const DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  ListItem items[3]{};
+  items[0].label = "Section";
+  items[0].isHeader = true;
+  items[1].label = "One";
+  items[2].label = "Two";
+  ListProps props;
+  props.items = items;
+  props.count = 3;
+  props.action = 4;
+  props.rowHeight = 20;
+  ListNav nav;
+  nav.reset(1);
+  nav.syncToProps(Rect{0, 0, 160, 56}, 20, 0, 3, props);
+  list(frame, Rect{0, 0, 160, 56}, props);
+  CHECK_EQ(nav.drawnRows, 3); // 16px header + two 20px rows exceeds the estimate
+  CHECK_EQ(hits.count(), 2u);
+  CHECK(!nav.consumeRebuildNeeded());
+
+  hits.clear();
+  draw.opCount = 0;
+  props.nav = nullptr;
+  props.items = items + 1;
+  props.count = 2;
+  props.partialTrailingRow = true;
+  list(frame, Rect{0, 0, 160, 39}, props);
+  CHECK_EQ(hits.count(), 1u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 1u);
+}
+
+class ListPreviewDrawTarget : public FakeDrawTarget {
+ public:
+  Rect clip{0, 0, 32767, 32767};
+  Rect labelRect{};
+  Rect labelClip{};
+  uint8_t labelMaxLines = 0;
+  int valuesDrawn = 0;
+  Rect clipRect() const override { return clip; }
+  bool setClipRect(Rect rect) override { clip = rect; return true; }
+  void text(Rect rect, const char* value, TextStyle style) override {
+    FakeDrawTarget::text(rect, value, style);
+    if (std::strcmp(value, ".epub") == 0) {
+      ++valuesDrawn;
+    } else {
+      labelRect = rect;
+      labelClip = clip;
+      labelMaxLines = style.maxLines;
+    }
+  }
+};
+
+// A new letter group must not suppress the preview. Its heading alone can
+// signal more content; decorative padding does not count as visible content.
+void testListSectionHeadingPreview() {
+  class LibraryDrawTarget : public ListPreviewDrawTarget {
+   public:
+    Rect headingRect{};
+    Rect headingClip{};
+    int16_t lineHeight(FontId font) const override { return font == 1 ? 29 : 24; }
+    void text(Rect rect, const char* value, TextStyle style) override {
+      ListPreviewDrawTarget::text(rect, value, style);
+      if (std::strcmp(value, "M") == 0) {
+        headingRect = rect;
+        headingClip = clip;
+      }
+    }
+  };
+  for (const int height : {99, 100, 133, 134, 177, 178}) {
+    LibraryDrawTarget draw;
+    DeviceContext device = makeDevice();
+    InputSnapshot input;
+    InteractionBuffer<16> hits;
+    Frame<16> frame(draw, device, input, hits);
+    ListItem items[2]{};
+    items[0].label = "Book";
+    items[0].subtitle = "Author";
+    items[1].label = "Next book";
+    items[1].subtitle = "Next author";
+    items[1].sectionHeading = "M";
+    items[1].actionValue = 1;
+    ListProps props;
+    props.items = items;
+    props.count = 2;
+    props.action = 4;
+    props.labelText.font = 1;
+    props.rowHeight = 44;
+    props.rowPaddingY = 4;
+    props.rowGap = 6;
+    props.sectionGap = 16;
+    props.headerUnderline = false;
+    props.scrollIndicator = false;
+    props.partialTrailingRow = true;
+    props.partialTrailingMinHeight = 17;
+    ListNav nav;
+    nav.reset();
+    const Rect body{0, 155, 480, static_cast<int16_t>(height)};
+    nav.syncToProps(body, props.rowHeight, props.rowGap, props.count, props);
+    list(frame, body, props);
+    // First book = 61px, gap = 6px, section = 16 + 28 + 6px.
+    // Second book starts at 117px and is complete at 178px.
+    CHECK_EQ(nav.drawnRows, height < 178 ? 1 : 2);
+    CHECK_EQ(hits.count(), height < 178 ? 1u : 2u);
+    CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), height < 100 ? 2u : 5u);
+    if (height >= 100 && height < 178) {
+      CHECK_EQ(draw.headingRect.y, body.y + 83);
+      CHECK_EQ(draw.headingClip.bottom(), body.bottom());
+      CHECK(draw.headingClip.bottom() - draw.headingRect.y >= 17);
+    }
+    CHECK_EQ(draw.clip.height, 32767); // preview restores the caller's clip
+  }
+}
+
+void testListMixedFontTouchDensity() {
+  class LibraryDrawTarget : public FakeDrawTarget {
+   public:
+    int16_t lineHeight(FontId font) const override { return font == 1 ? 28 : 20; }
+  } draw;
+  const ThemeTokens theme = themeTokensForLineHeight(28);
+  CHECK_EQ(theme.rowHeight, 64);
+  CHECK_EQ(theme.minTouchSize, 44);
+  const Rect body{0, 0, 480, 472};
+  ListItem items[10]{};
+  for (int i = 0; i < 10; ++i) {
+    items[i].label = "Book title";
+    items[i].subtitle = "Author";
+    items[i].actionValue = static_cast<int16_t>(i);
+  }
+  items[0].sectionHeading = "B"; // Title-tab alphabetical group heading
+  ListProps props;
+  props.items = items;
+  props.itemsWindowCount = 10;
+  props.count = 100;
+  props.action = 4;
+  props.labelText = theme.bodyText;
+  props.subtitleText = theme.smallText;
+  props.rowPaddingY = 4;
+  props.rowHeight = theme.minTouchSize;
+  props.rowGap = 0;
+  props.scrollIndicator = false;
+  ListNav nav;
+  nav.reset(7);
+  nav.syncToProps(body, props.rowHeight, 0, props.count, props);
+  CHECK_EQ(nav.visibleRows, 10); // enough data for every potentially fitting row
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  list(frame, body, props);
+  CHECK_EQ(nav.drawnRows, 8); // 24px heading + 8 * 56px; generic 64px rows fit only 7
+  CHECK_EQ(hits.count(), 8u);
+  CHECK_EQ(hits.data()[7].value, 7);
+  CHECK_EQ(hits.data()[7].rect.bottom(), body.bottom());
+  CHECK(!nav.consumeRebuildNeeded());
+}
+
+void testListExactFitAndPreviewGeometry() {
+  for (int height : {99, 100}) {
+    ListPreviewDrawTarget draw;
+    const DeviceContext device = makeDevice();
+    InputSnapshot input;
+    InteractionBuffer<16> interactions;
+    Frame<16> frame(draw, device, input, interactions);
+    ListItem items[5]{};
+    for (int i = 0; i < 5; ++i) {
+      items[i].label = "A filename that needs two lines";
+      items[i].value = ".epub";
+      items[i].actionValue = i;
+    }
+    ListNav nav;
+    ListProps props;
+    props.items = items;
+    props.count = 5;
+    props.action = 4;
+    props.rowHeight = 20;
+    props.rowPaddingY = 4;
+    props.rowGap = 2;
+    props.labelText.maxLines = 2;
+    props.balanceWrappedLabelWithValue = false;
+    props.scrollIndicator = false;
+    props.partialTrailingRow = true;
+    const Rect body{0, 0, 160, static_cast<int16_t>(height)};
+    nav.syncToProps(body, 20, 2, 5, props);
+    list(frame, body, props);
+    CHECK_EQ(nav.drawnRows, height == 100 ? 3 : 2);
+    CHECK_EQ(interactions.count(), height == 100 ? 3u : 2u);
+    CHECK_EQ(draw.valuesDrawn, 3); // extension also exists in the preview
+    CHECK_EQ(draw.labelMaxLines, 2);
+    CHECK_EQ(draw.labelRect.width, 104); // same slot after the extension
+    CHECK_EQ(draw.labelRect.y, 68);
+    CHECK_EQ(draw.labelRect.height, 32); // never recentered into leftover space
+    CHECK_EQ(draw.labelClip.height, height == 100 ? 32767 : 99);
+    CHECK_EQ(draw.clip.height, 32767); // restored for the footer
+    if (height == 99)
+      CHECK_EQ(interactions.data()[1].rect.bottom(), 66); // no hit expansion into preview
+    if (height == 99) {
+      // The same deferred swipe API used by Library must start the next page
+      // with the previously previewed item, now fully visible and selectable.
+      CHECK_EQ(nav.inputPageRows(), 2);
+      nav.requestScroll(nav.inputPageRows());
+      nav.syncToProps(body, 20, 2, 5, props);
+      CHECK_EQ(props.topIndex, 2);
+      InteractionBuffer<16> nextHits;
+      Frame<16> nextFrame(draw, device, input, nextHits);
+      list(nextFrame, body, props);
+      CHECK_EQ(nextHits.data()[0].value, 2);
+      CHECK_EQ(nextHits.data()[0].rect.y, body.y);
+      CHECK_EQ(nextHits.data()[0].rect.height, 32);
+    }
+  }
+
+  ListPreviewDrawTarget draw;
+  ListProps props;
+  props.rowHeight = 20;
+  props.rowPaddingY = 4;
+  props.labelText.maxLines = 3;
+  ListItem item;
+  item.label = "12345678901234567890123456789012345678901";
+  item.value = "x";
+  // The balanced cap is 110px; without it the 168px slot would use two lines.
+  const ListRowLayout measured = measureListRow(draw, nullptr, 200, props, item);
+  CHECK_EQ(measured.labelWidth, 110);
+  CHECK_EQ(measured.labelLines, 3);
+  CHECK_EQ(measured.height, 44);
+}
+
+// A preview must be a pixel-for-pixel crop of the full row, in either text
+// direction and every panel orientation, without touching footer pixels.
+void testListPreviewPixels() {
+  constexpr int W = 160, H = 160, WB = W / 8;
+  for (const auto orientation : {Orientation::Portrait, Orientation::PortraitInverted,
+                                 Orientation::LandscapeClockwise, Orientation::LandscapeCounterClockwise}) {
+    for (const bool rtl : {false, true}) {
+      uint8_t full[WB * H], cropped[WB * H], mask[WB * H];
+      std::memset(full, 0xff, sizeof(full));
+      std::memset(cropped, 0xff, sizeof(cropped));
+      std::memset(mask, 0xff, sizeof(mask));
+      DisplayTarget fullTarget(full, W, H, WB, orientation);
+      DisplayTarget cropTarget(cropped, W, H, WB, orientation);
+      DisplayTarget maskTarget(mask, W, H, WB, orientation);
+      const DeviceContext device = makeDevice();
+      InputSnapshot input;
+      InteractionBuffer<16> fullHits, cropHits;
+      Frame<16> fullFrame(fullTarget, device, input, fullHits);
+      Frame<16> cropFrame(cropTarget, device, input, cropHits);
+      ListItem items[3]{};
+      for (auto& item : items) { item.label = "Book"; item.value = ".epub"; }
+      ListProps props;
+      props.items = items;
+      props.count = 3;
+      props.action = 2;
+      props.rowHeight = 40;
+      props.scrollIndicator = false;
+      props.partialTrailingRow = true;
+      props.rtl = rtl;
+      list(fullFrame, Rect{0, 0, W, 120}, props);
+      list(cropFrame, Rect{0, 0, W, 103}, props);
+      maskTarget.fill(Rect{0, 0, W, 103}, Paint::solid(Color::Black));
+      CHECK_EQ(fullHits.count(), 3u);
+      CHECK_EQ(cropHits.count(), 2u);
+      for (size_t i = 0; i < sizeof(full); ++i)
+        CHECK_EQ(cropped[i], static_cast<uint8_t>(full[i] | mask[i]));
+      CHECK_EQ(cropTarget.clipRect().height, 32767);
+    }
+  }
+}
+
 void testListNavLayoutFeedback() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -1105,10 +1457,9 @@ void testListNavScrollsClippedListWithinRowEstimate() {
   build(0);
   CHECK_EQ(nav.drawnRows, 6); // wrapped rows fit 6 of the estimated 10
   CHECK_EQ(nav.drawnCount, 8);
-  CHECK_EQ(scrollFills(), 0); // nothing measured yet: no indicator on pass 1
-  // The first build had no measured page size, so it could not know the list
-  // was clipped; it asks for one repaint (which shows the scroll indicator).
-  CHECK(nav.consumeRebuildNeeded());
+  CHECK_EQ(scrollFills(), 2); // current geometry draws the indicator on pass 1
+  // Scroll feedback uses this layout, without a repaint just for the indicator.
+  CHECK(!nav.consumeRebuildNeeded());
   build(0);
   CHECK(!nav.rebuildNeeded); // and does not ask again
   CHECK_EQ(scrollFills(), 2); // the rebuild paints the track and its thumb
@@ -1124,10 +1475,10 @@ void testListNavScrollsClippedListWithinRowEstimate() {
   CHECK(hasFill(Rect{477, 50, 3, 150})); // thumb tracked the viewport
 
   // The measurement belongs to the row set it was taken on. A caller that
-  // reloads its data keeps the same nav, and 7 items that all fit must not
-  // inherit the clipped list's page size (phantom indicator, narrowed rows).
+  // reloads its data keeps the same nav. Seven wrapped items still overflow;
+  // the current six-row measurement shows the indicator immediately.
   buildCount(7, 0);
-  CHECK_EQ(scrollFills(), 0);
+  CHECK_EQ(scrollFills(), 2);
 
   // Every clamp has to agree about that. scrollBy() pages by the estimate for
   // the new count too: if it kept the old measured page it would leave `top`
@@ -4194,6 +4545,13 @@ int main() {
   testListItemsWindowSkipsUnavailablePartialPreview();
   testListInlineSectionHeadingWindow();
   testListInlineSectionHeadingDoesNotOrphan();
+  testListMeasuredHeadersAndUnsupportedPreview();
+  testListDeferredInput();
+  testListConcurrentScrollRequests();
+  testListSectionHeadingPreview();
+  testListMixedFontTouchDensity();
+  testListExactFitAndPreviewGeometry();
+  testListPreviewPixels();
   testListNavLayoutFeedback();
   testListNavConvergesThroughRealList();
   testListNavScrollsClippedListWithinRowEstimate();
