@@ -10,15 +10,13 @@
 
 #include "layout/ChapterLayout.h"
 
-#include <new>
-
-#include "BookProfile.h"
-
+#include <linebreak.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <linebreak.h>
+#include <new>
 
+#include "BookProfile.h"
 #include "epub/ImageProbe.h"
 #include "epub/PackageParsers.h"
 #include "epub/XmlSax.h"
@@ -55,8 +53,8 @@ constexpr uint16_t kMaxLinksPerPage = 16;
 constexpr uint8_t kMaxLinksPerPar = 6;
 constexpr uint32_t kStyleTextCap = 3 * 1024;
 constexpr uint16_t kMaxProbedImages = 96;
-constexpr uint16_t kMaxRubyPerPar = 4;   // ruby annotations buffered per paragraph
-constexpr uint16_t kRubyTextCap = 64;    // bytes per ruby annotation incl. NUL
+constexpr uint16_t kMaxRubyPerPar = 4;  // ruby annotations buffered per paragraph
+constexpr uint16_t kRubyTextCap = 64;   // bytes per ruby annotation incl. NUL
 constexpr uint16_t kMaxRubiesPerPage = 8;
 #elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
 constexpr uint32_t kParTextCap = 16384;
@@ -189,17 +187,15 @@ uint32_t encodeUtf8(uint32_t cp, char* out) {
 bool isHyphLetter(uint32_t cp) {
   if ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z')) return true;
   if (cp == 0x00D7 || cp == 0x00F7) return false;
-  return (cp >= 0x00C0 && cp <= 0x024F) || (cp >= 0x0370 && cp <= 0x03FF) ||
-         (cp >= 0x0400 && cp <= 0x04FF);
+  return (cp >= 0x00C0 && cp <= 0x024F) || (cp >= 0x0370 && cp <= 0x03FF) || (cp >= 0x0400 && cp <= 0x04FF);
 }
 
 // CJK ideographs, kana, Hangul, fullwidth forms, and the supplementary
 // ideographic planes — the scripts that justify by inter-character expansion
 // and take a quarter-em gap against Latin runs.
 bool isCjk(uint32_t cp) {
-  return (cp >= 0x2E80 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7AF) ||
-         (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFF00 && cp <= 0xFF60) ||
-         (cp >= 0x20000 && cp <= 0x3FFFF);
+  return (cp >= 0x2E80 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0xF900 && cp <= 0xFAFF) ||
+         (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0x20000 && cp <= 0x3FFFF);
 }
 
 bool isLatinWordChar(uint32_t cp) {
@@ -211,16 +207,15 @@ bool isLatinWordChar(uint32_t cp) {
 // directly to Latin words ("TV를"), so it opts out of both the quarter-em
 // rule and (when the line has spaces) inter-character justification.
 bool isHangul(uint32_t cp) {
-  return (cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0x1100 && cp <= 0x11FF) ||
-         (cp >= 0x3130 && cp <= 0x318F) || (cp >= 0xD7B0 && cp <= 0xD7FF);
+  return (cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0x1100 && cp <= 0x11FF) || (cp >= 0x3130 && cp <= 0x318F) ||
+         (cp >= 0xD7B0 && cp <= 0xD7FF);
 }
 
 // A script boundary that conventionally gets a quarter-em of air (Japanese
 // typesetting practice for Latin words embedded in CJK text). Korean does
 // not follow it.
 bool crossesScripts(uint32_t a, uint32_t b) {
-  return (isCjk(a) && !isHangul(a) && isLatinWordChar(b)) ||
-         (isLatinWordChar(a) && isCjk(b) && !isHangul(b));
+  return (isCjk(a) && !isHangul(a) && isLatinWordChar(b)) || (isLatinWordChar(a) && isCjk(b) && !isHangul(b));
 }
 
 // Full-width punctuation carries a built-in half-em of space — trailing for
@@ -229,11 +224,24 @@ bool crossesScripts(uint32_t a, uint32_t b) {
 // full em, so layout removes the overlap between them.
 bool cjTrailingHalf(uint32_t cp) {
   switch (cp) {
-    case 0x3001: case 0x3002:                                // 、。
-    case 0xFF0C: case 0xFF0E: case 0xFF1A: case 0xFF1B:      // ，．：；
-    case 0x3009: case 0x300B: case 0x300D: case 0x300F:      // 〉》」』
-    case 0x3011: case 0x3015: case 0x3017: case 0x3019: case 0x301B:
-    case 0xFF09: case 0xFF3D: case 0xFF5D:                   // ）］｝
+    case 0x3001:
+    case 0x3002:  // 、。
+    case 0xFF0C:
+    case 0xFF0E:
+    case 0xFF1A:
+    case 0xFF1B:  // ，．：；
+    case 0x3009:
+    case 0x300B:
+    case 0x300D:
+    case 0x300F:  // 〉》」』
+    case 0x3011:
+    case 0x3015:
+    case 0x3017:
+    case 0x3019:
+    case 0x301B:
+    case 0xFF09:
+    case 0xFF3D:
+    case 0xFF5D:  // ）］｝
       return true;
     default:
       return false;
@@ -242,9 +250,18 @@ bool cjTrailingHalf(uint32_t cp) {
 
 bool cjLeadingHalf(uint32_t cp) {
   switch (cp) {
-    case 0x3008: case 0x300A: case 0x300C: case 0x300E:      // 〈《「『
-    case 0x3010: case 0x3014: case 0x3016: case 0x3018: case 0x301A:
-    case 0xFF08: case 0xFF3B: case 0xFF5B:                   // （［｛
+    case 0x3008:
+    case 0x300A:
+    case 0x300C:
+    case 0x300E:  // 〈《「『
+    case 0x3010:
+    case 0x3014:
+    case 0x3016:
+    case 0x3018:
+    case 0x301A:
+    case 0xFF08:
+    case 0xFF3B:
+    case 0xFF5B:  // （［｛
       return true;
     default:
       return false;
@@ -272,8 +289,8 @@ enum : uint8_t { kBidiL = 0, kBidiR = 1, kBidiEN = 2, kBidiNeutral = 3 };
 
 uint8_t bidiClass(uint32_t cp) {
   if ((cp >= 0x0590 && cp <= 0x05FF) || (cp >= 0xFB1D && cp <= 0xFB4F)) return kBidiR;  // Hebrew
-  if ((cp >= 0x0600 && cp <= 0x07BF) || (cp >= 0x08A0 && cp <= 0x08FF) ||
-      (cp >= 0xFB50 && cp <= 0xFDFF) || (cp >= 0xFE70 && cp <= 0xFEFF)) {
+  if ((cp >= 0x0600 && cp <= 0x07BF) || (cp >= 0x08A0 && cp <= 0x08FF) || (cp >= 0xFB50 && cp <= 0xFDFF) ||
+      (cp >= 0xFE70 && cp <= 0xFEFF)) {
     return kBidiR;  // Arabic block (reorder-only; no shaping)
   }
   if (cp >= '0' && cp <= '9') return kBidiEN;
@@ -298,7 +315,10 @@ bool computeBidiLevels(const char* text, uint32_t len, uint8_t* levels, bool* ha
       uint32_t j = i;
       const uint32_t cp = decodeUtf8(text, len, j);
       const uint8_t cls = bidiClass(cp);
-      if (cls == kBidiR) { baseRtl = true; break; }
+      if (cls == kBidiR) {
+        baseRtl = true;
+        break;
+      }
       if (cls == kBidiL) break;
       i = j;
     }
@@ -312,10 +332,14 @@ bool computeBidiLevels(const char* text, uint32_t len, uint8_t* levels, bool* ha
     if (cp >= kArabJoinLo && cp <= kArabJoinHi) *hasArabic = true;
     const uint8_t cls = bidiClass(cp);
     uint8_t level;
-    if (cls == kBidiR) level = 1;                       // R is always odd
-    else if (cls == kBidiL) level = base == 0 ? 0 : 2;  // L inside RTL embeds
-    else if (cls == kBidiEN) level = base == 0 ? 0 : 2; // numbers read LTR
-    else level = 0xFF;
+    if (cls == kBidiR)
+      level = 1;  // R is always odd
+    else if (cls == kBidiL)
+      level = base == 0 ? 0 : 2;  // L inside RTL embeds
+    else if (cls == kBidiEN)
+      level = base == 0 ? 0 : 2;  // numbers read LTR
+    else
+      level = 0xFF;
     for (uint32_t b = start; b < i; ++b) levels[b] = level;
   }
   // Second pass: neutrals take the surrounding level when both sides agree,
@@ -323,7 +347,11 @@ bool computeBidiLevels(const char* text, uint32_t len, uint8_t* levels, bool* ha
   uint32_t pos = 0;
   uint8_t prev = base;
   while (pos < len) {
-    if (levels[pos] != 0xFF) { prev = levels[pos]; ++pos; continue; }
+    if (levels[pos] != 0xFF) {
+      prev = levels[pos];
+      ++pos;
+      continue;
+    }
     uint32_t end = pos;
     while (end < len && levels[end] == 0xFF) ++end;
     uint8_t next = base;
@@ -338,17 +366,28 @@ bool computeBidiLevels(const char* text, uint32_t len, uint8_t* levels, bool* ha
 // UAX #9 L4: mirrored characters in RTL runs.
 uint32_t bidiMirror(uint32_t cp) {
   switch (cp) {
-    case '(': return ')';
-    case ')': return '(';
-    case '[': return ']';
-    case ']': return '[';
-    case '{': return '}';
-    case '}': return '{';
-    case '<': return '>';
-    case '>': return '<';
-    case 0x00AB: return 0x00BB;  // « »
-    case 0x00BB: return 0x00AB;
-    default: return cp;
+    case '(':
+      return ')';
+    case ')':
+      return '(';
+    case '[':
+      return ']';
+    case ']':
+      return '[';
+    case '{':
+      return '}';
+    case '}':
+      return '{';
+    case '<':
+      return '>';
+    case '>':
+      return '<';
+    case 0x00AB:
+      return 0x00BB;  // « »
+    case 0x00BB:
+      return 0x00AB;
+    default:
+      return cp;
   }
 }
 
@@ -404,7 +443,7 @@ enum : uint8_t {
   kFormMed = 4,
   kFormLamAlefIso = 5,  // on the lam; the following alef is kFormSkip
   kFormLamAlefFin = 6,
-  kFormSkip = 7,        // alef consumed by a lam-alef ligature
+  kFormSkip = 7,  // alef consumed by a lam-alef ligature
 };
 
 uint8_t arabJoin(uint32_t cp) {
@@ -416,8 +455,10 @@ const ArabForms* arabFormsFor(uint32_t cp) {
   uint32_t lo = 0, hi = kArabFormsCount;
   while (lo < hi) {
     const uint32_t mid = (lo + hi) / 2;
-    if (kArabForms[mid].base < cp) lo = mid + 1;
-    else hi = mid;
+    if (kArabForms[mid].base < cp)
+      lo = mid + 1;
+    else
+      hi = mid;
   }
   return lo < kArabFormsCount && kArabForms[lo].base == cp ? &kArabForms[lo] : nullptr;
 }
@@ -466,10 +507,8 @@ void shapeArabic(const char* text, uint32_t len, uint8_t* levels, BookFont* font
         const uint8_t form = prevJoins ? kFormLamAlefFin : kFormLamAlefIso;
         const uint32_t lig = prevJoins ? la->final : la->isolated;
         if (font->covers(lig)) {
-          for (uint32_t b = start; b < i; ++b)
-            levels[b] = static_cast<uint8_t>(levels[b] | (form << kFormShift));
-          for (uint32_t b = i; b < j; ++b)
-            levels[b] = static_cast<uint8_t>(levels[b] | (kFormSkip << kFormShift));
+          for (uint32_t b = start; b < i; ++b) levels[b] = static_cast<uint8_t>(levels[b] | (form << kFormShift));
+          for (uint32_t b = i; b < j; ++b) levels[b] = static_cast<uint8_t>(levels[b] | (kFormSkip << kFormShift));
           i = j;
           prevJoins = false;  // the ligature does not join forward (alef is R)
           continue;
@@ -489,12 +528,15 @@ void shapeArabic(const char* text, uint32_t len, uint8_t* levels, BookFont* font
     const bool joinsPrev = prevJoins && (jt == kJoinD || jt == kJoinR);
     const bool joinsNext = jt == kJoinD && nextAccepts;
     uint8_t form;
-    if (joinsPrev && joinsNext) form = kFormMed;
-    else if (joinsPrev) form = kFormFin;
-    else if (joinsNext) form = kFormIni;
-    else form = kFormIso;
-    for (uint32_t b = start; b < i; ++b)
-      levels[b] = static_cast<uint8_t>(levels[b] | (form << kFormShift));
+    if (joinsPrev && joinsNext)
+      form = kFormMed;
+    else if (joinsPrev)
+      form = kFormFin;
+    else if (joinsNext)
+      form = kFormIni;
+    else
+      form = kFormIso;
+    for (uint32_t b = start; b < i; ++b) levels[b] = static_cast<uint8_t>(levels[b] | (form << kFormShift));
     prevJoins = jt == kJoinD;
   }
 }
@@ -503,9 +545,7 @@ void shapeArabic(const char* text, uint32_t len, uint8_t* levels, BookFont* font
 // characters (clamped to 1..9) as a fixation anchor. Letters and apostrophes
 // form words; digits, punctuation, and CJK stay regular. Marked as a bit in
 // the levels array; measurement and emission add StyleBold for marked bytes.
-bool isFocusWordChar(uint32_t cp) {
-  return isHyphLetter(cp) || cp == '\'' || cp == 0x2018 || cp == 0x2019;
-}
+bool isFocusWordChar(uint32_t cp) { return isHyphLetter(cp) || cp == '\'' || cp == 0x2018 || cp == 0x2019; }
 
 void markFocusWords(const char* text, uint32_t len, uint8_t* levels) {
   uint32_t i = 0;
@@ -599,11 +639,9 @@ int16_t blockIndentFor(const char* local, uint16_t baseSizePx) {
 }
 
 bool isBlockElement(const char* local) {
-  static const char* kBlocks[] = {"p",       "h1",      "h2",         "h3",    "h4",
-                                  "h5",      "h6",      "blockquote", "li",    "div",
-                                  "section", "article", "figure",     "aside", "figcaption",
-                                  "ul",      "ol",      "table",      "tr",    "td",
-                                  "th",      "dt",      "dd"};
+  static const char* kBlocks[] = {"p",  "h1",    "h2",      "h3",      "h4",     "h5",    "h6",         "blockquote",
+                                  "li", "div",   "section", "article", "figure", "aside", "figcaption", "ul",
+                                  "ol", "table", "tr",      "td",      "th",     "dt",    "dd"};
   for (const char* b : kBlocks) {
     if (strcmp(local, b) == 0) return true;
   }
@@ -611,8 +649,8 @@ bool isBlockElement(const char* local) {
 }
 
 bool isSuppressedElement(const char* local) {
-  return strcmp(local, "head") == 0 || strcmp(local, "style") == 0 ||
-         strcmp(local, "script") == 0 || strcmp(local, "title") == 0;
+  return strcmp(local, "head") == 0 || strcmp(local, "style") == 0 || strcmp(local, "script") == 0 ||
+         strcmp(local, "title") == 0;
 }
 
 // Cheap detector: does the raw chapter markup mention an image element at
@@ -702,13 +740,17 @@ class ImageCollector : public XmlHandler {
 
 class LayoutEngine : public XmlHandler {
  public:
-  LayoutEngine(BookSource& source, const ZipCatalog* zip, const char* chapterHref,
-               const LayoutParams& params, Arena& scratch, PageSink& sink,
-               const ProbedImage* probed = nullptr, uint16_t probedCount = 0,
+  LayoutEngine(BookSource& source, const ZipCatalog* zip, const char* chapterHref, const LayoutParams& params,
+               Arena& scratch, PageSink& sink, const ProbedImage* probed = nullptr, uint16_t probedCount = 0,
                Arena* parseArena = nullptr)
-      : source_(source), zip_(zip), params_(params), scratch_(scratch),
-        parseArena_(parseArena != nullptr ? *parseArena : scratch), sink_(sink),
-        probed_(probed), probedCount_(probedCount) {
+      : source_(source),
+        zip_(zip),
+        params_(params),
+        scratch_(scratch),
+        parseArena_(parseArena != nullptr ? *parseArena : scratch),
+        sink_(sink),
+        probed_(probed),
+        probedCount_(probedCount) {
     if (!dirName(chapterHref != nullptr ? chapterHref : "", chapterDir_, sizeof(chapterDir_))) {
       chapterDir_[0] = '\0';
     }
@@ -772,8 +814,7 @@ class LayoutEngine : public XmlHandler {
       // root of the element stack.
       if (params_.stylesheet != nullptr) {
         CssDecl bodyDecl = elementDefaults("body");
-        bodyDecl.applyOver(cascadeFor(*params_.stylesheet, "body", attrLocal(atts, "class"),
-                                      nullptr));
+        bodyDecl.applyOver(cascadeFor(*params_.stylesheet, "body", attrLocal(atts, "class"), nullptr));
         pushState(bodyDecl);
         latchParagraphFromStack();
       }
@@ -801,8 +842,8 @@ class LayoutEngine : public XmlHandler {
     if (hasInline) decl.applyOver(inlineDecl);
     pushState(decl);
     if (decl.marginLeftPct >= 0) {
-      pendingMarginRootPct_ += static_cast<uint32_t>(currentSizePct()) *
-                               static_cast<uint16_t>(decl.marginLeftPct) / 100;
+      pendingMarginRootPct_ +=
+          static_cast<uint32_t>(currentSizePct()) * static_cast<uint16_t>(decl.marginLeftPct) / 100;
       noteStyleChange();
     }
 
@@ -818,8 +859,7 @@ class LayoutEngine : public XmlHandler {
         const char* path = resolveHref(scratch_, chapterDir_, href, &frag);
         if (path != nullptr) {
           snprintf(parLinkPath_[parLinkCount_], sizeof(parLinkPath_[0]), "%s", path);
-          snprintf(parLinkFrag_[parLinkCount_], sizeof(parLinkFrag_[0]), "%s",
-                   frag != nullptr ? frag : "");
+          snprintf(parLinkFrag_[parLinkCount_], sizeof(parLinkFrag_[0]), "%s", frag != nullptr ? frag : "");
           currentLink_ = static_cast<uint8_t>(++parLinkCount_);
           noteStyleChange();
         }
@@ -983,7 +1023,7 @@ class LayoutEngine : public XmlHandler {
     int16_t textIndentPct;
     uint16_t spaceBeforePct;
     uint16_t spaceAfterPct;
-    int16_t padLeftPx = 0;   // block CSS padding: per-line horizontal insets
+    int16_t padLeftPx = 0;  // block CSS padding: per-line horizontal insets
     int16_t padRightPx = 0;
   };
 
@@ -1005,9 +1045,8 @@ class LayoutEngine : public XmlHandler {
     const ElemState& parent = stack_[stackTop_];
     ElemState next = parent;
     if (decl.sizePct != 0) {
-      const uint32_t scaled = decl.sizeRootRelative
-                                  ? decl.sizePct
-                                  : static_cast<uint32_t>(parent.sizePct) * decl.sizePct / 100;
+      const uint32_t scaled =
+          decl.sizeRootRelative ? decl.sizePct : static_cast<uint32_t>(parent.sizePct) * decl.sizePct / 100;
       next.sizePct = static_cast<uint16_t>(scaled < 30 ? 30 : (scaled > 250 ? 250 : scaled));
     }
     if (decl.weightBold == 1) next.flags |= StyleBold;
@@ -1032,17 +1071,14 @@ class LayoutEngine : public XmlHandler {
       next.padTopPct = clampPct(parent.padTopPct + static_cast<uint32_t>(decl.paddingTopPct));
     }
     if (decl.paddingBottomPct >= 0) {
-      next.padBottomPct =
-          clampPct(parent.padBottomPct + static_cast<uint32_t>(decl.paddingBottomPct));
+      next.padBottomPct = clampPct(parent.padBottomPct + static_cast<uint32_t>(decl.paddingBottomPct));
     }
     if (decl.paddingLeftPct >= 0) {
-      const uint32_t own = static_cast<uint32_t>(next.sizePct) *
-                           static_cast<uint16_t>(decl.paddingLeftPct) / 100;
+      const uint32_t own = static_cast<uint32_t>(next.sizePct) * static_cast<uint16_t>(decl.paddingLeftPct) / 100;
       next.padLeftRootPct = clampRootPct(parent.padLeftRootPct + own);
     }
     if (decl.paddingRightPct >= 0) {
-      const uint32_t own = static_cast<uint32_t>(next.sizePct) *
-                           static_cast<uint16_t>(decl.paddingRightPct) / 100;
+      const uint32_t own = static_cast<uint32_t>(next.sizePct) * static_cast<uint16_t>(decl.paddingRightPct) / 100;
       next.padRightRootPct = clampRootPct(parent.padRightRootPct + own);
     }
     if (stackTop_ + 1 < kMaxElemDepth) {
@@ -1063,13 +1099,9 @@ class LayoutEngine : public XmlHandler {
   uint8_t currentFlags() const { return stack_[stackTop_].flags; }
   uint16_t currentSizePct() const { return stack_[stackTop_].sizePct; }
 
-  static uint16_t clampPct(uint32_t pct) {
-    return static_cast<uint16_t>(pct > 1000u ? 1000u : pct);
-  }
+  static uint16_t clampPct(uint32_t pct) { return static_cast<uint16_t>(pct > 1000u ? 1000u : pct); }
 
-  static uint16_t clampRootPct(uint32_t pct) {
-    return static_cast<uint16_t>(pct > 65535u ? 65535u : pct);
-  }
+  static uint16_t clampRootPct(uint32_t pct) { return static_cast<uint16_t>(pct > 65535u ? 65535u : pct); }
 
   // One side's horizontal padding in px from the accumulated root-relative
   // %; a single side is capped at 2 em (CrossPoint MAX_HORIZONTAL_INSET_EM).
@@ -1097,22 +1129,19 @@ class LayoutEngine : public XmlHandler {
     const uint16_t sizePct = currentSizePct();
     const uint16_t marginBeforeRootPct = currentPendingMarginRootPct();
     Span& last = spans_[spanCount_ - 1];
-    if (last.flags == flags && last.sizePct == sizePct && last.link == currentLink_ &&
-        marginBeforeRootPct == 0) {
+    if (last.flags == flags && last.sizePct == sizePct && last.link == currentLink_ && marginBeforeRootPct == 0) {
       return;
     }
     if (last.start == parLen_) {
       last.flags = flags;
       last.sizePct = sizePct;
       last.link = currentLink_;
-      last.marginBeforeRootPct = static_cast<uint16_t>(
-          last.marginBeforeRootPct + marginBeforeRootPct > 65535u
-              ? 65535u
-              : last.marginBeforeRootPct + marginBeforeRootPct);
+      last.marginBeforeRootPct = static_cast<uint16_t>(last.marginBeforeRootPct + marginBeforeRootPct > 65535u
+                                                           ? 65535u
+                                                           : last.marginBeforeRootPct + marginBeforeRootPct);
       pendingMarginRootPct_ = 0;
     } else if (spanCount_ < kMaxSpans) {
-      spans_[spanCount_++] = {static_cast<uint16_t>(parLen_), flags, sizePct,
-                              marginBeforeRootPct, currentLink_};
+      spans_[spanCount_++] = {static_cast<uint16_t>(parLen_), flags, sizePct, marginBeforeRootPct, currentLink_};
       pendingMarginRootPct_ = 0;
     }
   }
@@ -1124,8 +1153,7 @@ class LayoutEngine : public XmlHandler {
       // that overflowed the buffer are both non-whitespace — both the tail
       // flag of this flush's last line and the head flag of the next
       // flush's first line derive from it.
-      const bool midWord =
-          parLen_ > 0 && !isWsByte(parText_[parLen_ - 1]) && !isWsByte(c);
+      const bool midWord = parLen_ > 0 && !isWsByte(parText_[parLen_ - 1]) && !isWsByte(c);
       const ParaStyle style = para_;
       flushParagraph(midWord);
       para_ = style;
@@ -1134,8 +1162,7 @@ class LayoutEngine : public XmlHandler {
       pendingWordContinuation_ = midWord;
     }
     if (spanCount_ == 0) {
-      spans_[spanCount_++] = {0, currentFlags(), currentSizePct(),
-                              currentPendingMarginRootPct(), currentLink_};
+      spans_[spanCount_++] = {0, currentFlags(), currentSizePct(), currentPendingMarginRootPct(), currentLink_};
       pendingMarginRootPct_ = 0;
     }
     parText_[parLen_++] = c;
@@ -1159,13 +1186,13 @@ class LayoutEngine : public XmlHandler {
     collectingRubyText_ = false;
     // Trim + collapse whitespace runs, mirroring the legacy reader.
     uint32_t start = 0;
-    while (start < rubyBufLen_ && (rubyBuf_[start] == ' ' || rubyBuf_[start] == '\t' ||
-                                   rubyBuf_[start] == '\n' || rubyBuf_[start] == '\r')) {
+    while (start < rubyBufLen_ &&
+           (rubyBuf_[start] == ' ' || rubyBuf_[start] == '\t' || rubyBuf_[start] == '\n' || rubyBuf_[start] == '\r')) {
       ++start;
     }
     uint32_t end = rubyBufLen_;
-    while (end > start && (rubyBuf_[end - 1] == ' ' || rubyBuf_[end - 1] == '\t' ||
-                           rubyBuf_[end - 1] == '\n' || rubyBuf_[end - 1] == '\r')) {
+    while (end > start && (rubyBuf_[end - 1] == ' ' || rubyBuf_[end - 1] == '\t' || rubyBuf_[end - 1] == '\n' ||
+                           rubyBuf_[end - 1] == '\r')) {
       --end;
     }
     if (start != end) {
@@ -1262,8 +1289,7 @@ class LayoutEngine : public XmlHandler {
   }
 
   int16_t lineHeightFor(uint16_t sizePx) const {
-    return static_cast<int16_t>(static_cast<int32_t>(params_.font->lineHeight(sizePx)) *
-                                params_.lineSpacingPct / 100);
+    return static_cast<int16_t>(static_cast<int32_t>(params_.font->lineHeight(sizePx)) * params_.lineSpacingPct / 100);
   }
 
   uint16_t sizePxForPct(uint16_t sizePct) const {
@@ -1271,13 +1297,9 @@ class LayoutEngine : public XmlHandler {
     return static_cast<uint16_t>(size < 1 ? 1 : size);
   }
 
-  uint16_t paragraphSizePx() const {
-    return sizePxForPct(para_.sizePct);
-  }
+  uint16_t paragraphSizePx() const { return sizePxForPct(para_.sizePct); }
 
-  uint16_t spanSizePx(const Span& span) const {
-    return sizePxForPct(span.sizePct);
-  }
+  uint16_t spanSizePx(const Span& span) const { return sizePxForPct(span.sizePct); }
 
   int32_t marginBeforePx(const Span& span) const {
     return static_cast<int32_t>(params_.baseSizePx) * span.marginBeforeRootPct / 100;
@@ -1297,8 +1319,7 @@ class LayoutEngine : public XmlHandler {
 
   void placeImage(const char* src) {
     const size_t marked = scratch_.mark();
-    const char* resolved =
-        zip_ != nullptr ? resolveHref(scratch_, chapterDir_, src, nullptr) : nullptr;
+    const char* resolved = zip_ != nullptr ? resolveHref(scratch_, chapterDir_, src, nullptr) : nullptr;
     ImageInfo info;
     bool prescanned = false;
     const uint32_t hrefHash = resolved != nullptr ? ZipCatalog::hashPath(resolved) : 0;
@@ -1314,16 +1335,15 @@ class LayoutEngine : public XmlHandler {
       const ZipEntry* entry = zip_->find(resolved);
       if (entry != nullptr) probeImage(source_, *entry, parseArena_, &info);
     }
-    if (resolved == nullptr || info.kind == ImageInfo::Kind::Unknown || info.width == 0 ||
-        info.height == 0) {
+    if (resolved == nullptr || info.kind == ImageInfo::Kind::Unknown || info.width == 0 || info.height == 0) {
       scratch_.release(marked);  // unknown format or missing target — skip
       return;
     }
 
     // Fit within the content box (block padding insets apply), preserving
     // aspect, never upscaling.
-    const int32_t contentW = params_.pageWidth - params_.marginLeft - params_.marginRight -
-                             para_.padLeftPx - para_.padRightPx;
+    const int32_t contentW =
+        params_.pageWidth - params_.marginLeft - params_.marginRight - para_.padLeftPx - para_.padRightPx;
     const int32_t contentH = params_.pageHeight - params_.marginTop - params_.marginBottom;
     int32_t w = info.width;
     int32_t h = info.height;
@@ -1339,8 +1359,7 @@ class LayoutEngine : public XmlHandler {
     if (h < 1) h = 1;
 
     const bool hasContent = runCount_ > 0 || imageCount_ > 0 || pageY_ > params_.marginTop;
-    if ((pageY_ + h > params_.pageHeight - params_.marginBottom || imageCount_ >= kMaxImagesPerPage) &&
-        hasContent) {
+    if ((pageY_ + h > params_.pageHeight - params_.marginBottom || imageCount_ >= kMaxImagesPerPage) && hasContent) {
       emitPage();
       if (stopParse) {
         scratch_.release(marked);
@@ -1434,8 +1453,7 @@ class LayoutEngine : public XmlHandler {
         cp = lig;
       } else {
         // The alef is beyond `end`: shape the lam alone, still joining it.
-        const uint32_t solo =
-            arabPresentation(cp, form == kFormLamAlefFin ? kFormMed : kFormIni);
+        const uint32_t solo = arabPresentation(cp, form == kFormLamAlefFin ? kFormMed : kFormIni);
         if (solo != 0 && params_.font->covers(solo)) cp = solo;
       }
     } else if (form != kFormNone) {
@@ -1460,8 +1478,7 @@ class LayoutEngine : public XmlHandler {
     return params_.focusReading && (levels_[pos] & kFocusBold) ? StyleBold : StyleNone;
   }
 
-  int32_t advanceFor(uint32_t cp, uint32_t prevCp, const Span& span,
-                     uint8_t extraFlags = 0) const {
+  int32_t advanceFor(uint32_t cp, uint32_t prevCp, const Span& span, uint8_t extraFlags = 0) const {
     if (cp == '\n' || cp == 0xAD) return 0;  // soft hyphen: invisible until a break uses it
     const uint16_t sizePx = spanSizePx(span);
     const uint8_t flags = static_cast<uint8_t>(span.flags | extraFlags);
@@ -1511,14 +1528,12 @@ class LayoutEngine : public XmlHandler {
     if (wordChars < 5) return 0;
 
     uint8_t positions[16];
-    const uint8_t n = params_.hyphenator->breakPositions(parText_ + wordStart, wordLen,
-                                                         positions, sizeof(positions));
+    const uint8_t n = params_.hyphenator->breakPositions(parText_ + wordStart, wordLen, positions, sizeof(positions));
     if (n == 0) return 0;
 
     const int32_t prefixWidth = measureRange(lineStart, wordStart);
     const Span& span = spanAt(wordStart);
-    const int32_t hyphenWidth =
-        params_.font->advance('-', spanSizePx(span), span.flags);
+    const int32_t hyphenWidth = params_.font->advance('-', spanSizePx(span), span.flags);
     for (int i = n - 1; i >= 0; --i) {
       const uint32_t split = wordStart + positions[i];
       if (split <= lineStart) continue;
@@ -1530,8 +1545,7 @@ class LayoutEngine : public XmlHandler {
 
   void measureParagraphLines() {
     lineCount_ = 0;
-    set_linebreaks_utf8(reinterpret_cast<const utf8_t*>(parText_), parLen_, params_.language,
-                        breaks_);
+    set_linebreaks_utf8(reinterpret_cast<const utf8_t*>(parText_), parLen_, params_.language, breaks_);
     bool hasArabic = false;
     paraRtl_ = computeBidiLevels(parText_, parLen_, levels_, &hasArabic);
     if (hasArabic) shapeArabic(parText_, parLen_, levels_, params_.font);
@@ -1541,8 +1555,7 @@ class LayoutEngine : public XmlHandler {
     // stays together): demote break opportunities inside each annotation's
     // base range. A break after the group's last byte stays allowed.
     for (uint16_t a = 0; a < annCount_; ++a) {
-      const uint32_t relStart =
-          anns_[a].byteStartAbs > parByteBase_ ? anns_[a].byteStartAbs - parByteBase_ : 0;
+      const uint32_t relStart = anns_[a].byteStartAbs > parByteBase_ ? anns_[a].byteStartAbs - parByteBase_ : 0;
       uint32_t relEnd = anns_[a].byteEndAbs > parByteBase_ ? anns_[a].byteEndAbs - parByteBase_ : 0;
       if (relEnd > parLen_) relEnd = parLen_;
       for (uint32_t i = relStart; i + 1 < relEnd; ++i) {
@@ -1562,8 +1575,7 @@ class LayoutEngine : public XmlHandler {
         uint32_t prevEnd = 0;
         while (i < parLen_) {
           const uint32_t cp = decodeUtf8(parText_, parLen_, i);
-          if (prevEnd > 0 && isHangul(prevCp) && isHangul(cp) &&
-              breaks_[prevEnd - 1] == LINEBREAK_ALLOWBREAK) {
+          if (prevEnd > 0 && isHangul(prevCp) && isHangul(cp) && breaks_[prevEnd - 1] == LINEBREAK_ALLOWBREAK) {
             breaks_[prevEnd - 1] = LINEBREAK_NOBREAK;
           }
           prevCp = cp;
@@ -1572,9 +1584,8 @@ class LayoutEngine : public XmlHandler {
       }
     }
 
-    const int32_t baseMaxWidth =
-        params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx -
-        para_.padLeftPx - para_.padRightPx;
+    const int32_t baseMaxWidth = params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx -
+                                 para_.padLeftPx - para_.padRightPx;
     const uint16_t sizePx = paragraphSizePx();
     const int32_t textIndentPx =
         static_cast<int32_t>(sizePx) * (para_.textIndentPct > 0 ? para_.textIndentPct : 0) / 100;
@@ -1591,21 +1602,17 @@ class LayoutEngine : public XmlHandler {
       const uint32_t charStart = i;
       const Span& shapeSpan = spanAt(charStart);
       const uint32_t cp = decodeShaped(parLen_, i, shapeSpan);
-      const int32_t leadingMargin =
-          charStart == shapeSpan.start ? marginBeforePx(shapeSpan) : 0;
+      const int32_t leadingMargin = charStart == shapeSpan.start ? marginBeforePx(shapeSpan) : 0;
       const int32_t adv =
-          leadingMargin + advanceFor(cp, leadingMargin > 0 ? 0 : prevCp, shapeSpan,
-                                     focusExtra(charStart));
+          leadingMargin + advanceFor(cp, leadingMargin > 0 ? 0 : prevCp, shapeSpan, focusExtra(charStart));
 
       if (cp != '\n' && lineWidth + adv > maxWidth && charStart > lineStart) {
         // Try a hyphen inside the overflowing word first; it beats breaking
         // at the previous space when it fits meaningfully more text.
         uint32_t breakEnd = 0;
         uint8_t flags = 0;
-        const uint32_t hyphenAt =
-            tryHyphenBreak(lineStart, wordStart > lineStart ? wordStart : lineStart, maxWidth);
-        if (hyphenAt > lineStart &&
-            (lastBreakEnd <= lineStart || hyphenAt > lastBreakEnd)) {
+        const uint32_t hyphenAt = tryHyphenBreak(lineStart, wordStart > lineStart ? wordStart : lineStart, maxWidth);
+        if (hyphenAt > lineStart && (lastBreakEnd <= lineStart || hyphenAt > lastBreakEnd)) {
           breakEnd = hyphenAt;
           flags = kLineHyphen;
         } else if (lastBreakEnd > lineStart) {
@@ -1665,8 +1672,10 @@ class LayoutEngine : public XmlHandler {
         ++rec.spaceCount;
       } else if (prev != 0 && isCjk(prev) && isCjk(cp) &&
                  cjkCompression(prev, cp, 2) == 0) {  // compressed pairs don't stretch
-        if (isHangul(prev) && isHangul(cp)) ++rec.hangulGaps;
-        else ++rec.cjkGaps;
+        if (isHangul(prev) && isHangul(cp))
+          ++rec.hangulGaps;
+        else
+          ++rec.cjkGaps;
       }
       prev = cp;
     }
@@ -1696,8 +1705,8 @@ class LayoutEngine : public XmlHandler {
     // uniform baseline grid and a stable line count regardless of inline
     // font-size styling).
     const int16_t lineHeight = lineHeightFor(sizePx);
-    advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceBeforePct *
-                                  params_.paragraphSpacingPct / 10000));
+    advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceBeforePct * params_.paragraphSpacingPct /
+                                  10000));
 
     measureParagraphLines();
 
@@ -1733,13 +1742,12 @@ class LayoutEngine : public XmlHandler {
       if (idx < lineCount_ && !stopParse) emitPage();
     }
 
-    advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceAfterPct *
-                                  params_.paragraphSpacingPct / 10000));
+    advanceY(
+        static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceAfterPct * params_.paragraphSpacingPct / 10000));
     // Resolve each annotation's line anchor, then retire the paragraph's
     // ruby state with the buffer itself.
     for (uint16_t a = 0; a < annCount_; ++a) {
-      const uint32_t relStart =
-          anns_[a].byteStartAbs > parByteBase_ ? anns_[a].byteStartAbs - parByteBase_ : 0;
+      const uint32_t relStart = anns_[a].byteStartAbs > parByteBase_ ? anns_[a].byteStartAbs - parByteBase_ : 0;
       uint16_t line = lineCount_ > 0 ? static_cast<uint16_t>(lineCount_ - 1) : 0;
       for (uint32_t l = 0; l < lineCount_; ++l) {
         if (lines_[l].start <= relStart && relStart < lines_[l].end) {
@@ -1797,8 +1805,7 @@ class LayoutEngine : public XmlHandler {
     return w;
   }
 
-  void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine,
-                 uint32_t lineIdx) {
+  void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine, uint32_t lineIdx) {
     if (rec.end == rec.start) {  // blank line (e.g. double <br/>)
       pageY_ += lineHeight;
       return;
@@ -1808,32 +1815,29 @@ class LayoutEngine : public XmlHandler {
       pageAnchorStale_ = false;
     }
 
-    const int32_t baseMaxWidth =
-        params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx -
-        para_.padLeftPx - para_.padRightPx;
-    const int32_t textIndentPx =
-        firstLine && !continued_ && para_.textIndentPct > 0
-            ? static_cast<int32_t>(sizePx) * para_.textIndentPct / 100
-            : 0;
+    const int32_t baseMaxWidth = params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx -
+                                 para_.padLeftPx - para_.padRightPx;
+    const int32_t textIndentPx = firstLine && !continued_ && para_.textIndentPct > 0
+                                     ? static_cast<int32_t>(sizePx) * para_.textIndentPct / 100
+                                     : 0;
     const int32_t maxWidth = baseMaxWidth - textIndentPx;
     const int32_t leftover = maxWidth - rec.naturalWidth;
 
     // Korean justifies at its word spaces; Hangul inter-syllable gaps only
     // stretch when the line has no spaces at all (space-less runs, or CJ).
     const bool hangulStretch = rec.spaceCount == 0;
-    const uint32_t gaps = static_cast<uint32_t>(rec.spaceCount) + rec.cjkGaps +
-                          (hangulStretch ? rec.hangulGaps : 0);
-    const bool justify = para_.align == TextAlign::Justify && !(rec.flags & kLineLast) &&
-                         gaps > 0 && leftover > 0;
+    const uint32_t gaps = static_cast<uint32_t>(rec.spaceCount) + rec.cjkGaps + (hangulStretch ? rec.hangulGaps : 0);
+    const bool justify = para_.align == TextAlign::Justify && !(rec.flags & kLineLast) && gaps > 0 && leftover > 0;
     // RTL paragraphs mirror the alignment semantics: default/Left reads as
     // the start edge, which is the RIGHT edge for a Hebrew paragraph.
     TextAlign align = para_.align;
     if (paraRtl_) {
-      if (align == TextAlign::Left) align = TextAlign::Right;
-      else if (align == TextAlign::Right) align = TextAlign::Left;
+      if (align == TextAlign::Left)
+        align = TextAlign::Right;
+      else if (align == TextAlign::Right)
+        align = TextAlign::Left;
     }
-    int32_t x = params_.marginLeft + para_.indentPx + para_.padLeftPx +
-                (paraRtl_ ? 0 : textIndentPx);
+    int32_t x = params_.marginLeft + para_.indentPx + para_.padLeftPx + (paraRtl_ ? 0 : textIndentPx);
     if (align == TextAlign::Right) {
       x += leftover + (paraRtl_ ? 0 : 0);
     } else if (align == TextAlign::Center) {
@@ -1871,14 +1875,12 @@ class LayoutEngine : public XmlHandler {
       bool gapBefore = false, spaceBefore = false, scriptGap = false, compressBefore = false;
       uint32_t linePrev = 0;
       uint32_t i = rec.start;
-      auto close = [&](uint32_t endPos, bool nextGap, bool nextSpace, bool nextScript,
-                       bool nextCompress) {
+      auto close = [&](uint32_t endPos, bool nextGap, bool nextSpace, bool nextScript, bool nextCompress) {
         if (endPos > segStart) {
           if (segCount < 64) {
             Seg& sg = segs[segCount++];
-            sg = {segStart, endPos, segSpan, segLevel,
-                  gapBefore, spaceBefore, scriptGap, compressBefore, segExtra,
-                  0, 0, 0};
+            sg = {segStart,  endPos,         segSpan,  segLevel, gapBefore, spaceBefore,
+                  scriptGap, compressBefore, segExtra, 0,        0,         0};
             sg.charStart = charAcc;
             sg.charLen = static_cast<uint16_t>(countChars(parText_ + segStart, endPos - segStart));
             charAcc += sg.charLen;
@@ -1889,9 +1891,8 @@ class LayoutEngine : public XmlHandler {
             if (segStart > 0 ? !isWsByte(parText_[segStart - 1]) : pendingWordContinuation_) {
               if (!isWsByte(parText_[segStart])) sg.contFlags |= PageTextRun::LayoutFirstContinues;
             }
-            if (endPos < parLen_
-                ? (!isWsByte(parText_[endPos]) && !isWsByte(parText_[endPos - 1]))
-                : flushBoundaryMidWord_) {
+            if (endPos < parLen_ ? (!isWsByte(parText_[endPos]) && !isWsByte(parText_[endPos - 1]))
+                                 : flushBoundaryMidWord_) {
               sg.contFlags |= PageTextRun::LayoutLastContinues;
             }
           } else {
@@ -1924,12 +1925,10 @@ class LayoutEngine : public XmlHandler {
           continue;
         }
         const bool compGap = linePrev != 0 && cjkCompression(linePrev, cp, 2) != 0;
-        const bool cjkGap = linePrev != 0 && !compGap && justify && isCjk(linePrev) &&
-                            isCjk(cp) &&
+        const bool cjkGap = linePrev != 0 && !compGap && justify && isCjk(linePrev) && isCjk(cp) &&
                             (hangulStretch || !(isHangul(linePrev) && isHangul(cp)));
         const bool mixGap = linePrev != 0 && crossesScripts(linePrev, cp);
-        if (span != segSpan || level != segLevel || extra != segExtra || cjkGap || mixGap ||
-            compGap) {
+        if (span != segSpan || level != segLevel || extra != segExtra || cjkGap || mixGap || compGap) {
           close(charStart, cjkGap, false, mixGap, compGap);
           segStart = charStart;
           segSpan = span;
@@ -1955,22 +1954,28 @@ class LayoutEngine : public XmlHandler {
       if ((segs[s].level & 1) && segs[s].level < minOdd) minOdd = segs[s].level;
     }
     const uint8_t base = paraRtl_ ? 1 : 0;
-    for (uint8_t lvl = maxLevel; lvl >= (minOdd == 255 ? 1 : minOdd) && lvl >= base + 1u &&
-                                 lvl != 0; --lvl) {
+    for (uint8_t lvl = maxLevel; lvl >= (minOdd == 255 ? 1 : minOdd) && lvl >= base + 1u && lvl != 0; --lvl) {
       uint32_t s = 0;
       while (s < segCount) {
-        if (segs[order[s]].level < lvl) { ++s; continue; }
+        if (segs[order[s]].level < lvl) {
+          ++s;
+          continue;
+        }
         uint32_t e = s;
         while (e < segCount && segs[order[e]].level >= lvl) ++e;
         for (uint32_t a = s, b = e - 1; a < b; ++a, --b) {
-          const uint8_t t = order[a]; order[a] = order[b]; order[b] = t;
+          const uint8_t t = order[a];
+          order[a] = order[b];
+          order[b] = t;
         }
         s = e;
       }
     }
     if (paraRtl_) {  // base level 1: reverse everything once more (L2 for lvl 1)
       for (uint32_t a = 0, b = segCount - 1; a < b; ++a, --b) {
-        const uint8_t t = order[a]; order[a] = order[b]; order[b] = t;
+        const uint8_t t = order[a];
+        order[a] = order[b];
+        order[b] = t;
       }
       // RTL first-line indent comes off the right edge: shift line body left.
       // (x already excludes textIndent; the line simply starts at the margin.)
@@ -1987,12 +1992,14 @@ class LayoutEngine : public XmlHandler {
         const Seg& logicalOwner = sg;
         if (logicalOwner.gapBefore || logicalOwner.spaceBefore) {
           if (logicalOwner.spaceBefore) {
-            x += params_.font->advance(' ', spanSizePx(*logicalOwner.span),
-                                       logicalOwner.span->flags);
+            x += params_.font->advance(' ', spanSizePx(*logicalOwner.span), logicalOwner.span->flags);
           }
           if (justify) {
             x += perGap;
-            if (gapRemainder > 0) { ++x; --gapRemainder; }
+            if (gapRemainder > 0) {
+              ++x;
+              --gapRemainder;
+            }
           }
         } else if (logicalOwner.scriptGap) {
           x += spanSizePx(*logicalOwner.span) / 4;
@@ -2008,8 +2015,7 @@ class LayoutEngine : public XmlHandler {
       segX[v] = x;
       if (!emitSeg(sg, addHyphen, baselineY, x, sizePx, rubyLift)) return;
     }
-    placeRubyAnnotations(lineIdx, lineAnnCount, segs, order, segCount, segX, sizePx,
-                         rubyLift, pageAtLineStart);
+    placeRubyAnnotations(lineIdx, lineAnnCount, segs, order, segCount, segX, sizePx, rubyLift, pageAtLineStart);
     pageY_ += lineHeight;
   }
 
@@ -2017,8 +2023,7 @@ class LayoutEngine : public XmlHandler {
   // run/arena capacity is hit. Returns false on stop/failure. rubyLift is
   // this line's ruby baseline drop, re-applied if a split re-anchors the
   // baseline.
-  bool emitSeg(const Seg& sg, bool addHyphen, int16_t& baselineY, int32_t& x,
-               uint16_t sizePx, int16_t rubyLift) {
+  bool emitSeg(const Seg& sg, bool addHyphen, int16_t& baselineY, int32_t& x, uint16_t sizePx, int16_t rubyLift) {
     // Measure the segment (kerning resets at its start, matching natural
     // width accounting at gap boundaries).
     int32_t segWidth = 0;
@@ -2082,8 +2087,7 @@ class LayoutEngine : public XmlHandler {
     run.baselineY = runBaseline;
     run.sizePx = spanSizePx(*sg.span);
     run.styleFlags = runFlags;
-    run.layoutFlags = static_cast<uint8_t>(
-        (addHyphen ? PageTextRun::LayoutHyphenated : uint8_t{0}) | sg.contFlags);
+    run.layoutFlags = static_cast<uint8_t>((addHyphen ? PageTextRun::LayoutHyphenated : uint8_t{0}) | sg.contFlags);
     run.charStart = sg.charStart;
     run.charLen = sg.charLen;
     if (sg.span->link != 0 && linkCount_ < kMaxLinksPerPage) {
@@ -2108,15 +2112,14 @@ class LayoutEngine : public XmlHandler {
   // Skipped if a capacity split fired mid-line — the records would land on
   // the wrong page. rubyLift is this line's baseline drop (ascender/2); the
   // annotation baseline sits that much above the normal line baseline.
-  void placeRubyAnnotations(uint32_t lineIdx, uint16_t lineAnnCount, const Seg* segs,
-                            const uint8_t* order, uint32_t segCount, const int32_t* segX,
-                            uint16_t lineSizePx, int16_t rubyLift, uint32_t pageAtLineStart) {
+  void placeRubyAnnotations(uint32_t lineIdx, uint16_t lineAnnCount, const Seg* segs, const uint8_t* order,
+                            uint32_t segCount, const int32_t* segX, uint16_t lineSizePx, int16_t rubyLift,
+                            uint32_t pageAtLineStart) {
     if (lineAnnCount == 0 || pageCount_ != pageAtLineStart) return;
     for (uint16_t a = 0; a < annCount_ && rubyCount_ < kMaxRubiesPerPage; ++a) {
       const RubyAnn& ann = anns_[a];
       if (ann.lineIdx != lineIdx || ann.textLen == 0) continue;
-      const uint32_t relStart =
-          ann.byteStartAbs > parByteBase_ ? ann.byteStartAbs - parByteBase_ : 0;
+      const uint32_t relStart = ann.byteStartAbs > parByteBase_ ? ann.byteStartAbs - parByteBase_ : 0;
       uint32_t relEnd = ann.byteEndAbs > parByteBase_ ? ann.byteEndAbs - parByteBase_ : 0;
       if (relEnd > parLen_) relEnd = parLen_;
       if (relEnd <= relStart) continue;
@@ -2159,8 +2162,7 @@ class LayoutEngine : public XmlHandler {
       }
       int32_t rx = groupLeft - (rubyWidth - groupWidth) / 2;
       if (rx < params_.marginLeft) rx = params_.marginLeft;
-      const int32_t rightLimit =
-          static_cast<int32_t>(params_.pageWidth - params_.marginRight) - rubyWidth;
+      const int32_t rightLimit = static_cast<int32_t>(params_.pageWidth - params_.marginRight) - rubyWidth;
       if (rx > rightLimit) rx = rightLimit;
       char* copy = static_cast<char*>(pageArena_.alloc(static_cast<uint32_t>(ann.textLen) + 1, 1));
       if (copy == nullptr) break;
@@ -2169,15 +2171,14 @@ class LayoutEngine : public XmlHandler {
       PageRuby& pr = rubies_[rubyCount_++];
       pr.text = copy;
       pr.x = static_cast<int16_t>(rx);
-      pr.baselineY =
-          static_cast<int16_t>(pageY_ + params_.font->ascent(lineSizePx) - rubyLift);
+      pr.baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(lineSizePx) - rubyLift);
       pr.sizePx = rubySize;
     }
   }
 
   void emitPage() {
-    Page page{runs_, runCount_, images_, imageCount_, links_, linkCount_, rules_, ruleCount_,
-              rubies_, rubyCount_, pageCount_, pageCharStart_};
+    Page page{runs_,  runCount_,  images_, imageCount_, links_,     linkCount_,
+              rules_, ruleCount_, rubies_, rubyCount_,  pageCount_, pageCharStart_};
     ++pageCount_;
     if (!sink_.onPage(page)) stopParse = true;
     runCount_ = 0;
@@ -2192,12 +2193,18 @@ class LayoutEngine : public XmlHandler {
     pageAnchorStale_ = true;
   }
 
+  // Non-owning views with owner-outlives-view lifetimes: source_, zip_,
+  // scratch_, parseArena_, sink_ and probed_ all belong to the book runtime
+  // (or to scratch, allocated in begin()'s prescan) and are never reset for
+  // the session's lifetime — see ChapterLayoutSession's header contract.
   BookSource& source_;
   const ZipCatalog* zip_;  // nullptr for plain-text layout (no container)
-  const LayoutParams& params_;
+  // Owned copy: callers may pass a stack-local params (resumable sessions
+  // keep this engine alive across later step() calls).
+  LayoutParams params_;
   Arena& scratch_;
   Arena& parseArena_;  // inflate/XML state (== scratch_ unless the caller split)
-  PageSink& sink_;
+  PageSink& sink_;     // the session's arena-resident CountingSink
   char chapterDir_[512];
 
   char* parText_ = nullptr;
@@ -2252,19 +2259,19 @@ class LayoutEngine : public XmlHandler {
   uint16_t rubyCount_ = 0;
   RubyAnn* anns_ = nullptr;
   uint16_t annCount_ = 0;
-  uint32_t parByteBase_ = 0;      // chapter bytes before the current paragraph buffer
-  uint32_t rubyGroupByteAbs_ = 0; // absolute byte where the current ruby group's base starts
+  uint32_t parByteBase_ = 0;       // chapter bytes before the current paragraph buffer
+  uint32_t rubyGroupByteAbs_ = 0;  // absolute byte where the current ruby group's base starts
   char* rubyBuf_ = nullptr;
   uint16_t rubyBufLen_ = 0;
   bool inRuby_ = false;
   bool collectingRubyText_ = false;
-  bool rubyEmptyBase_ = false;    // <rt> with no base since the last one: extend the previous
-  uint8_t rpDepth_ = 0;           // <rp> fallback parens suppressed while inside <ruby>
-  const ProbedImage* probed_ = nullptr;  // pre-scanned image dimensions
+  bool rubyEmptyBase_ = false;           // <rt> with no base since the last one: extend the previous
+  uint8_t rpDepth_ = 0;                  // <rp> fallback parens suppressed while inside <ruby>
+  const ProbedImage* probed_ = nullptr;  // pre-scanned image dimensions (non-owning; scratch table from begin())
   uint16_t probedCount_ = 0;
-  bool lastBreakShy_ = false;   // last ALLOWBREAK sat on a soft hyphen
-  uint32_t parCharBase_ = 0;    // chapter chars before the current paragraph
-  uint32_t pageCharStart_ = 0;  // anchor of the page being assembled
+  bool lastBreakShy_ = false;     // last ALLOWBREAK sat on a soft hyphen
+  uint32_t parCharBase_ = 0;      // chapter chars before the current paragraph
+  uint32_t pageCharStart_ = 0;    // anchor of the page being assembled
   bool pageAnchorStale_ = false;  // set by emitPage until the page's first record lands
   bool failed_ = false;
 };
@@ -2280,9 +2287,9 @@ namespace {
 // released before the main parse, so the chapter peak stays at the
 // text-chapter level. Failures here are non-fatal — the main parse reports
 // real errors, and unprobed images fall back to the inline probe.
-void prescanImages(BookSource& bookSource, const ZipCatalog* zip, BookSource& chapterSource,
-                   const ZipEntry& entry, const char* chapterHref, Arena& scratch,
-                   Arena& parseArena, ProbedImage** probedOut, uint16_t* probedCountOut) {
+void prescanImages(BookSource& bookSource, const ZipCatalog* zip, BookSource& chapterSource, const ZipEntry& entry,
+                   const char* chapterHref, Arena& scratch, Arena& parseArena, ProbedImage** probedOut,
+                   uint16_t* probedCountOut) {
   *probedOut = nullptr;
   *probedCountOut = 0;
   if (zip == nullptr) return;
@@ -2327,9 +2334,7 @@ void prescanImages(BookSource& bookSource, const ZipCatalog* zip, BookSource& ch
 class ChapterLayoutSession::CountingSink : public PageSink {
  public:
   explicit CountingSink(PageSink& inner) : inner_(inner) {}
-  void onAnchor(uint32_t idHash, uint32_t charStart) override {
-    inner_.onAnchor(idHash, charStart);
-  }
+  void onAnchor(uint32_t idHash, uint32_t charStart) override { inner_.onAnchor(idHash, charStart); }
   bool onPage(const Page& page) override {
     ++pages_;
     return inner_.onPage(page);
@@ -2341,11 +2346,9 @@ class ChapterLayoutSession::CountingSink : public PageSink {
   uint32_t pages_ = 0;
 };
 
-BookStatus ChapterLayoutSession::begin(BookSource& bookSource, const ZipCatalog* zip,
-                                       BookSource& chapterSource, const ZipEntry& entry,
-                                       const char* chapterHref, const LayoutParams& params,
-                                       Arena& scratch, PageSink& sink, Arena* parseScratch,
-                                       Arena* prescanScratch) {
+BookStatus ChapterLayoutSession::begin(BookSource& bookSource, const ZipCatalog* zip, BookSource& chapterSource,
+                                       const ZipEntry& entry, const char* chapterHref, const LayoutParams& params,
+                                       Arena& scratch, PageSink& sink, Arena* parseScratch, Arena* prescanScratch) {
   abort();
   if (params.font == nullptr || params.pageWidth <= 0 || params.pageHeight <= 0) {
     return BookStatus::Unsupported;
@@ -2356,17 +2359,14 @@ BookStatus ChapterLayoutSession::begin(BookSource& bookSource, const ZipCatalog*
 
   ProbedImage* probed = nullptr;
   uint16_t probedCount = 0;
-  prescanImages(bookSource, zip, chapterSource, entry, chapterHref, scratch, prescanArena, &probed,
-                &probedCount);
+  prescanImages(bookSource, zip, chapterSource, entry, chapterHref, scratch, prescanArena, &probed, &probedCount);
 
-  auto* counting =
-      static_cast<CountingSink*>(scratch.alloc(sizeof(CountingSink), alignof(CountingSink)));
-  auto* engine =
-      static_cast<LayoutEngine*>(scratch.alloc(sizeof(LayoutEngine), alignof(LayoutEngine)));
+  auto* counting = static_cast<CountingSink*>(scratch.alloc(sizeof(CountingSink), alignof(CountingSink)));
+  auto* engine = static_cast<LayoutEngine*>(scratch.alloc(sizeof(LayoutEngine), alignof(LayoutEngine)));
   if (counting == nullptr || engine == nullptr) return BookStatus::OutOfMemory;
   counting = new (counting) CountingSink(sink);
-  engine = new (engine) LayoutEngine(bookSource, zip, chapterHref, params, scratch, *counting,
-                                     probed, probedCount, &parseArena);
+  engine = new (engine)
+      LayoutEngine(bookSource, zip, chapterHref, params, scratch, *counting, probed, probedCount, &parseArena);
   countingSink_ = counting;
   engine_ = engine;
   if (!engine->init()) {
@@ -2436,11 +2436,9 @@ void ChapterLayoutSession::abort() {
   state_ = State::Idle;
 }
 
-BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
-                                 const ZipEntry& entry, const char* chapterHref,
-                                 const LayoutParams& params, Arena& scratch, PageSink& sink,
-                                 uint32_t* pageCountOut, uint32_t* totalCharsOut,
-                                 Arena* parseScratch) {
+BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip, const ZipEntry& entry,
+                                 const char* chapterHref, const LayoutParams& params, Arena& scratch, PageSink& sink,
+                                 uint32_t* pageCountOut, uint32_t* totalCharsOut, Arena* parseScratch) {
   // One-shot = a session pumped to completion; a single code path keeps
   // stepped and blocking layouts byte-identical by construction.
   const size_t marked = scratch.mark();
@@ -2448,8 +2446,7 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
   const size_t parseMarked = parseArena.mark();
 
   ChapterLayoutSession session;
-  BookStatus status =
-      session.begin(source, &zip, source, entry, chapterHref, params, scratch, sink, parseScratch);
+  BookStatus status = session.begin(source, &zip, source, entry, chapterHref, params, scratch, sink, parseScratch);
   while (status == BookStatus::Ok && !session.done()) {
     status = session.step(UINT32_MAX);
   }
@@ -2461,9 +2458,8 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
   return status;
 }
 
-BookStatus ChapterLayout::layoutPlainText(BookSource& source, const LayoutParams& params,
-                                          Arena& scratch, PageSink& sink,
-                                          uint32_t* pageCountOut, uint32_t* totalCharsOut) {
+BookStatus ChapterLayout::layoutPlainText(BookSource& source, const LayoutParams& params, Arena& scratch,
+                                          PageSink& sink, uint32_t* pageCountOut, uint32_t* totalCharsOut) {
   if (params.font == nullptr || params.pageWidth <= 0 || params.pageHeight <= 0) {
     return BookStatus::Unsupported;
   }
@@ -2495,8 +2491,8 @@ BookStatus ChapterLayout::layoutPlainText(BookSource& source, const LayoutParams
     int32_t start = 0;
     if (first) {
       first = false;
-      if (n >= 3 && static_cast<uint8_t>(buf[0]) == 0xEF &&
-          static_cast<uint8_t>(buf[1]) == 0xBB && static_cast<uint8_t>(buf[2]) == 0xBF) {
+      if (n >= 3 && static_cast<uint8_t>(buf[0]) == 0xEF && static_cast<uint8_t>(buf[1]) == 0xBB &&
+          static_cast<uint8_t>(buf[2]) == 0xBF) {
         start = 3;  // UTF-8 BOM
       }
     }

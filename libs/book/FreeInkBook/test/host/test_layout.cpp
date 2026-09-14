@@ -6,12 +6,13 @@
 #include <BookProfile.h>
 #include <FreeInkBook.h>
 #include <cache/PageCache.h>
-#include <layout/ChapterLayout.h>
 #include <epub/ImageProbe.h>
+#include <layout/ChapterLayout.h>
 #include <render/ImageRenderer.h>
 
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 
 namespace {
@@ -19,25 +20,25 @@ namespace {
 int checksRun = 0;
 int checksFailed = 0;
 
-#define CHECK(cond)                                                        \
-  do {                                                                     \
-    ++checksRun;                                                           \
-    if (!(cond)) {                                                         \
-      ++checksFailed;                                                      \
-      std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond);          \
-    }                                                                      \
+#define CHECK(cond)                                               \
+  do {                                                            \
+    ++checksRun;                                                  \
+    if (!(cond)) {                                                \
+      ++checksFailed;                                             \
+      std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); \
+    }                                                             \
   } while (0)
 
-#define CHECK_EQ(a, b)                                                                  \
-  do {                                                                                  \
-    ++checksRun;                                                                        \
-    const auto va = (a);                                                                \
-    const auto vb = (b);                                                                \
-    if (!(va == vb)) {                                                                  \
-      ++checksFailed;                                                                   \
-      std::printf("FAIL %s:%d  %s == %s  (%ld != %ld)\n", __FILE__, __LINE__, #a, #b,   \
-                  static_cast<long>(va), static_cast<long>(vb));                        \
-    }                                                                                   \
+#define CHECK_EQ(a, b)                                                                                       \
+  do {                                                                                                       \
+    ++checksRun;                                                                                             \
+    const auto va = (a);                                                                                     \
+    const auto vb = (b);                                                                                     \
+    if (!(va == vb)) {                                                                                       \
+      ++checksFailed;                                                                                        \
+      std::printf("FAIL %s:%d  %s == %s  (%ld != %ld)\n", __FILE__, __LINE__, #a, #b, static_cast<long>(va), \
+                  static_cast<long>(vb));                                                                    \
+    }                                                                                                        \
   } while (0)
 
 using namespace freeink::book;
@@ -221,10 +222,12 @@ void testStylesEntitiesAndBreaks() {
   // Entities resolved to UTF-8 (nbsp stays no-break, mdash/hellip literal),
   // numeric references pass through, unknown names degrade to U+FFFD, and a
   // bare ampersand survives as text.
-  CHECK(std::strstr(sink.text, "Alpha\xC2\xA0"
-                               "beta\xE2\x80\x94gamma\xE2\x80\xA6") != nullptr);
-  CHECK(std::strstr(sink.text, "numeric\xE2\x80\x94"
-                               "dashes") != nullptr);
+  CHECK(std::strstr(sink.text,
+                    "Alpha\xC2\xA0"
+                    "beta\xE2\x80\x94gamma\xE2\x80\xA6") != nullptr);
+  CHECK(std::strstr(sink.text,
+                    "numeric\xE2\x80\x94"
+                    "dashes") != nullptr);
   CHECK(std::strstr(sink.text, "\xEF\xBF\xBD") != nullptr);
   CHECK(std::strstr(sink.text, "AT&T stay alive") != nullptr);
 
@@ -269,8 +272,7 @@ void testMemoryIndependence() {
     if (round == 1) bigPages = pages;
   }
 
-  std::printf("  layout high water: small %zu B, big %zu B (%u pages)\n", highWater[0],
-              highWater[1], bigPages);
+  std::printf("  layout high water: small %zu B, big %zu B (%u pages)\n", highWater[0], highWater[1], bigPages);
   // Ceiling anatomy: fixed layout buffers (paragraph text + breaks + bidi
   // levels + line records + run table) + page sub-arena + ~50 KB
   // parse/inflate state — all profile-tiered, all O(1) in chapter size.
@@ -308,12 +310,10 @@ void testChapterLayoutSession() {
     const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
     CHECK(entry != nullptr);
     CollectSink sink(params, font);
-    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                    entry->name, params, opened.scratch, sink,
-                                                    &refPages)),
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                    opened.scratch, sink, &refPages)),
              static_cast<int>(BookStatus::Ok));
-    std::snprintf(refText, sizeof(refText), "%.*s", static_cast<int>(sizeof(refText) - 1),
-                  sink.text);
+    std::snprintf(refText, sizeof(refText), "%.*s", static_cast<int>(sizeof(refText) - 1), sink.text);
   }
   CHECK(refPages > 50);  // the fixture really is a big chapter
 
@@ -325,8 +325,8 @@ void testChapterLayoutSession() {
     CHECK(entry != nullptr);
     CollectSink sink(params, font);
     ChapterLayoutSession session;
-    CHECK_EQ(static_cast<int>(session.begin(opened.source, &opened.book.zip(), opened.source,
-                                            *entry, entry->name, params, opened.scratch, sink)),
+    CHECK_EQ(static_cast<int>(session.begin(opened.source, &opened.book.zip(), opened.source, *entry, entry->name,
+                                            params, opened.scratch, sink)),
              static_cast<int>(BookStatus::Ok));
     uint32_t steps = 0;
     uint64_t lastConsumed = 0;
@@ -358,13 +358,11 @@ void testChapterLayoutSession() {
     {
       CollectSink sink(params, font);
       const size_t mark = opened.scratch.mark();
-      CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                      entry->name, params, opened.scratch, sink,
-                                                      &imgRefPages)),
+      CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                      opened.scratch, sink, &imgRefPages)),
                static_cast<int>(BookStatus::Ok));
       opened.scratch.release(mark);
-      std::snprintf(imgRefText, sizeof(imgRefText), "%.*s", static_cast<int>(sizeof(imgRefText) - 1),
-                    sink.text);
+      std::snprintf(imgRefText, sizeof(imgRefText), "%.*s", static_cast<int>(sizeof(imgRefText) - 1), sink.text);
     }
 
     // Extract the chapter bytes (the app does this to SD; here to a buffer).
@@ -373,11 +371,10 @@ void testChapterLayoutSession() {
     {
       const size_t mark = opened.scratch.mark();
       ZipEntryReader reader;
-      CHECK_EQ(static_cast<int>(reader.open(opened.source, *entry, opened.scratch)),
-               static_cast<int>(BookStatus::Ok));
+      CHECK_EQ(static_cast<int>(reader.open(opened.source, *entry, opened.scratch)), static_cast<int>(BookStatus::Ok));
       for (;;) {
-        const int32_t n = reader.read(extracted + extractedLen,
-                                      static_cast<uint32_t>(sizeof(extracted) - extractedLen));
+        const int32_t n =
+            reader.read(extracted + extractedLen, static_cast<uint32_t>(sizeof(extracted) - extractedLen));
         CHECK(n >= 0);
         if (n <= 0) break;
         extractedLen += static_cast<uint32_t>(n);
@@ -416,8 +413,8 @@ void testChapterLayoutSession() {
     };
     ImageCountingSink sink(params, font);
     ChapterLayoutSession session;
-    CHECK_EQ(static_cast<int>(session.begin(opened.source, &opened.book.zip(), chapterSource,
-                                            rawEntry, entry->name, params, opened.scratch, sink)),
+    CHECK_EQ(static_cast<int>(session.begin(opened.source, &opened.book.zip(), chapterSource, rawEntry, entry->name,
+                                            params, opened.scratch, sink)),
              static_cast<int>(BookStatus::Ok));
     while (!session.done()) {
       CHECK_EQ(static_cast<int>(session.step(2)), static_cast<int>(BookStatus::Ok));
@@ -788,9 +785,8 @@ void testCssPaddingLayout() {
     uint32_t textUsed = 0;
   };
   RunSink rs;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                  entry->name, params, opened.scratch, rs,
-                                                  nullptr)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, rs, nullptr)),
            static_cast<int>(BookStatus::Ok));
 
   auto findRun = [&](RunSink& sink, const char* prefix) -> const PageTextRun* {
@@ -848,9 +844,8 @@ void testCssPaddingLayout() {
   const int16_t insideBaseline = inside->baselineY;
   LayoutParams bare = stickyParams(font);
   RunSink rsBare;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                  entry->name, bare, opened.scratch, rsBare,
-                                                  nullptr)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, bare,
+                                                  opened.scratch, rsBare, nullptr)),
            static_cast<int>(BookStatus::Ok));
   const PageTextRun* insideBare = findRun(rsBare, "INSIDE-MARKER");
   CHECK(insideBare != nullptr);
@@ -924,9 +919,8 @@ void testInlineFontSizes() {
 
   const ZipEntry* entry = opened.book.zip().find("OEBPS/text/font_sizes.xhtml");
   CHECK(entry != nullptr);
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                  entry->name, params, opened.scratch, rs,
-                                                  nullptr)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, rs, nullptr)),
            static_cast<int>(BookStatus::Ok));
 
   auto findRun = [&](const char* prefix) -> const PageTextRun* {
@@ -1000,7 +994,6 @@ void testInlineFontSizes() {
   const PageTextRun* tiny = findRun("TINYWORD");
   CHECK(tiny != nullptr);
   if (tiny != nullptr) CHECK_EQ(tiny->sizePx, 4);  // 10% clamps to 30% of 16.
-
 }
 
 // CrossPoint parity: inline font-size spans must not disturb the line grid.
@@ -1062,8 +1055,7 @@ void testInlineSizesKeepLineGrid() {
     int32_t readAt(uint64_t offset, void* dst, uint32_t len) override {
       if (offset >= len_) return 0;
       const uint32_t n = static_cast<uint32_t>(
-          len < len_ - static_cast<uint32_t>(offset) ? len
-                                                     : len_ - static_cast<uint32_t>(offset));
+          len < len_ - static_cast<uint32_t>(offset) ? len : len_ - static_cast<uint32_t>(offset));
       std::memcpy(dst, data_ + offset, n);
       return static_cast<int32_t>(n);
     }
@@ -1073,14 +1065,12 @@ void testInlineSizesKeepLineGrid() {
     const uint8_t* data_;
     uint32_t len_;
   };
-  MemSource src(reinterpret_cast<const uint8_t*>(xhtml.data()),
-                static_cast<uint32_t>(xhtml.size()));
+  MemSource src(reinterpret_cast<const uint8_t*>(xhtml.data()), static_cast<uint32_t>(xhtml.size()));
   const ZipEntry entry = ZipEntryReader::rawEntry(static_cast<uint32_t>(xhtml.size()));
 
   Arena scratch(scratchBuf, sizeof(scratchBuf));
   ChapterLayoutSession session;
-  CHECK_EQ(static_cast<int>(session.begin(src, nullptr, src, entry, "ch.xhtml", params,
-                                          scratch, gs)),
+  CHECK_EQ(static_cast<int>(session.begin(src, nullptr, src, entry, "ch.xhtml", params, scratch, gs)),
            static_cast<int>(BookStatus::Ok));
   while (!session.done()) {
     CHECK_EQ(static_cast<int>(session.step(4)), static_cast<int>(BookStatus::Ok));
@@ -1088,8 +1078,8 @@ void testInlineSizesKeepLineGrid() {
 
   CHECK(gs.pages > 2);
   CHECK_EQ(gs.firstBaseline, params.marginTop + 16);  // marginTop + ascent(16)
-  CHECK_EQ(gs.firstLineDrift, 0);   // every page's first line starts at the same spot
-  CHECK_EQ(gs.pitchViolations, 0);  // uniform grid despite the 300% drop caps
+  CHECK_EQ(gs.firstLineDrift, 0);                     // every page's first line starts at the same spot
+  CHECK_EQ(gs.pitchViolations, 0);                    // uniform grid despite the 300% drop caps
 }
 
 void testHyphenation(const Hyphenator& hyphenator) {
@@ -1137,8 +1127,8 @@ void testHyphenation(const Hyphenator& hyphenator) {
     CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                     opened.scratch, fsink, nullptr)),
              static_cast<int>(BookStatus::Ok));
-    CHECK(fsink.flaggedRuns > 0);      // the fixture produced flagged runs
-    CHECK_EQ(fsink.badTail, 0);        // ...and every flagged run ends in '-'
+    CHECK(fsink.flaggedRuns > 0);  // the fixture produced flagged runs
+    CHECK_EQ(fsink.badTail, 0);    // ...and every flagged run ends in '-'
   }
 
   // Same layout without the hyphenator must produce different (worse) fill —
@@ -1202,13 +1192,13 @@ void testRunCharAnchoring(const Hyphenator& hyphenator) {
 
   AnchorSink sink;
   const ZipEntry* entry = opened.book.zip().find(opened.book.spineItem(0)->href);
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name,
-                                                  params, opened.scratch, sink, nullptr)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, sink, nullptr)),
            static_cast<int>(BookStatus::Ok));
   CHECK(sink.pages > 0);
   CHECK(sink.runsCollected > 0);
-  CHECK(sink.hyphenTails > 0);       // the narrow column hyphenates something
-  CHECK(sink.tailCount > 0);         // ...and wraps words across boundaries
+  CHECK(sink.hyphenTails > 0);  // the narrow column hyphenates something
+  CHECK(sink.tailCount > 0);    // ...and wraps words across boundaries
   // Pairing is a bijection on the split boundary: every continuation head
   // matches exactly one tail ending at the same chapter offset (and vice
   // versa). Matching by offset — not stream adjacency — keeps the check
@@ -1324,8 +1314,8 @@ void testWidowOrphan() {
         }
         if (before == 1) ++orphanViolations;
         uint32_t after = 1;
-        for (uint32_t a = i + 1; a < ls.count && ls.lines[a].sizePx == 16 &&
-                                 ls.lines[a].x != indentX && ls.lines[a].page == ls.lines[i].page;
+        for (uint32_t a = i + 1; a < ls.count && ls.lines[a].sizePx == 16 && ls.lines[a].x != indentX &&
+                                 ls.lines[a].page == ls.lines[i].page;
              ++a) {
           ++after;
         }
@@ -1364,15 +1354,13 @@ void testImagePrescanMemory() {
     CHECK(entry != nullptr);
     Arena layoutArena{scratchBuf, sizeof(scratchBuf)};  // fresh, isolated measurement
     CollectSink sink(params, font);
-    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                    entry->name, params, layoutArena, sink,
-                                                    nullptr)),
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                    layoutArena, sink, nullptr)),
              static_cast<int>(BookStatus::Ok));
     highWater[round] = layoutArena.highWater();
   }
 
-  std::printf("  image-chapter high water: text %zu B, image %zu B\n", highWater[0],
-              highWater[1]);
+  std::printf("  image-chapter high water: text %zu B, image %zu B\n", highWater[0], highWater[1]);
   // Allowance covers the probed-image table (<= 6 KB at the LARGE tier) and
   // arena alignment noise; a regression to concurrent probe streams costs
   // ~47 KB and trips this.
@@ -1449,9 +1437,8 @@ void testCjk() {
   const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch6.xhtml");
   CHECK(entry != nullptr);
   uint32_t pages = 0;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                  entry->name, params, opened.scratch, ls,
-                                                  &pages)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, ls, &pages)),
            static_cast<int>(BookStatus::Ok));
   CHECK(pages >= 1);
   CHECK(ls.count > 6);  // three paragraphs of fullwidth text wrap plenty
@@ -1464,7 +1451,10 @@ void testCjk() {
   int kinsokuViolations = 0;
   for (uint32_t l = 0; l < ls.count; ++l) {
     for (uint32_t p : kProhibited) {
-      if (ls.firstCp[l] == p) { ++kinsokuViolations; std::printf("  kinsoku violation: line %u starts with U+%04X\n", l, p); }
+      if (ls.firstCp[l] == p) {
+        ++kinsokuViolations;
+        std::printf("  kinsoku violation: line %u starts with U+%04X\n", l, p);
+      }
     }
   }
   CHECK_EQ(kinsokuViolations, 0);
@@ -1531,9 +1521,8 @@ void testImages() {
   ImageCollectSink sink;
   const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch5.xhtml");
   CHECK(entry != nullptr);
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                  entry->name, params, opened.scratch, sink,
-                                                  nullptr)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, sink, nullptr)),
            static_cast<int>(BookStatus::Ok));
 
   // Two placed images (PNG + JPEG); the GIF was skipped without failing.
@@ -1554,15 +1543,15 @@ void testImages() {
   {
     const size_t marked = opened.scratch.mark();
     static GrayCapture cap;
-    CHECK_EQ(static_cast<int>(ImageRenderer::render(opened.source, opened.book.zip(), png,
-                                                    opened.scratch, GrayCapture::onRow, &cap)),
+    CHECK_EQ(static_cast<int>(ImageRenderer::render(opened.source, opened.book.zip(), png, opened.scratch,
+                                                    GrayCapture::onRow, &cap)),
              static_cast<int>(BookStatus::Ok));
     CHECK_EQ(cap.width, 64);
     CHECK_EQ(cap.rows, 48);
-    CHECK_EQ(cap.pixels[0], 0);                       // gradient start
-    CHECK(cap.pixels[31] > 240);                      // gradient end
-    CHECK(cap.pixels[10 * 64 + 48] < 16);             // right half, top: black
-    CHECK(cap.pixels[40 * 64 + 48] > 240);            // right half, bottom: white
+    CHECK_EQ(cap.pixels[0], 0);             // gradient start
+    CHECK(cap.pixels[31] > 240);            // gradient end
+    CHECK(cap.pixels[10 * 64 + 48] < 16);   // right half, top: black
+    CHECK(cap.pixels[40 * 64 + 48] > 240);  // right half, bottom: white
     opened.scratch.release(marked);
   }
 
@@ -1574,13 +1563,13 @@ void testImages() {
     const size_t marked = opened.scratch.mark();
     static GrayCapture cap;
     cap = GrayCapture{};
-    CHECK_EQ(static_cast<int>(ImageRenderer::render(opened.source, opened.book.zip(), half,
-                                                    opened.scratch, GrayCapture::onRow, &cap)),
+    CHECK_EQ(static_cast<int>(ImageRenderer::render(opened.source, opened.book.zip(), half, opened.scratch,
+                                                    GrayCapture::onRow, &cap)),
              static_cast<int>(BookStatus::Ok));
     CHECK_EQ(cap.width, 32);
     CHECK_EQ(cap.rows, 24);
-    CHECK(cap.pixels[5 * 32 + 24] < 16);              // top right: black
-    CHECK(cap.pixels[20 * 32 + 24] > 240);            // bottom right: white
+    CHECK(cap.pixels[5 * 32 + 24] < 16);    // top right: black
+    CHECK(cap.pixels[20 * 32 + 24] > 240);  // bottom right: white
     opened.scratch.release(marked);
   }
 
@@ -1590,8 +1579,8 @@ void testImages() {
     const size_t marked = opened.scratch.mark();
     static GrayCapture cap;
     cap = GrayCapture{};
-    const BookStatus st = ImageRenderer::render(opened.source, opened.book.zip(), jpg,
-                                                opened.scratch, GrayCapture::onRow, &cap);
+    const BookStatus st =
+        ImageRenderer::render(opened.source, opened.book.zip(), jpg, opened.scratch, GrayCapture::onRow, &cap);
     if (st == BookStatus::Ok) {  // skipped when no JPEG converter existed
       CHECK_EQ(cap.rows, 48);
       CHECK(cap.pixels[10 * 64 + 48] < 60);
@@ -1621,9 +1610,12 @@ void testPlainText() {
   std::snprintf(path, sizeof(path), "%s/sample.txt", fixturesDir);
   FILE* f = std::fopen(path, "wb");
   CHECK(f != nullptr);
-  std::fputs("\xEF\xBB\xBF" "First paragraph starts the file\nand continues on a new line.\n\n"
-             "Second paragraph after a blank line.\r\n\r\n"
-             "Third one ends without a newline.", f);
+  std::fputs(
+      "\xEF\xBB\xBF"
+      "First paragraph starts the file\nand continues on a new line.\n\n"
+      "Second paragraph after a blank line.\r\n\r\n"
+      "Third one ends without a newline.",
+      f);
   std::fclose(f);
 
   HostFileSource source;
@@ -1634,8 +1626,7 @@ void testPlainText() {
   Arena scratch(scratchBuf, sizeof(scratchBuf));
   uint32_t pages = 0;
   uint32_t totalChars = 0;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layoutPlainText(source, params, scratch, sink,
-                                                           &pages, &totalChars)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layoutPlainText(source, params, scratch, sink, &pages, &totalChars)),
            static_cast<int>(BookStatus::Ok));
   CHECK(pages >= 1);
   CHECK(totalChars > 100);
@@ -1673,8 +1664,8 @@ void testProgressiveJpeg() {
   static GrayCapture cap;
   cap = GrayCapture{};
   const size_t marked = opened.scratch.mark();
-  CHECK_EQ(static_cast<int>(ImageRenderer::render(opened.source, opened.book.zip(), img,
-                                                  opened.scratch, GrayCapture::onRow, &cap)),
+  CHECK_EQ(static_cast<int>(
+               ImageRenderer::render(opened.source, opened.book.zip(), img, opened.scratch, GrayCapture::onRow, &cap)),
            static_cast<int>(BookStatus::Ok));
   opened.scratch.release(marked);
   CHECK_EQ(cap.width, 64);
@@ -1710,9 +1701,8 @@ void testBidi() {
           i += 1 + (b >= 0xF0 ? 3 : b >= 0xE0 ? 2 : b >= 0xC0 ? 1 : 0);
           ++runs[count].cps;
         }
-        const uint32_t n = run.len < sizeof(runs[count].text) - 1
-                               ? run.len
-                               : static_cast<uint32_t>(sizeof(runs[count].text) - 1);
+        const uint32_t n =
+            run.len < sizeof(runs[count].text) - 1 ? run.len : static_cast<uint32_t>(sizeof(runs[count].text) - 1);
         std::memcpy(runs[count].text, run.text, n);
         runs[count].text[n] = '\0';
         ++count;
@@ -1733,9 +1723,8 @@ void testBidi() {
   const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch7.xhtml");
   CHECK(entry != nullptr);
   uint32_t pages = 0;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                  entry->name, params, opened.scratch, rs,
-                                                  &pages)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, rs, &pages)),
            static_cast<int>(BookStatus::Ok));
   CHECK(pages >= 1);
   CHECK(rs.count > 3);
@@ -1750,8 +1739,8 @@ void testBidi() {
 
   // 1. Character reversal: logical "המחשב" must be stored as visual "בשחמה";
   //    the logical byte order must not appear anywhere.
-  const char* logicalWord = "\xD7\x94\xD7\x9E\xD7\x97\xD7\xA9\xD7\x91";   // המחשב
-  const char* visualWord = "\xD7\x91\xD7\xA9\xD7\x97\xD7\x9E\xD7\x94";    // בשחמה
+  const char* logicalWord = "\xD7\x94\xD7\x9E\xD7\x97\xD7\xA9\xD7\x91";  // המחשב
+  const char* visualWord = "\xD7\x91\xD7\xA9\xD7\x97\xD7\x9E\xD7\x94";   // בשחמה
   CHECK(findRun(visualWord) != nullptr);
   CHECK(findRun(logicalWord) == nullptr);
   // Same for the opening word of the first paragraph: בראשית -> תישארב.
@@ -1815,9 +1804,8 @@ void testArabicShaping() {
   const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch8.xhtml");
   CHECK(entry != nullptr);
   uint32_t pages = 0;
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                  entry->name, params, opened.scratch, sink,
-                                                  &pages)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, sink, &pages)),
            static_cast<int>(BookStatus::Ok));
   CHECK(pages >= 1);
   CHECK_EQ(sink.geometryViolations, 0);
@@ -1828,8 +1816,7 @@ void testArabicShaping() {
   // مدرسة exercises right-joining mid-word: meem-initial FEE3, dal-final
   // FEAA, reh-ISOLATED FEAD (dal never joins forward), seen-initial FEB3,
   // teh-marbuta-final FE94.
-  CHECK(std::strstr(sink.text,
-                    "\xEF\xBA\x94\xEF\xBA\xB3\xEF\xBA\xAD\xEF\xBA\xAA\xEF\xBB\xA3") != nullptr);
+  CHECK(std::strstr(sink.text, "\xEF\xBA\x94\xEF\xBA\xB3\xEF\xBA\xAD\xEF\xBA\xAA\xEF\xBB\xA3") != nullptr);
   // Lam-alef ligatures: isolated لا -> FEFB; joined بلا -> beh-initial FE91
   // + final ligature FEFC.
   CHECK(std::strstr(sink.text, "\xEF\xBB\xBB") != nullptr);
@@ -1837,13 +1824,10 @@ void testArabicShaping() {
   // الكتاب: alef-iso FE8D, lam-initial FEDF (next is kaf, no ligature),
   // kaf-medial FEDC, teh-medial FE98, alef-final FE8E, beh-ISOLATED FE8F
   // (the final alef cannot join forward).
-  CHECK(std::strstr(sink.text,
-                    "\xEF\xBA\x8F\xEF\xBA\x8E\xEF\xBA\x98\xEF\xBB\x9C\xEF\xBB\x9F\xEF\xBA\x8D") !=
-        nullptr);
+  CHECK(std::strstr(sink.text, "\xEF\xBA\x8F\xEF\xBA\x8E\xEF\xBA\x98\xEF\xBB\x9C\xEF\xBB\x9F\xEF\xBA\x8D") != nullptr);
   // Vocalized كَتَبَ: fatha (U+064E) is transparent — the letters shape as if
   // adjacent, and the marks pass through in place.
-  CHECK(std::strstr(sink.text,
-                    "\xD9\x8E\xEF\xBA\x90\xD9\x8E\xEF\xBA\x98\xD9\x8E\xEF\xBB\x9B") != nullptr);
+  CHECK(std::strstr(sink.text, "\xD9\x8E\xEF\xBA\x90\xD9\x8E\xEF\xBA\x98\xD9\x8E\xEF\xBB\x9B") != nullptr);
   // Numbers still read left-to-right inside the RTL flow.
   CHECK(std::strstr(sink.text, "42") != nullptr);
   CHECK(std::strstr(sink.text, "24") == nullptr);
@@ -1857,9 +1841,8 @@ void testArabicShaping() {
   } bare;
   LayoutParams bareParams = stickyParams(bare);
   CollectSink bareSink(bareParams, bare);
-  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
-                                                  entry->name, bareParams, opened.scratch,
-                                                  bareSink, nullptr)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, bareParams,
+                                                  opened.scratch, bareSink, nullptr)),
            static_cast<int>(BookStatus::Ok));
   CHECK(std::strstr(bareSink.text, "\xEF\xBB\xBB") == nullptr);  // no FEFB
   CHECK(std::strstr(bareSink.text, "\xEF\xBA\x90") == nullptr);  // no FE90
@@ -1909,9 +1892,7 @@ struct CjRunSink : PageSink {
         i += 1 + extra;
         rec.width += cp >= 0x1100 ? run.sizePx : run.sizePx / 2;
       }
-      const uint32_t n = run.len < sizeof(rec.text) - 1
-                             ? run.len
-                             : static_cast<uint32_t>(sizeof(rec.text) - 1);
+      const uint32_t n = run.len < sizeof(rec.text) - 1 ? run.len : static_cast<uint32_t>(sizeof(rec.text) - 1);
       std::memcpy(rec.text, run.text, n);
       rec.text[n] = '\0';
     }
@@ -1928,8 +1909,7 @@ struct CjRunSink : PageSink {
   uint32_t count = 0;
 };
 
-bool layoutTxt(const char* name, const char* content, const LayoutParams& params,
-               PageSink& sink) {
+bool layoutTxt(const char* name, const char* content, const LayoutParams& params, PageSink& sink) {
   char path[1024];
   std::snprintf(path, sizeof(path), "%s/%s", fixturesDir, name);
   FILE* f = std::fopen(path, "wb");
@@ -1939,8 +1919,7 @@ bool layoutTxt(const char* name, const char* content, const LayoutParams& params
   HostFileSource source;
   if (!source.open(path)) return false;
   Arena scratch(scratchBuf, sizeof(scratchBuf));
-  return ChapterLayout::layoutPlainText(source, params, scratch, sink, nullptr, nullptr) ==
-         BookStatus::Ok;
+  return ChapterLayout::layoutPlainText(source, params, scratch, sink, nullptr, nullptr) == BookStatus::Ok;
 }
 
 // Korean is the spaced CJK script: justification must stretch the word
@@ -1954,8 +1933,7 @@ void testKoreanSpacing() {
   //    inter-syllable gaps neither split nor stretch) and lines end flush.
   {
     char text[4096] = "";
-    for (int i = 0; i < 30; ++i)
-      std::strcat(text, "\xEA\xB0\x80\xEB\x82\x98\xEB\x8B\xA4\xEB\x9D\xBC ");  // 가나다라
+    for (int i = 0; i < 30; ++i) std::strcat(text, "\xEA\xB0\x80\xEB\x82\x98\xEB\x8B\xA4\xEB\x9D\xBC ");  // 가나다라
     LayoutParams params = stickyParams(font);
     params.language = "ko";
     params.marginRight = 27;  // usable 749 px: never a multiple of 16, so
@@ -1980,8 +1958,8 @@ void testKoreanSpacing() {
       const int32_t edge = sink.runs[i].x + sink.runs[i].width;
       if (edge > maxEdge) maxEdge = edge;
     }
-    CHECK(flushLines >= 2);       // all non-last lines justified flush
-    CHECK(maxLineRuns <= 15);     // runs = words (+wrap tail), NOT syllables
+    CHECK(flushLines >= 2);    // all non-last lines justified flush
+    CHECK(maxLineRuns <= 15);  // runs = words (+wrap tail), NOT syllables
   }
 
   // 2. Space-less Hangul run: inter-character justification kicks in — every
@@ -2083,9 +2061,7 @@ void testCjkLatinGap() {
   params.language = "ja";
   CjRunSink sink;
   // GPS装置 (gap applies) and TV를 (Hangul: it must not).
-  CHECK(layoutTxt("cjgap.txt",
-                  "GPS\xE8\xA3\x85\xE7\xBD\xAE\n\nTV\xEB\xA5\xBC",
-                  params, sink));
+  CHECK(layoutTxt("cjgap.txt", "GPS\xE8\xA3\x85\xE7\xBD\xAE\n\nTV\xEB\xA5\xBC", params, sink));
   const CjRunSink::Rec* latin = sink.find("GPS");
   const CjRunSink::Rec* cjk = sink.find("\xE8\xA3\x85\xE7\xBD\xAE");  // 装置
   CHECK(latin != nullptr && cjk != nullptr);
@@ -2141,19 +2117,17 @@ void testCyrillicHyphenation(const Hyphenator& ru) {
   std::snprintf(path, sizeof(path), "%s/cyrillic.txt", fixturesDir);
   FILE* f = std::fopen(path, "wb");
   CHECK(f != nullptr);
-  for (int i = 0; i < 6; ++i)
-    std::fputs("\xD0\xBC\xD0\xBE\xD0\xBB\xD0\xBE\xD0\xBA\xD0\xBE ", f);
+  for (int i = 0; i < 6; ++i) std::fputs("\xD0\xBC\xD0\xBE\xD0\xBB\xD0\xBE\xD0\xBA\xD0\xBE ", f);
   std::fclose(f);
   HostFileSource source;
   CHECK(source.open(path));
   Arena scratch(scratchBuf, sizeof(scratchBuf));
-  CHECK_EQ(static_cast<int>(ChapterLayout::layoutPlainText(source, params, scratch, sink,
-                                                           nullptr, nullptr)),
+  CHECK_EQ(static_cast<int>(ChapterLayout::layoutPlainText(source, params, scratch, sink, nullptr, nullptr)),
            static_cast<int>(BookStatus::Ok));
   CHECK(std::strstr(sink.text, "\xD0\xBC\xD0\xBE-") != nullptr);  // мо-
   CHECK_EQ(sink.geometryViolations, 0);
-  CHECK(sink.hyphenRuns > 0);      // "мо-" run seen
-  CHECK_EQ(sink.missingFlag, 0);   // and flagged as hyphenated
+  CHECK(sink.hyphenRuns > 0);     // "мо-" run seen
+  CHECK_EQ(sink.missingFlag, 0);  // and flagged as hyphenated
 }
 
 // Focus reading (CrossPoint parity): each word's first ~45% of characters
@@ -2348,6 +2322,137 @@ void testHorizontalRule() {
   CHECK(std::strlen(sink.text) > 0);
 }
 
+// Lifetime regression (crash post-mortem): a resumable session outlives the
+// begin() call, so it must OWN copies of caller stack-locals (ZipEntry,
+// LayoutParams) rather than borrow them. begin() runs in a scope where those
+// locals die; every step() after that scope must still read valid values.
+void testResumableSessionOwnsBeginLocals() {
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+
+  // Reference: one-shot layout with long-lived params/entry.
+  uint32_t refPages = 0;
+  char refText[16 * 1024];
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+    CHECK(entry != nullptr);
+    CollectSink sink(params, font);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                    opened.scratch, sink, &refPages)),
+             static_cast<int>(BookStatus::Ok));
+    std::snprintf(refText, sizeof(refText), "%.*s", static_cast<int>(sizeof(refText) - 1), sink.text);
+  }
+  CHECK(refPages > 50);
+
+  // Session: begin() consumes STACK-LOCAL entry and params that die before
+  // the first step(); a borrowed pointer to either is stack-use-after-scope
+  // from that point on (crash #2 class).
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+    CHECK(entry != nullptr);
+    CollectSink sink(params, font);
+    ChapterLayoutSession session;
+    {
+      const ZipEntry localEntry = *entry;
+      LayoutParams localParams = params;
+      CHECK_EQ(static_cast<int>(session.begin(opened.source, &opened.book.zip(), opened.source, localEntry, entry->name,
+                                              localParams, opened.scratch, sink)),
+               static_cast<int>(BookStatus::Ok));
+    }  // localEntry/localParams die here
+    uint32_t steps = 0;
+    while (!session.done()) {
+      CHECK_EQ(static_cast<int>(session.step(4)), static_cast<int>(BookStatus::Ok));
+      if (++steps >= 100000u) break;  // no livelock
+    }
+    CHECK_EQ(session.pagesEmitted(), refPages);
+    CHECK(std::strncmp(sink.text, refText, std::strlen(refText)) == 0);
+    CHECK(session.totalChars() > 0);
+  }
+
+  // Same lifetime rule for ZipEntryReader: open() with a stack-local entry,
+  // then read() after that local died — the reader must own its record.
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+    CHECK(entry != nullptr);
+
+    const uint32_t cap = entry->uncompressedSize;
+    CHECK(cap > 0 && cap < 4u * 1024 * 1024);
+    const auto ref = std::unique_ptr<uint8_t[]>(new uint8_t[cap]);
+    uint32_t refLen = 0;
+    {
+      const size_t mark = opened.scratch.mark();
+      ZipEntryReader reader;
+      CHECK_EQ(static_cast<int>(reader.open(opened.source, *entry, opened.scratch)), static_cast<int>(BookStatus::Ok));
+      for (;;) {
+        const int32_t n = reader.read(ref.get() + refLen, cap - refLen);
+        CHECK(n >= 0);
+        if (n <= 0) break;
+        refLen += static_cast<uint32_t>(n);
+      }
+      opened.scratch.release(mark);
+    }
+    CHECK_EQ(refLen, entry->uncompressedSize);
+
+    // Resumable pattern: open in a scope, read to completion outside it.
+    const auto got = std::unique_ptr<uint8_t[]>(new uint8_t[cap]);
+    uint32_t gotLen = 0;
+    {
+      const size_t mark = opened.scratch.mark();
+      ZipEntryReader reader;
+      {
+        const ZipEntry localEntry = *entry;
+        CHECK_EQ(static_cast<int>(reader.open(opened.source, localEntry, opened.scratch)),
+                 static_cast<int>(BookStatus::Ok));
+      }  // localEntry dies here; reader.read() must still see valid fields
+      for (;;) {
+        CHECK(gotLen <= cap);  // read() clamps to the entry's remaining bytes
+        const int32_t n = reader.read(got.get() + gotLen, cap - gotLen < 512 ? cap - gotLen : 512);
+        CHECK(n >= 0);
+        if (n <= 0) break;
+        gotLen += static_cast<uint32_t>(n);
+      }
+      CHECK_EQ(reader.totalProduced(), entry->uncompressedSize);
+      opened.scratch.release(mark);
+    }
+    CHECK_EQ(gotLen, refLen);
+    CHECK(std::memcmp(got.get(), ref.get(), refLen) == 0);
+  }
+}
+
+// entry()/read() keep the pre-owned-copy nullptr contract: nothing is visible
+// until an open() actually succeeds, and a failed open re-closes the reader.
+void testZipEntryReaderOpenContract() {
+  HostFileSource source;
+  CHECK(source.open(fixture("minimal.epub")));
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  ZipEntryReader reader;
+  char byte = 0;
+
+  CHECK(!reader.isOpen());
+  CHECK(reader.entry() == nullptr);
+  CHECK_EQ(reader.read(&byte, 1), -1);
+
+  ZipEntry bad = ZipEntryReader::rawEntry(16);
+  bad.method = 8;  // raw synthetic entries are stored-only
+  CHECK_EQ(static_cast<int>(reader.open(source, bad, scratch)), static_cast<int>(BookStatus::Unsupported));
+  CHECK(!reader.isOpen());
+  CHECK(reader.entry() == nullptr);
+  CHECK_EQ(reader.read(&byte, 1), -1);
+
+  const ZipEntry ok = ZipEntryReader::rawEntry(4);
+  CHECK_EQ(static_cast<int>(reader.open(source, ok, scratch)), static_cast<int>(BookStatus::Ok));
+  CHECK(reader.isOpen());
+  CHECK(reader.entry() != nullptr);
+  CHECK_EQ(reader.entry()->uncompressedSize, 4u);
+  CHECK_EQ(reader.read(&byte, 1), 1);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2381,6 +2486,8 @@ int main(int argc, char** argv) {
   testEarlyStop();
   testSplitParseArena();
   testChapterLayoutSession();
+  testResumableSessionOwnsBeginLocals();
+  testZipEntryReaderOpenContract();
   testCssUnit();
   testStyledChapter();
   testCssPaddingParse();

@@ -28,6 +28,12 @@
 namespace freeink {
 namespace book {
 
+// The pointer members (language, font, stylesheet, hyphenator) are
+// non-owning views into book-level objects (font table, book CSS,
+// hyphenation rules) that must outlive every layout/session constructed
+// from these params. LayoutEngine copies this struct by value across
+// step() calls, so callers may pass a stack-local LayoutParams — but the
+// pointed-to objects themselves must be longer-lived.
 struct LayoutParams {
   int16_t pageWidth = 800;
   int16_t pageHeight = 480;
@@ -35,20 +41,20 @@ struct LayoutParams {
   int16_t marginRight = 24;
   int16_t marginTop = 20;
   int16_t marginBottom = 20;
-  uint16_t baseSizePx = 16;      // the reader's chosen body size
-  const char* language = "en";   // BCP 47, for UAX #14 tailoring
+  uint16_t baseSizePx = 16;     // the reader's chosen body size
+  const char* language = "en";  // BCP 47, for UAX #14 tailoring
   BookFont* font = nullptr;
 
   // Typography (Phase 4).
-  uint16_t lineSpacingPct = 100;                 // line height multiplier (CrossPoint parity)
-  uint16_t paragraphSpacingPct = 100;            // scales block margins (0 = compact)
-  TextAlign defaultAlign = TextAlign::Left;      // body alignment when CSS is silent
-  uint8_t orphanLines = 2;                       // min paragraph lines at a page bottom
-  uint8_t widowLines = 2;                        // min paragraph lines carried over
-  bool embeddedStyles = true;                    // honor chapter <style> blocks
-  bool focusReading = false;                     // bold each word's first ~45% (fixation aid)
-  const CssStylesheet* stylesheet = nullptr;     // book CSS (optional)
-  const Hyphenator* hyphenator = nullptr;        // soft hyphenation (optional)
+  uint16_t lineSpacingPct = 100;              // line height multiplier (CrossPoint parity)
+  uint16_t paragraphSpacingPct = 100;         // scales block margins (0 = compact)
+  TextAlign defaultAlign = TextAlign::Left;   // body alignment when CSS is silent
+  uint8_t orphanLines = 2;                    // min paragraph lines at a page bottom
+  uint8_t widowLines = 2;                     // min paragraph lines carried over
+  bool embeddedStyles = true;                 // honor chapter <style> blocks
+  bool focusReading = false;                  // bold each word's first ~45% (fixation aid)
+  const CssStylesheet* stylesheet = nullptr;  // book CSS (optional)
+  const Hyphenator* hyphenator = nullptr;     // soft hyphenation (optional)
 };
 
 // One horizontal run of same-styled text. `text` points into layout scratch
@@ -112,8 +118,8 @@ struct PageTextRun {
 struct PageImage {
   const char* href;
   int16_t x;
-  int16_t y;        // top edge
-  uint16_t width;   // placement size (aspect-preserving, never upscaled)
+  int16_t y;       // top edge
+  uint16_t width;  // placement size (aspect-preserving, never upscaled)
   uint16_t height;
 };
 
@@ -201,9 +207,8 @@ class ChapterLayout {
   // neither arena needs to be a single ~100 KB block. On fragmented
   // PSRAM-less heaps two ~50 KB blocks fit where one large one cannot.
   // When null, everything comes from `scratch` (the classic behavior).
-  static BookStatus layout(BookSource& source, const ZipCatalog& zip, const ZipEntry& entry,
-                           const char* chapterHref, const LayoutParams& params, Arena& scratch,
-                           PageSink& sink, uint32_t* pageCountOut = nullptr,
+  static BookStatus layout(BookSource& source, const ZipCatalog& zip, const ZipEntry& entry, const char* chapterHref,
+                           const LayoutParams& params, Arena& scratch, PageSink& sink, uint32_t* pageCountOut = nullptr,
                            uint32_t* totalCharsOut = nullptr, Arena* parseScratch = nullptr);
 
   // Plain-text (.txt) layout: the whole file is one chapter, paragraphs
@@ -211,10 +216,8 @@ class ChapterLayout {
   // hyphenation, caching, and character anchors all apply identically —
   // feed the same PageCacheWriter/Reader as an EPUB chapter (spine 0).
   // UTF-8 assumed; a leading BOM is skipped.
-  static BookStatus layoutPlainText(BookSource& source, const LayoutParams& params,
-                                    Arena& scratch, PageSink& sink,
-                                    uint32_t* pageCountOut = nullptr,
-                                    uint32_t* totalCharsOut = nullptr);
+  static BookStatus layoutPlainText(BookSource& source, const LayoutParams& params, Arena& scratch, PageSink& sink,
+                                    uint32_t* pageCountOut = nullptr, uint32_t* totalCharsOut = nullptr);
 };
 
 // Resumable chapter layout — the incremental-build primitive. Where
@@ -252,10 +255,9 @@ class ChapterLayoutSession {
   // TEMPORARY large arena here (freed right after begin() returns) and keep
   // `parseScratch` at the small stored-entry size (~12 KB) — otherwise the
   // parse arena must be sized for the probe peak for its whole lifetime.
-  BookStatus begin(BookSource& bookSource, const ZipCatalog* zip, BookSource& chapterSource,
-                   const ZipEntry& entry, const char* chapterHref, const LayoutParams& params,
-                   Arena& scratch, PageSink& sink, Arena* parseScratch = nullptr,
-                   Arena* prescanScratch = nullptr);
+  BookStatus begin(BookSource& bookSource, const ZipCatalog* zip, BookSource& chapterSource, const ZipEntry& entry,
+                   const char* chapterHref, const LayoutParams& params, Arena& scratch, PageSink& sink,
+                   Arena* parseScratch = nullptr, Arena* prescanScratch = nullptr);
 
   // Feeds the parse until at least `minNewPages` more pages were delivered to
   // the sink or the chapter ends (granularity is one input chunk, so it can

@@ -22,10 +22,9 @@ static bool readFully(BookSource& source, uint64_t off, void* dst, uint32_t len)
   return true;
 }
 
-
 namespace {
 
-constexpr uint32_t kEocdSig = 0x06054b50;   // end of central directory
+constexpr uint32_t kEocdSig = 0x06054b50;  // end of central directory
 constexpr uint32_t kCentralSig = 0x02014b50;
 constexpr uint32_t kLocalSig = 0x04034b50;
 constexpr size_t kEocdMinSize = 22;
@@ -49,8 +48,8 @@ constexpr uint64_t kDeflateOutputSlack = 64;
 uint16_t le16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
 
 uint32_t le32(const uint8_t* p) {
-  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
 }
 
 // Buffered forward reader over a BookSource, used to walk the central
@@ -108,8 +107,8 @@ uint32_t ZipCatalog::hashPath(const char* path) {
   return hash;
 }
 
-BookStatus ZipCatalog::locateCentralDirectory(BookSource& source, uint32_t* dirOffsetOut,
-                                              uint32_t* dirSizeOut, uint16_t* entryCountOut) {
+BookStatus ZipCatalog::locateCentralDirectory(BookSource& source, uint32_t* dirOffsetOut, uint32_t* dirSizeOut,
+                                              uint16_t* entryCountOut) {
   const uint64_t fileSize = source.size();
   if (fileSize < kEocdMinSize) return BookStatus::NotZip;
 
@@ -222,7 +221,8 @@ const ZipEntry* ZipCatalog::findByHash(const uint32_t nameHash) const {
 
 BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena& scratch) {
   source_ = &source;
-  entry_ = &entry;
+  opened_ = false;
+  entry_ = entry;  // owned copy: the caller's entry may be a stack local (see header)
   produced_ = 0;
   inPos_ = inAvail_ = compConsumed_ = 0;
   windowPos_ = pendingPos_ = pendingLen_ = 0;
@@ -238,6 +238,7 @@ BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena
       return BookStatus::Unsupported;
     }
     dataOffset_ = 0;
+    opened_ = true;
     return BookStatus::Ok;
   }
 
@@ -255,6 +256,7 @@ BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena
 
   if (entry.method == kMethodStored) {
     if (entry.compressedSize != entry.uncompressedSize) return BookStatus::Truncated;
+    opened_ = true;
     return BookStatus::Ok;
   }
   if (entry.method != kMethodDeflate) return BookStatus::Unsupported;
@@ -276,18 +278,19 @@ BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena
     return BookStatus::OutOfMemory;
   }
   tinfl_init(static_cast<tinfl_decompressor*>(decompressor_));
+  opened_ = true;
   return BookStatus::Ok;
 }
 
 int32_t ZipEntryReader::read(void* dst, uint32_t len) {
-  if (source_ == nullptr || entry_ == nullptr) return -1;
+  if (!opened_) return -1;
   if (len == 0) return 0;
-  return entry_->method == kMethodStored ? readStored(static_cast<uint8_t*>(dst), len)
-                                         : readDeflated(static_cast<uint8_t*>(dst), len);
+  return entry_.method == kMethodStored ? readStored(static_cast<uint8_t*>(dst), len)
+                                        : readDeflated(static_cast<uint8_t*>(dst), len);
 }
 
 int32_t ZipEntryReader::readStored(uint8_t* dst, uint32_t len) {
-  const uint32_t remaining = entry_->uncompressedSize - produced_;
+  const uint32_t remaining = entry_.uncompressedSize - produced_;
   const uint32_t want = remaining < len ? remaining : len;
   if (want == 0) return 0;
   const int32_t n = source_->readAt(dataOffset_ + produced_, dst, want);
@@ -310,8 +313,8 @@ int32_t ZipEntryReader::readDeflated(uint8_t* dst, uint32_t len) {
     return 0;
   }
   uint32_t budget = inflateOutputLimit_ - produced_;
-  if (budget > entry_->uncompressedSize - produced_) {
-    budget = entry_->uncompressedSize - produced_;
+  if (budget > entry_.uncompressedSize - produced_) {
+    budget = entry_.uncompressedSize - produced_;
   }
   if (budget == 0) {
     done_ = true;
@@ -330,8 +333,8 @@ int32_t ZipEntryReader::readDeflated(uint8_t* dst, uint32_t len) {
     }
     if (done_) break;
 
-    if (inAvail_ == 0 && compConsumed_ < entry_->compressedSize) {
-      const uint32_t left = entry_->compressedSize - compConsumed_;
+    if (inAvail_ == 0 && compConsumed_ < entry_.compressedSize) {
+      const uint32_t left = entry_.compressedSize - compConsumed_;
       const uint32_t want = left < kInBufSize ? left : kInBufSize;
       const int32_t n = source_->readAt(dataOffset_ + compConsumed_, inBuf_, want);
       if (n <= 0) return -1;
@@ -342,9 +345,9 @@ int32_t ZipEntryReader::readDeflated(uint8_t* dst, uint32_t len) {
 
     size_t inBytes = inAvail_;
     size_t outBytes = TINFL_LZ_DICT_SIZE - windowPos_;
-    const mz_uint32 flags = compConsumed_ < entry_->compressedSize ? TINFL_FLAG_HAS_MORE_INPUT : 0;
-    const tinfl_status status = tinfl_decompress(decomp, inBuf_ + inPos_, &inBytes, window_,
-                                                 window_ + windowPos_, &outBytes, flags);
+    const mz_uint32 flags = compConsumed_ < entry_.compressedSize ? TINFL_FLAG_HAS_MORE_INPUT : 0;
+    const tinfl_status status =
+        tinfl_decompress(decomp, inBuf_ + inPos_, &inBytes, window_, window_ + windowPos_, &outBytes, flags);
     inPos_ += static_cast<uint32_t>(inBytes);
     inAvail_ -= static_cast<uint32_t>(inBytes);
     pendingPos_ = windowPos_;
@@ -360,7 +363,7 @@ int32_t ZipEntryReader::readDeflated(uint8_t* dst, uint32_t len) {
       return -1;  // corrupt stream
     } else if (inBytes == 0 && outBytes == 0) {
       // No progress: needing input we cannot supply means truncation.
-      if (status == TINFL_STATUS_NEEDS_MORE_INPUT && compConsumed_ >= entry_->compressedSize) {
+      if (status == TINFL_STATUS_NEEDS_MORE_INPUT && compConsumed_ >= entry_.compressedSize) {
         return -1;
       }
       if (status != TINFL_STATUS_NEEDS_MORE_INPUT && status != TINFL_STATUS_HAS_MORE_OUTPUT) {
@@ -374,17 +377,28 @@ int32_t ZipEntryReader::readDeflated(uint8_t* dst, uint32_t len) {
 
 const char* bookStatusName(BookStatus status) {
   switch (status) {
-    case BookStatus::Ok: return "Ok";
-    case BookStatus::IoError: return "IoError";
-    case BookStatus::NotZip: return "NotZip";
-    case BookStatus::NotEpub: return "NotEpub";
-    case BookStatus::Encrypted: return "Encrypted";
-    case BookStatus::Truncated: return "Truncated";
-    case BookStatus::Unsupported: return "Unsupported";
-    case BookStatus::OutOfMemory: return "OutOfMemory";
-    case BookStatus::ParseError: return "ParseError";
-    case BookStatus::NotFound: return "NotFound";
-    case BookStatus::Stale: return "Stale";
+    case BookStatus::Ok:
+      return "Ok";
+    case BookStatus::IoError:
+      return "IoError";
+    case BookStatus::NotZip:
+      return "NotZip";
+    case BookStatus::NotEpub:
+      return "NotEpub";
+    case BookStatus::Encrypted:
+      return "Encrypted";
+    case BookStatus::Truncated:
+      return "Truncated";
+    case BookStatus::Unsupported:
+      return "Unsupported";
+    case BookStatus::OutOfMemory:
+      return "OutOfMemory";
+    case BookStatus::ParseError:
+      return "ParseError";
+    case BookStatus::NotFound:
+      return "NotFound";
+    case BookStatus::Stale:
+      return "Stale";
   }
   return "Unknown";
 }
