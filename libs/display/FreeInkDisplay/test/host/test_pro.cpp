@@ -445,6 +445,56 @@ static void testDirectSleep() {
   free(driver._grayBase);
 }
 
+static void testUc8279X4WaveformSelection() {
+  Uc8279X4Driver driver;
+  EpdBus bus;
+  driver.begin(bus);
+  const auto bw = frame(11);
+  Bytes lsb(48000, 0), msb(48000, 0);
+  const auto bank = [&]() {
+    std::vector<Bytes> rows(5);
+    for (const auto& w : bus.writes)
+      if (w.command >= 0x20 && w.command <= 0x24 && w.bytes.size() == 49) rows[w.command - 0x20] = w.bytes;
+    for (const auto& row : rows) assert(row.size() == 49);
+    return rows;
+  };
+  const auto render = [&](GrayscaleMode mode, uint8_t mask, bool factory) {
+    std::fill(msb.begin(), msb.end(), mask);
+    driver.beginGrayscale(bus, bw.data(), mode, RefreshMode::Half, false);
+    driver.copyGrayscaleLsb(bus, lsb.data());
+    driver.copyGrayscaleMsb(bus, msb.data());
+    bus.clear();
+    driver.displayGray(bus, bw.data(), false, nullptr, factory);
+    return bank();
+  };
+  const auto quality = render(GrayscaleMode::Direct, 0, false);
+  assert(quality[2] != quality[3]);
+  assert(render(GrayscaleMode::Absolute, 0, false) == quality);
+  for (uint8_t variant : {0x02, 0x68, 0x69}) {
+    BoardConfig::ACTIVE.displayControllerVariant = variant;
+    for (uint8_t mask : {0x00, 0x01, 0x03}) {
+      const auto text = render(GrayscaleMode::Overlay, mask, false);
+      assert(text != quality);
+      assert(text[2] == text[3]);
+      const uint8_t timing = variant == 0x02 ? 2 : 3;
+      for (unsigned t = 0; t < 5; ++t) {
+        Bytes expected = {1, 2, timing, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1};
+        expected.resize(49, 0);
+        if (t == 1) expected[3] |= 0x40;
+        if (t == 2 || t == 3) expected[2] |= 0x80;
+        if (t == 4) expected[3] |= 0x80;
+        assert(text[t] == expected);
+      }
+    }
+    assert(render(GrayscaleMode::Overlay, 0x07, false) == quality);
+    assert(render(GrayscaleMode::Overlay, 0, true) == quality);
+    // An image pass must not leave the next sparse page on the quality bank.
+    assert(render(GrayscaleMode::Overlay, 0x01, false) != quality);
+  }
+  BoardConfig::ACTIVE.displayControllerVariant = 0x68;
+  free(driver._grayBase);
+}
+
 static void testStickyAbsolute() {
   BoardConfig::ACTIVE.board = BoardConfig::Board::Sticky;
   auto& driver = static_cast<Ssd1677Driver&>(ssd1677Driver());
@@ -477,6 +527,7 @@ int main(int argc, char**) {
     return 0;
   }
   testUc8179GrayShadeSplit();
+  testUc8279X4WaveformSelection();
   testDirectSleep<Uc8179Driver>();
   testDirectSleep<Uc8279X4Driver>();
   testUltraChipAbsolute<Uc8179Driver>(true, 0, false);

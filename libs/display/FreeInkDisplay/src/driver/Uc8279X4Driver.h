@@ -93,16 +93,12 @@ class Uc8279X4Driver : public PanelDriver {
   // the absolute fold + post-DRF base restore (base = plane0 & plane1) fixes
   // both. Single-byte CDI (constant 0x97), PSR rewritten before DRF, panel LEFT
   // POWERED (vendor).
-  GrayscaleCapabilities grayscaleCapabilities(
-      GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)
       return {GrayscaleEncoding::AbsolutePlanes,
-              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate,
-              false, false, false};
-    if (mode != GrayscaleMode::Overlay)
-      return {};
-    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false,
-            false, false};
+              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate, false, false, false};
+    if (mode != GrayscaleMode::Overlay) return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
   }
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
@@ -154,6 +150,7 @@ class Uc8279X4Driver : public PanelDriver {
   // absolute plane0, copyGrayscaleMsb derives plane1 and recovers the base for
   // the post-DRF restore. SPIRAM-backed, framebuffer-sized, allocated in begin().
   uint8_t* _grayBase = nullptr;
+  bool _grayImagePass = false;
   bool _grayBaseValid = false;
   bool _absoluteGrayPlanes = false;
   bool _absoluteInput = false;
