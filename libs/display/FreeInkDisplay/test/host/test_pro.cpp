@@ -403,15 +403,45 @@ static void testUc8179GrayShadeSplit() {
     assert(light != bus.writes.end() && dark != bus.writes.end());
     assert(light->bytes.size() == 42 && dark->bytes.size() == 42);
     assert(light->bytes[0] == 0x20 && light->bytes[1] == 2 && light->bytes[2] == 2);
-    if (mode == GrayscaleMode::Absolute) {
-      auto expected = light->bytes;
-      expected[2] = 1;
-      expected[3] = 2;
-      assert(dark->bytes == expected);
-    } else {
-      assert(dark->bytes == light->bytes);
-    }
+    auto expected = light->bytes;
+    expected[2] = 1;
+    expected[3] = 2;
+    assert(dark->bytes == expected);
   }
+  free(driver._grayBase);
+}
+
+template<class Driver>
+static void testDirectSleep() {
+  Driver driver;
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  display._driver = &driver;
+  display.begin();
+  const auto bw = frame(11), lsb = frame(17), msb = frame(29);
+  std::memcpy(display.getFrameBuffer(), bw.data(), bw.size());
+  const auto activations = [&]() {
+    return std::count_if(display._bus.writes.begin(), display._bus.writes.end(),
+                         [](const auto& w) { return w.command == 0x12; });
+  };
+  assert(display.grayscaleCapabilities(GrayscaleMode::Direct).base == GrayscaleBase::Combined);
+  for (auto fallback : {FreeInkDisplay::HALF_REFRESH, FreeInkDisplay::FAST_REFRESH}) {
+    display._bus.clear();
+    assert(display.displayGrayscaleBase(GrayscaleMode::Direct, fallback));
+    assert(activations() == 0);
+    display.copyGrayscaleBuffers(lsb.data(), msb.data());
+    assert(activations() == 0);
+    display.displayGrayBuffer(false);
+    assert(activations() == 1);
+    display.cleanupGrayscaleBuffers(bw.data());
+    display.displayBuffer(FreeInkDisplay::FAST_REFRESH, false);
+    assert(activations() > 1);
+  }
+  display._bus.clear();
+  assert(display.displayGrayscaleBase(GrayscaleMode::Direct));
+  display.copyGrayscaleLsbBuffers(lsb.data());
+  display.displayGrayBuffer(false);
+  assert(activations() == 0);
+  display.deepSleep();
   free(driver._grayBase);
 }
 
@@ -447,6 +477,8 @@ int main(int argc, char**) {
     return 0;
   }
   testUc8179GrayShadeSplit();
+  testDirectSleep<Uc8179Driver>();
+  testDirectSleep<Uc8279X4Driver>();
   testUltraChipAbsolute<Uc8179Driver>(true, 0, false);
   for (uint8_t variant : {0x02, 0x68, 0x69}) {
     BoardConfig::ACTIVE.displayControllerVariant = variant;

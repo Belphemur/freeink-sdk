@@ -69,11 +69,10 @@ struct ListProps {
   TextStyle subtitleText{};
   TextStyle valueText{};
   StyleSet rowStyles{};
-  // Inherit sentinels: Screen::list() substitutes the theme value for
-  // rowHeight <= 0, rowGap < 0, sidePadding < 0, and rowRadius == 0; raw
-  // list() falls back to 36 / 0 / 8. Literal defaults here would silently
-  // override the theme for every Screen::list() caller that leaves them
-  // unset.
+  // Screen::list() resolves rowHeight <= 0 from the label font, list padding
+  // and device touch minimum; each row grows for its actual content. Positive
+  // rowHeight is an explicit minimum. Other sentinels inherit theme geometry.
+  // Raw list() retains its 36px minimum when rowHeight is unset.
   int16_t rowHeight = 0;
   int16_t rowGap = -1;
   uint8_t rowRadius = 0;

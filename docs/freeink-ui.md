@@ -1002,7 +1002,7 @@ scrolling for free.
 Rows are not all the same height: a wrapped label or subtitle grows one, so a
 layout routinely fits fewer indexes than `listVisibleRows()` estimates. Screens
 that scroll (swipe or button navigation) should therefore own a `ListNav` and
-call `nav.syncToProps(body, rowHeight, rowGap, count, props)` right before
+call `screen.syncListViewport(nav, props, count)` right before
 `list()`. `list()` reports the viewport it actually laid out back through
 `props.nav`. Rendering, hit targets, preview rows, and the scroll indicator
 share that measurement. The indicator uses the current layout immediately.
@@ -1046,12 +1046,26 @@ remain valid and stable during the build; atomics do not synchronize app data.
 For a tab ring with index 0 reserved for the tab bar, pass `selectionOffset = 1`
 to `syncToProps()`; layout and follow feedback then use row indexes consistently.
 
-Set `rowPaddingY` to an explicit pixel value to size rows as the greater of
-`rowHeight` and measured content plus vertical padding. For example, a dense
-file browser can use one small-font line plus 8 pixels as its minimum,
-`rowPaddingY = 4`, and `labelText.maxLines = 2`; only names that actually wrap
-need a taller row. Touch screens should retain their minimum touch row height.
-The default `rowPaddingY = -1` preserves legacy height-derived padding.
+`Screen::list()` sizes default rows from their actual label, subtitle, value,
+icon and wrapping. Button devices use `theme.listRowPaddingY` (4 pixels per
+side). Touch devices use `listTouchRowPaddingY` (8 pixels per side), a
+`listTouchMinRowHeight` of 56 pixels, and at least `listTouchRowGap` (6 pixels)
+between rows unless the caller explicitly sets the gap. Device and theme hit
+target minimums are still enforced. These touch defaults provide comfortable
+spacing rather than using the smallest valid hit target as the row design.
+`theme.rowHeight` sizes generic controls; it no longer reserves two text lines
+for every list item. Use `theme.listMinRowHeight` for a deliberate list minimum,
+or a positive `props.rowHeight` for a particular list.
+
+Use `screen.syncListViewport(nav, props, count, selectionOffset)` before loading
+a virtualized window or calling `screen.list(props)`. It resolves the same fonts,
+padding and minimum as drawing, then computes the allocation bound and applies
+navigation. `nav.visibleRows` is an upper bound; load one extra item for a
+trailing preview. The rendered full-row count remains the swipe page size.
+
+For raw `list(frame, rect, props)`, an unset height still falls back to 36 pixels.
+An explicit height with `rowPaddingY = -1` retains legacy padding. Set a
+nonnegative `rowPaddingY` to request content plus padding with that minimum.
 
 With `partialTrailingRow = true`, the next row uses exactly the same text,
 value, icon, and toggle layout as a full row. It is clipped at the viewport

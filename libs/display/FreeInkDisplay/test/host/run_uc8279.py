@@ -44,7 +44,8 @@ class EpdBus {
   uint8_t command=0;
 public:
   std::vector<uint8_t> oldPlane, newPlane, lastBank, rawRegisters, lastBwBank;
-  void cmd(uint8_t c) { command=c; }
+  unsigned refreshes=0;
+  void cmd(uint8_t c) { command=c; if(c==0x12) ++refreshes; }
   void data(uint8_t) {}
   void data(const uint8_t* p, size_t n) {
     if(command == 0x20 && n == 42) lastBwBank.assign(p,p+n);
@@ -55,6 +56,11 @@ public:
     }
   }
   void cmdData(uint8_t c, const uint8_t* p, size_t n) { cmd(c); data(p,n); }
+  void sendPlaneFlippedInverted(uint8_t c, const uint8_t* p, uint16_t h, uint16_t wb) {
+    auto& dst = c == 0x10 ? oldPlane : newPlane;
+    dst.assign(p,p+size_t(h)*wb);
+    for(auto& b : dst) b = ~b;
+  }
   void sendPlaneFlipped(uint8_t c, const uint8_t* p, uint16_t h, uint16_t wb) {
     (c == 0x10 ? oldPlane : newPlane).assign(p,p+size_t(h)*wb);
   }

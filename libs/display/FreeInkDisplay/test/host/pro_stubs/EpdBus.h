@@ -27,6 +27,7 @@ class EpdBus {
   void fillPlane(uint8_t c, uint8_t v, uint16_t h, uint16_t wb) {
     cmd(c); beginTxn(); writes.back().bytes.assign(size_t(h)*wb,v); endTxn();
   }
+  void cmdData2(uint8_t c, uint8_t a, uint8_t b) { cmd(c); data(a); data(b); }
   void cmdData(uint8_t c, const uint8_t* p, uint16_t n) { cmd(c); data(p,n); }
   void reset(uint16_t=0) {}
   void waitBusy(const char* =nullptr) { assert(!transaction); ++waits; }

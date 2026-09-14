@@ -35,6 +35,20 @@ int main() {
     assert(bus.oldPlane == bw && bus.newPlane == bw);
     assert(bus.lastBwBank == std::vector<uint8_t>(kUc8279X3_BwGc[0]+1, kUc8279X3_BwGc[0]+43));
   }
+  for (auto fallback : {RefreshMode::Half, RefreshMode::Fast}) {
+    const auto before = bus.refreshes;
+    driver.beginGrayscale(bus, bw.data(), GrayscaleMode::Direct, fallback, false);
+    driver.copyGrayscaleLsb(bus, lsb.data());
+    driver.copyGrayscaleMsb(bus, msb.data());
+    assert(bus.refreshes == before);
+    assert(bus.oldPlane == lsb && bus.newPlane == msb);
+    driver.displayGray(bus, bw.data(), false, nullptr, true);
+    assert(bus.refreshes == before + 1);
+    assert(bus.lastBank == std::vector<uint8_t>(kUc8279X3_Xth4[0], kUc8279X3_Xth4[0] + 49));
+    driver.cleanupGrayscaleBuffers(bus, bw.data());
+    driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, true);
+    assert(bus.oldPlane == bw && bus.newPlane == bw);
+  }
   driver.deepSleep(bus);
   driver.begin(bus);
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);

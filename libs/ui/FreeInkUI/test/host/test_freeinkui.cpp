@@ -1097,6 +1097,122 @@ void testListSectionHeadingPreview() {
   }
 }
 
+// Exercise Screen's public path: resolving navigation and rendering separately
+// must not let the generic two-line control token inflate single-line lists.
+void testScreenListContentSizing() {
+  class FontDrawTarget : public ListPreviewDrawTarget {
+   public:
+    int16_t lineHeight(FontId font) const override { return font == FONT_SLOT_BODY ? 29 : 24; }
+  };
+  for (const bool touch : {false, true}) {
+    FontDrawTarget draw;
+    DeviceContext device = makeDevice(200, 220);
+    device.hasTouch = touch;
+    InputSnapshot input;
+    InteractionBuffer<16> hits;
+    Frame<16> frame(draw, device, input, hits);
+    const ThemeTokens theme = themeTokensForLineHeight(29);
+    CHECK_EQ(theme.rowHeight, 66); // unrelated controls keep their sizing
+    Screen<16> screen(frame, theme);
+    ListItem items[10]{};
+    for (int i = 0; i < 10; ++i) {
+      items[i].label = "Font family";
+      items[i].actionValue = static_cast<int16_t>(i);
+    }
+    ListProps props;
+    props.items = items;
+    props.count = 10;
+    props.action = 4;
+    props.labelText = theme.smallText;
+    props.labelText.maxLines = 2;
+    props.scrollIndicator = false;
+    props.partialTrailingRow = true;
+    ListNav nav;
+    screen.syncListViewport(nav, props, props.count, 1);
+    CHECK_EQ(props.rowHeight, touch ? 56 : 32);
+    CHECK_EQ(props.rowPaddingY, touch ? 8 : 4);
+    CHECK_EQ(props.rowGap, touch ? 6 : 0);
+    CHECK_EQ(nav.visibleRows, touch ? 3 : 6);
+    screen.list(props);
+    CHECK_EQ(nav.drawnRows, touch ? 3 : 6);
+    CHECK_EQ(hits.count(), touch ? 3u : 6u);
+    CHECK_EQ(hits.data()[0].rect.height, props.rowHeight);
+    // A swipe starts at the first not-fully-visible item, using the same
+    // resolved policy on the next frame (including the tab selection offset).
+    const int next = nav.inputPageRows();
+    nav.requestScroll(next);
+    screen.syncListViewport(nav, props, props.count, 1);
+    // Near the tail, navigation may overlap to fill the page, but cannot
+    // advance past the previewed item.
+    CHECK(props.topIndex <= next);
+    InteractionBuffer<16> nextHits;
+    Frame<16> nextFrame(draw, device, input, nextHits);
+    Screen<16> nextScreen(nextFrame, theme);
+    nextScreen.list(props);
+    bool nextSelectable = false;
+    for (size_t i = 0; i < nextHits.count(); ++i)
+      nextSelectable |= nextHits.data()[i].value == next;
+    CHECK(nextSelectable);
+
+    ListProps books;
+    books.labelText = theme.bodyText;
+    books.labelText.maxLines = 1;
+    books = screen.resolveListProps(books);
+    ListItem book;
+    book.label = "Book";
+    book.subtitle = "Author";
+    CHECK_EQ(measureListRow(draw, nullptr, 200, books, book).height, touch ? 69 : 61);
+    books.rowHeight = 80; // explicit minimum remains supported
+    CHECK_EQ(screen.resolveListProps(books).rowHeight, 80);
+    // Wrapping grows only the row that needs it, using the smaller font.
+    ListItem wrapped;
+    wrapped.label = "A font family name that wraps onto two lines";
+    CHECK_EQ(measureListRow(draw, nullptr, 160, props, wrapped).height, touch ? 64 : 56);
+  }
+}
+
+// Crosspoint supplies its non-touch theme row height through the shared
+// minimum. Small fonts must not shrink those rows back to content-only size.
+void testScreenListThemeMinimum() {
+  class FontDrawTarget : public FakeDrawTarget {
+   public:
+    int16_t lineHeight(FontId) const override { return 24; }
+  };
+  for (const int minimum : {40, 42}) {
+    FontDrawTarget draw;
+    DeviceContext device = makeDevice(200, 210);
+    device.hasTouch = false;
+    InputSnapshot input;
+    InteractionBuffer<16> hits;
+    Frame<16> frame(draw, device, input, hits);
+    ThemeTokens theme;
+    theme.listMinRowHeight = static_cast<int16_t>(minimum);
+    Screen<16> screen(frame, theme);
+    ListItem items[8]{};
+    for (int i = 0; i < 8; ++i) {
+      items[i].label = "Font family";
+      items[i].actionValue = static_cast<int16_t>(i);
+    }
+    ListProps props;
+    props.items = items;
+    props.count = 8;
+    props.action = 4;
+    props.partialTrailingRow = true;
+    props.labelText.maxLines = 2;
+    ListNav nav;
+    screen.syncListViewport(nav, props, props.count);
+    CHECK_EQ(props.rowHeight, minimum);
+    CHECK_EQ(nav.visibleRows, 5);
+    screen.list(props);
+    CHECK_EQ(nav.drawnRows, 5);
+    CHECK_EQ(hits.count(), 5u);
+    CHECK_EQ(hits.data()[0].rect.height, minimum);
+    ListItem wrapped;
+    wrapped.label = "A font family name that wraps onto two lines";
+    CHECK_EQ(measureListRow(draw, nullptr, 160, props, wrapped).height, 56);
+  }
+}
+
 void testListMixedFontTouchDensity() {
   class LibraryDrawTarget : public FakeDrawTarget {
    public:
@@ -4549,6 +4665,8 @@ int main() {
   testListDeferredInput();
   testListConcurrentScrollRequests();
   testListSectionHeadingPreview();
+  testScreenListContentSizing();
+  testScreenListThemeMinimum();
   testListMixedFontTouchDensity();
   testListExactFitAndPreviewGeometry();
   testListPreviewPixels();
