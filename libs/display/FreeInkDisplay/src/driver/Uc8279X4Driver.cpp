@@ -5,6 +5,17 @@
 #include <esp_heap_caps.h>
 #include <string.h>
 
+// GRS diagnostics for grayscale refresh stage tracing (device-visible
+// Serial.printf). 0 for production; 1 for stage-level logging.
+#ifndef FREEINK_UC8279X4_GRS_DIAG
+#define FREEINK_UC8279X4_GRS_DIAG 0
+#endif
+#if FREEINK_UC8279X4_GRS_DIAG
+#define GRS_LOG(...) Serial.printf(__VA_ARGS__)
+#else
+#define GRS_LOG(...) ((void)0)
+#endif
+
 #include "../lut/Uc8279X3Luts.h"
 
 // Orientation of the visible-row stream, switchable per build for field A/B.
@@ -307,9 +318,11 @@ void Uc8279X4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
   // continuously (like the UC8179 sibling), so the periodic Half scrub works
   // without a full flash. Same guard as UC8179.
   if (mode == RefreshMode::Fast && _redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear) {
+    GRS_LOG("[GRS] display: Fast + redrive -> grayscale transition (no OTP GC)\n");
     transitionGrayscaleBase(bus, fb, turnOff);
     return;
   }
+  GRS_LOG("[GRS] display: mode=%d redrive=%d -> ordinary B/W\n", static_cast<int>(mode), _redriveAfterGray);
   displayStart(bus, fb, prev, mode, turnOff);
   displayFinish(bus, fb);
 }
@@ -495,6 +508,7 @@ void Uc8279X4Driver::startBwRefresh(EpdBus& bus, bool fast) {
   bus.cmd(CMD_PANEL_SETTING);
   bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // REG cleared -> OTP (0x13)
   bus.data(_cfg.psr1);
+  GRS_LOG("[GRS] CMD_DISPLAY_REFRESH: B/W %s\n", fast ? "DU (partial)" : "GC (full/half)");
   bus.cmd(CMD_DISPLAY_REFRESH);
   // Confirm the waveform started (BUSY dropped) before returning, so
   // displayFinish() only rides out the completion edge.
@@ -530,6 +544,7 @@ void Uc8279X4Driver::requestResync(uint8_t settlePasses) {
   _absoluteInput = false;
   _directGrayPass = false;
   (void)settlePasses;
+  GRS_LOG("[GRS] requestResync: needFullClear=1\n");
   _needFullClear = true;
 }
 
@@ -557,6 +572,7 @@ void Uc8279X4Driver::deepSleep(EpdBus& bus) {
 // plane1/MSB -> DTM2 (0x13).
 void Uc8279X4Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                     bool turnOff) {
+  GRS_LOG("[GRS] beginGrayscale: mode=%d fallback=%d\n", static_cast<int>(mode), static_cast<int>(fallback));
   _grayImagePass = false;
   _absoluteInput = false;
   _directGrayPass = false;
@@ -615,7 +631,12 @@ void Uc8279X4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   {
     uint32_t grayPx = 0;
     for (uint32_t i = 0; i < _bufferSize; i++) grayPx += __builtin_popcount(msb[i]);
-    _grayImagePass = grayPx * 100u > _bufferSize * 8u * FREEINK_UC8279X4_QUALITY_COVERAGE_PCT;
+    const uint32_t totalPx = _bufferSize * 8u;
+    const uint32_t threshold = totalPx * FREEINK_UC8279X4_QUALITY_COVERAGE_PCT;
+    _grayImagePass = grayPx * 100u > threshold;
+    GRS_LOG("[GRS] copyGrayscaleMsb: grayPx=%u totalPx=%u coverage=%u%% threshold=%u%% -> %s\n", grayPx, totalPx,
+            static_cast<unsigned>(grayPx * 100u / totalPx), FREEINK_UC8279X4_QUALITY_COVERAGE_PCT,
+            _grayImagePass ? "IMAGE (quality)" : "TEXT (stock AA)");
   }
   if (_absoluteGrayPlanes && _grayBase != nullptr) {
     // plane1 = plane0 ^ maskMsb (streamed inverted). Then recover the B/W base
@@ -640,7 +661,10 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
   bus.data(_cfg.psr0);  // 0x33: REG=1, external LUT
   bus.data(_cfg.psr1);
   // Complete image planes need four tones; sparse overlay AA keeps the short stock bank.
-  if (_directGrayPass || _absoluteInput || factoryMode || _grayImagePass) {
+  const bool qualityBank = (_directGrayPass || _absoluteInput || factoryMode || _grayImagePass);
+  GRS_LOG("[GRS] displayGray: direct=%d absolute=%d factory=%d imagePass=%d -> %s bank\n", _directGrayPass,
+          _absoluteInput, factoryMode, _grayImagePass, qualityBank ? "QUALITY (four-tone)" : "STOCK AA (short)");
+  if (qualityBank) {
     for (int i = 0; i < 5; i++) {
       bus.cmd(kQualityLutReg[i]);
       bus.data(kQualityBank.data[i], GRAY_LUT_LEN);
@@ -664,6 +688,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
   bus.data(_cfg.psr0);
   bus.data(_cfg.psr1);
 
+  GRS_LOG("[GRS] CMD_DISPLAY_REFRESH: AA %s\n", _directGrayPass ? "DIRECT gray" : "overlay gray");
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy((_directGrayPass ? " 8279x4_DIRECT_GRAY_DRF" : " 8279x4_gray"));
   // Vendor production behavior: the UC8279 AA path leaves analog power enabled
@@ -708,7 +733,11 @@ void Uc8279X4Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   // state that can't run the non-flashing transition (first AA page / no valid
   // previous / pending full clear), takes a real B/W activation via display().
   // Otherwise use stock's non-flashing prev->current transition.
-  if (fallback != RefreshMode::Fast || !_grayRefreshedOnce || !_oldPlaneValid || _needFullClear) {
+  const bool useTransition = (fallback == RefreshMode::Fast && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear);
+  GRS_LOG("[GRS] displayGrayscaleBase: fallback=%d grayRefreshedOnce=%d oldPlaneValid=%d needFullClear=%d -> %s\n",
+          static_cast<int>(fallback), _grayRefreshedOnce, _oldPlaneValid, _needFullClear,
+          useTransition ? "TRANSITION (non-flashing)" : "REAL B/W display()");
+  if (!useTransition) {
     display(bus, fb, nullptr, fallback, turnOff);
     return;
   }
@@ -717,6 +746,7 @@ void Uc8279X4Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
 
 void Uc8279X4Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff) {
   if (!fb) return;
+  GRS_LOG("[GRS] transitionGrayscaleBase: non-flashing prebw settle + new DTM1/DTM2\n");
   // Snapshot the new B/W base for the AA fold that follows.
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
@@ -785,6 +815,7 @@ void Uc8279X4Driver::runGrayscalePrecondition(EpdBus& bus) {
   }
 
   powerOnIfNeeded(bus, " 8279x4_gray_pre_PON");
+  GRS_LOG("[GRS] CMD_DISPLAY_REFRESH: AA-pre-BW(mid) settle\n");
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" 8279x4_gray_pre_DRF");
   bus.cmd(CMD_PARTIAL_OUT);
@@ -797,10 +828,12 @@ void Uc8279X4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
   if (!bw) {
+    GRS_LOG("[GRS] cleanupGrayscaleBuffers: bw=NULL -> invalidate state, next BW = FULL\n");
     _needFullClear = true;
     _oldPlaneValid = false;
     return;
   }
+  GRS_LOG("[GRS] cleanupGrayscaleBuffers: RAM-only (DTM1 <- bw), no display refresh\n");
   // Re-seed the OLD plane (0x10) with the clean B/W frame the reader restored —
   // same rationale as the UC8179 sibling. (displayGray already restored the base
   // to both planes; this covers callers that reach cleanup by another route.)
