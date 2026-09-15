@@ -37,3 +37,14 @@ with tempfile.TemporaryDirectory(prefix="freeink-pro-test-") as directory:
         subprocess.run(command + ["-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
         subprocess.run([str(exe), "sticky"], check=True)
+
+    exe = root / "diag"
+    command = [os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
+               "-Wno-unused-parameter", "-Wno-unused-function", "-DBOARD_HAS_PSRAM=1",
+               "-DARDUINO=1", "-DFREEINK_UC8279X4_GRS_DIAG=1",
+               "-I"+str(root), "-I"+str(root / "include")]
+    command += [str(HERE / "test_pro.cpp"), str(root / "src/FreeInkDisplay.cpp")]
+    command += [str(root / f"src/driver/{name}Driver.cpp") for name in drivers]
+    subprocess.run(command + ["-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
+    subprocess.run([str(exe), "sticky"], check=True)
