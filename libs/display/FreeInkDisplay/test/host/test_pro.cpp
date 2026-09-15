@@ -418,6 +418,19 @@ static void testUc8179GrayShadeSplit() {
     expected[2] = 1;
     expected[3] = 2;
     assert(dark->bytes == expected);
+    std::vector<size_t> pllWrites;
+    size_t refresh = bus.writes.size();
+    for (size_t i = 0; i < bus.writes.size(); ++i) {
+      if (bus.writes[i].command == 0x30 && bus.writes[i].bytes.size() == 1) pllWrites.push_back(i);
+      if (bus.writes[i].command == 0x12) refresh = i;
+    }
+    if (mode == GrayscaleMode::Absolute) {
+      assert(pllWrites.size() == 2);
+      assert(bus.writes[pllWrites[0]].bytes[0] == 0x05 && bus.writes[pllWrites[1]].bytes[0] == 0x06);
+      assert(pllWrites[0] < refresh && refresh < pllWrites[1]);
+    } else {
+      assert(pllWrites.empty());
+    }
   }
   free(driver._grayBase);
 }

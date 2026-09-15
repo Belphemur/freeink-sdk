@@ -17,13 +17,14 @@ namespace {
 // UC8179 command set (UC8179 datasheet + OEM UC8179_800x480 stream, via Ghidra).
 constexpr uint8_t CMD_PANEL_SETTING = 0x00;       // PSR
 constexpr uint8_t CMD_POWER_OFF = 0x02;           // POF
-constexpr uint8_t CMD_PFS = 0x03;                 // PFS (power-off sequence; PLL is 0x30)
+constexpr uint8_t CMD_PFS = 0x03;                 // PFS (power-off sequence)
 constexpr uint8_t CMD_POWER_ON = 0x04;            // PON
 constexpr uint8_t CMD_BOOSTER_SOFT_START = 0x06;  // BTST
 constexpr uint8_t CMD_DEEP_SLEEP = 0x07;          // DSLP (check code 0xA5)
 constexpr uint8_t CMD_DTM1 = 0x10;                // OLD plane in KW mode
 constexpr uint8_t CMD_DTM2 = 0x13;                // NEW plane in KW mode
 constexpr uint8_t CMD_DISPLAY_REFRESH = 0x12;     // DRF
+constexpr uint8_t CMD_PLL_CONTROL = 0x30;          // PLL
 constexpr uint8_t CMD_PARTIAL_WINDOW = 0x90;      // PTL
 constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN (partial refresh in)
 constexpr uint8_t CMD_PARTIAL_OUT = 0x92;         // PTOUT (partial refresh out)
@@ -36,6 +37,8 @@ constexpr uint8_t CMD_POWER_SAVE = 0xE3;          // PWS (VCOM/source line perio
 constexpr uint8_t CMD_TSSET = 0xE5;               // TSSET (forced temperature; frame-rate lever)
 
 constexpr uint8_t CDI_INTERVAL = 0x07;  // CDI byte1, constant
+constexpr uint8_t PLL_40_HZ = 0x05;
+constexpr uint8_t PLL_50_HZ = 0x06;
 
 // B/W-dependent grayscale (AA) waveform LUTs — stock's REAL grayscale set (the
 // short 2-frame LUTs FUN_4214ebd0 actually uploads @app1 DROM 0x3c5d8994..),
@@ -710,6 +713,15 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   bus.data(CDI_INTERVAL);
   _grayRefreshedOnce = true;
 
+  // Absolute images start from a black/white base. Give the short gray AA LUTs
+  // 25% longer to move their gray pixels toward white, then restore the stock
+  // rate so ordinary black/white refresh timing is unchanged.
+  const bool slowerImageWaveform = factoryMode && _absoluteInput;
+  if (slowerImageWaveform) {
+    bus.cmd(CMD_PLL_CONTROL);
+    bus.data(PLL_40_HZ);
+  }
+
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
     bus.waitBusy(" 8179_gray_PON");
@@ -717,6 +729,10 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" 8179_gray_split_DRF");
+  if (slowerImageWaveform) {
+    bus.cmd(CMD_PLL_CONTROL);
+    bus.data(PLL_50_HZ);
+  }
   // Deliberately remain powered. FUN_4214ec2c returns after DRF and RAM/base
   // bookkeeping without issuing command 0x02; deepSleep() still powers down.
   // Its bookkeeping writes the clean B/W base to BOTH DTM1 and DTM2. Besides
