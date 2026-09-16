@@ -652,6 +652,14 @@ struct SensorsConfig {
   uint8_t i2cBus = 0;        // 0 = Wire, 1 = Wire1 on multi-bus SoCs
   RtcType rtcType = RtcType::None;
   ImuType imuType = ImuType::None;
+  // IMU mount correction, applied to raw accel + gyro samples so Imu::read()
+  // reports a board-independent frame: gyro X = the portrait left/right tilt
+  // axis, gyro Y = the landscape one (the X3/X4 convention existing consumers
+  // assume). swapXY first (IMU rotated 90° on the PCB), then per-axis sign
+  // flip — same ordering as TouchConfig's swapXY/flip mapping.
+  bool imuSwapXY = false;
+  bool imuFlipX = false;
+  bool imuFlipY = false;
 };
 
 // How the panel is mounted relative to the driver's native scan. Any board injects
@@ -1473,7 +1481,10 @@ constexpr BoardProfile STICKY = {
     {MicInput::Pdm, 19, 20, 38, true},
     // Sensors on the shared sensor I2C bus (SDA1/SCL0, same as the fuel gauge):
     // PCF8563 RTC (0x51), SHT40 temp/humidity (0x44), LSM6DS3TR-C IMU (0x6A).
-    {1, 0, 400000, 0x51, 0x44, 0x6A, 1, RtcType::Pcf8563, ImuType::Lsm6ds3},
+    // imuSwapXY: the IMU sits 90° rotated vs the X3-frame convention — field
+    // report: left/right tilt gestures landed on the up/down axis. Flip signs
+    // pending hardware validation of gesture direction.
+    {1, 0, 400000, 0x51, 0x44, 0x6A, 1, RtcType::Pcf8563, ImuType::Lsm6ds3, true},
     1.2f,  // uiScale: touch device, 3.97" 800x480 — bump chrome to finger size
     // Power latch: PWR_HOLD GPIO45 + PWR_LOCK GPIO46, driven HIGH first thing in
     // boot (the vendor demo's first init step) — see holdPowerRails().

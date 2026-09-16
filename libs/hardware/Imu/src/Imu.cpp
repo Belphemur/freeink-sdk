@@ -199,6 +199,25 @@ bool Imu::read(Sample& out) {
   out.gx = gx * gyroScale;
   out.gy = gy * gyroScale;
   out.gz = gz * gyroScale;
+
+  // Mount correction (see SensorsConfig): swap first, then flip, applied to
+  // accel and gyro together so both report the same board frame.
+  if (s.imuSwapXY) {
+    float t = out.ax;
+    out.ax = out.ay;
+    out.ay = t;
+    t = out.gx;
+    out.gx = out.gy;
+    out.gy = t;
+  }
+  if (s.imuFlipX) {
+    out.ax = -out.ax;
+    out.gx = -out.gx;
+  }
+  if (s.imuFlipY) {
+    out.ay = -out.ay;
+    out.gy = -out.gy;
+  }
   return true;
 }
 
