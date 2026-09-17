@@ -4,3 +4,6 @@
 [submodule "libs/book/FreeInkBook/third_party/miniz"]
 	path = libs/book/FreeInkBook/third_party/miniz
 	url = https://github.com/Belphemur/esp_full_miniz.git
+[submodule "libs/font/FreeInkFont/third_party/freetype"]
+	path = libs/font/FreeInkFont/third_party/freetype
+	url = https://github.com/freetype/freetype.git

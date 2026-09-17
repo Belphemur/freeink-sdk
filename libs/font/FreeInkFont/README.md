@@ -61,18 +61,22 @@ outlines).
 
 - **`TtfFont`** — stb_truetype. Small, no extra deps; renders a font's default
   master only (no variable-font axes).
-- **`FtFont`** — FreeType (vendored under `third_party/freetype`). Reads OpenType
-  **variable-font axes** (real bold from the `wght` axis, real/oblique italic),
-  streams large CJK faces, and does GPOS/kerning. Use this for variable fonts,
-  multi-weight families, or CJK on constrained RAM. Both implement the same
-  `RasterFont` interface, so consumers pick a backend without other changes.
+- **`FtFont`** — FreeType (git submodule `third_party/freetype`, official
+  `github.com/freetype/freetype` mirror, pinned to a `VER-2-13-3`-style tag).
+  The curated build (module list and options) lives in
+  `freetype-config/include/`, which shadows FreeType's own
+  `include/freetype/config/` — do not edit headers inside the submodule. Reads
+  OpenType **variable-font axes** (real bold from the `wght` axis,
+  real/oblique italic), streams large CJK faces, and does GPOS/kerning. Use
+  this for variable fonts, multi-weight families, or CJK on constrained RAM.
+  Both implement the same `RasterFont` interface, so consumers pick a backend
+  without other changes.
 
 ### FreeType attribution (FTL)
 
-`third_party/freetype` is a curated build of **FreeType** (https://freetype.org),
-used under the **FreeType License (FTL)** — see `third_party/freetype/FTL.TXT`.
-Per the FTL, products that include this library must credit FreeType in their
-documentation:
+FreeType (https://freetype.org) is used under the **FreeType License (FTL)** —
+see `third_party/freetype/docs/FTL.TXT` in the submodule. Per the FTL, products
+that include this library must credit FreeType in their documentation:
 
 > Portions of this software are copyright © The FreeType Project
 > (www.freetype.org). All rights reserved.

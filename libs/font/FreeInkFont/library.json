@@ -8,7 +8,11 @@
   "platforms": "*",
   "frameworks": "*",
   "build": {
-    "flags": ["-I third_party/stb", "-I third_party/freetype/include"]
+    "flags": [
+      "-I freetype-config/include",
+      "-I third_party/stb",
+      "-I third_party/freetype/include"
+    ]
   },
   "license": "MIT",
   "export": {"exclude": ["test"]}
