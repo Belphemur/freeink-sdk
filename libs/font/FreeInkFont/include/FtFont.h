@@ -65,6 +65,13 @@ class FtFont : public RasterFont {
 
   bool hasGlyph(uint32_t codepoint) const override;
 
+  // Metrics-only ink bounds: see RasterFont::glyphBounds. Loads the outline
+  // (no render) and reads the glyph metrics. The box is rounded outward and
+  // padded so it stays ⊇ the rasterized bitmap under hinting rounding and
+  // faux-bold emboldening. Returns false for missing glyphs / unready faces.
+  bool glyphBounds(uint32_t codepoint, uint16_t sizePx, int16_t& xoff, int16_t& yoff, uint16_t& width,
+                   uint16_t& height) const override;
+
   int16_t advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) override;
   int16_t lineHeight(uint16_t sizePx) override;
   int16_t ascent(uint16_t sizePx) override;

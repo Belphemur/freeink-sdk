@@ -8,6 +8,8 @@
 
 #include "FontAlloc.h"
 
+#include <limits>
+
 namespace freeink {
 namespace font {
 
@@ -174,6 +176,65 @@ void FtFont::ensureSize(const uint16_t sizePx) {
 bool FtFont::hasGlyph(const uint32_t codepoint) const {
   if (!ready_) return false;
   return FT_Get_Char_Index(static_cast<FT_Face>(face_), codepoint) != 0;
+}
+
+bool FtFont::glyphBounds(const uint32_t codepoint, const uint16_t sizePx, int16_t& xoff, int16_t& yoff,
+                         uint16_t& width, uint16_t& height) const {
+  if (!ready_) return false;
+  // ensureSize only mutates the face's pixel size (the pointee of face_) plus
+  // sizePx_, so route the size change through a const_cast — the glyph data
+  // itself is untouched.
+  const_cast<FtFont*>(this)->ensureSize(sizePx);
+  auto face = static_cast<FT_Face>(face_);
+  if (FT_Get_Char_Index(face, codepoint) == 0) return false;
+  // Outline load only: FreeType computes the metrics, no pixels are generated.
+  if (FT_Load_Char(face, codepoint, FT_LOAD_DEFAULT) != 0) return false;
+  // Control box of the loaded outline in 26.6. Use the outline cbox rather
+  // than glyph->metrics: the cbox reflects the FT_Set_Transform shear applied
+  // for faux italic, which the metrics fields do not. Control points bound
+  // the on-curve ink from outside, so the cbox ⊇ the rasterized bitmap.
+  FT_BBox cbox;
+  FT_Outline_Get_CBox(&face->glyph->outline, &cbox);
+  FT_Pos x0 = cbox.xMin;
+  FT_Pos x1 = cbox.xMax;
+  FT_Pos y1 = cbox.yMax;             // top edge above baseline
+  FT_Pos y0 = cbox.yMin;             // bottom edge (negative = below baseline)
+  // The rendered bitmap can differ from the outline by up to a pixel of
+  // hinting rounding, and faux bold (FT_Outline_Embolden in rasterize) grows
+  // the outline by the stroke strength, so pad by 1 px per side plus the
+  // embolden allowance to keep the documented invariant that the glyphBounds
+  // box contains the rasterize box.
+  FT_Pos pad = 64;  // hinting-rounding allowance
+  if (emboldenBold_) pad += static_cast<FT_Pos>(sizePx) * 32 / 26;  // strength/2
+  x0 -= pad;
+  x1 += pad;
+  y0 -= pad;
+  y1 += pad;
+  // Convert to whole pixels rounding OUTWARD (26.6 → px): floors on the
+  // left/bottom edges, ceils on the right/top. Arithmetic shift = floor, so
+  // (v + 63) >> 6 is ceil for negative v too.
+  const FT_Pos x0px = x0 >> 6;
+  const FT_Pos x1px = (x1 + 63) >> 6;
+  const FT_Pos topPx = (y1 + 63) >> 6;
+  const FT_Pos botPx = y0 >> 6;
+  const FT_Pos w = x1px - x0px;
+  const FT_Pos h = topPx - botPx;
+  const FT_Pos yoffPos = -topPx;
+  // The public contract narrows to int16 offsets and uint16 extents; reject
+  // boxes that cannot be represented instead of letting the casts wrap
+  // (reachable via a huge sizePx).
+  constexpr FT_Pos kOffMin = std::numeric_limits<int16_t>::min();
+  constexpr FT_Pos kOffMax = std::numeric_limits<int16_t>::max();
+  constexpr FT_Pos kExtentMax = std::numeric_limits<uint16_t>::max();
+  if (x0px < kOffMin || x0px > kOffMax || yoffPos < kOffMin || yoffPos > kOffMax || w > kExtentMax ||
+      h > kExtentMax) {
+    return false;
+  }
+  xoff = static_cast<int16_t>(x0px);
+  yoff = static_cast<int16_t>(yoffPos);
+  width = static_cast<uint16_t>(w);
+  height = static_cast<uint16_t>(h);
+  return true;
 }
 
 int16_t FtFont::advance(const uint32_t codepoint, const uint16_t sizePx, uint8_t) {
