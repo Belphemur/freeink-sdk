@@ -88,11 +88,14 @@ const uint8_t kXtfPreBwMid[5][PREBW_LUT_LEN + 1] = {
 };
 
 const GrayLut* selectAaLuts() {
-  // LUT_VER stored by the boot probe. 0x02 has its own table; 0x68 is the newer
-  // set. Reserved 0x69 (and anything unknown) falls back to the 0x68 bytes —
-  // the reference defines no AA waveform for it, and its init/built-in paths
-  // are identical.
-  return BoardConfig::ACTIVE.displayControllerVariant == 0x02 ? kXtfAa02 : kXtfAa68;
+  // LUT_VER stored by the boot probe. Stock's panel LUT registry (X4 Pro
+  // 260917 build, table @0x3c1adbd4 + hardcoded bank selects in its UC8279
+  // refresh) keys 0x02/0x03 to the QY bank and 0x68/0x69 to the ZHX bank;
+  // anything else unknown keeps the existing fallback to the ZHX bytes. 0x67
+  // never reaches this: grayscaleCapabilities() reports unsupported for it
+  // (stock ships no external-LUT tables for that id).
+  const uint8_t v = BoardConfig::ACTIVE.displayControllerVariant;
+  return (v == 0x02 || v == 0x03) ? kXtfAa02 : kXtfAa68;
 }
 
 // Four-tone grayscale bank, built at compile time by time-scaling the X3
@@ -570,6 +573,20 @@ void Uc8279X4Driver::deepSleep(EpdBus& bus) {
 // black=(0,0) and white=(1,1) are distinct buckets (the earlier raw-delta path
 // conflated them → white-text ghosting). plane0/LSB -> DTM1 (0x10),
 // plane1/MSB -> DTM2 (0x13).
+GrayscaleCapabilities Uc8279X4Driver::grayscaleCapabilities(GrayscaleMode mode) const {
+  // LUT_VER 0x67: stock's panel LUT registry (X4 Pro 260917 build) recognizes
+  // the id but carries no external-LUT tables for it and excludes it from the
+  // ZHX fallback — that panel refreshes from OTP only, with no grayscale path.
+  // Report unsupported so callers render B/W instead of driving it with
+  // another vendor's waveform.
+  if (BoardConfig::ACTIVE.displayControllerVariant == 0x67) return {};
+  if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)
+    return {GrayscaleEncoding::AbsolutePlanes,
+            mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate, false, false, false};
+  if (mode != GrayscaleMode::Overlay) return {};
+  return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
+}
+
 void Uc8279X4Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                     bool turnOff) {
   GRS_LOG("[GRS] beginGrayscale: mode=%d fallback=%d\n", static_cast<int>(mode), static_cast<int>(fallback));

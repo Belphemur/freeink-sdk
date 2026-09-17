@@ -461,7 +461,11 @@ bool applyXteinkDisplayController() {
     probeX3DisplayController(p, ver, nullptr);
     const uint8_t id = ver[2];
     const bool is8179 = id == 0x01;
-    const bool is8279 = id == 0x02 || id == 0x68 || id == 0x69;
+    // 0x03 and 0x67 come from the X4 Pro 260917 stock build's panel LUT
+    // registry: 0x03 is a QY-class UC8279 sharing the 0x02 tables; 0x67 is a
+    // UC8279 stock drives from OTP only (no external-LUT set, excluded from
+    // the ZHX fallback — the driver reports grayscale unsupported for it).
+    const bool is8279 = id == 0x02 || id == 0x03 || id == 0x67 || id == 0x68 || id == 0x69;
     if (Serial)
       Serial.printf("[%lu] [XTDET] X4C: screenType unset, VER probe id=%02X -> %s\n", millis(), id,
                     is8179 ? "UC8179" : is8279 ? "UC8279" : "unrecognized -> UC8279 default");
@@ -500,17 +504,20 @@ bool applyXteinkDisplayController() {
     case BoardConfig::DisplayController::SSD1677: {
       // X4-family boards can carry either UltraChip part; VER byte2 (LUT_VER)
       // tells them apart per the vendor reference: 0x01 = UC8179, 0x02/0x68 =
-      // UC8279 (800x480 variant), 0x69 = reserved UC8279. Anything else is
+      // UC8279 (800x480 variant), 0x69 = reserved UC8279. The X4 Pro 260917
+      // stock build's panel LUT registry adds 0x03 (QY-class, shares the 0x02
+      // tables) and 0x67 (UC8279 driven from OTP only — no external-LUT set;
+      // the driver reports grayscale unsupported for it). Anything else is
       // unrecognized — take the UC8179 driver, the variant every unit benched
       // so far has carried (observed VER=00 00 01 FF FF).
       const uint8_t lutVer = ver[2];
       g_probeDiag.promoted = true;
-      if (lutVer == 0x02 || lutVer == 0x68 || lutVer == 0x69) {
+      if (lutVer == 0x02 || lutVer == 0x03 || lutVer == 0x67 || lutVer == 0x68 || lutVer == 0x69) {
         BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
         BoardConfig::ACTIVE.displayControllerVariant = lutVer;
         if (Serial)
           Serial.printf("[%lu] [XTDET] promoted SSD1677 -> UC8279 800x480 (LUT_VER=%02X%s)\n", millis(), lutVer,
-                        lutVer == 0x69 ? ", reserved" : "");
+                        lutVer == 0x69 ? ", reserved" : lutVer == 0x67 ? ", OTP-only" : "");
       } else {
         BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8179;
         BoardConfig::ACTIVE.displayControllerVariant = lutVer;

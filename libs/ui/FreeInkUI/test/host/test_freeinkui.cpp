@@ -837,6 +837,61 @@ void testListItemsWindowSkipsUnavailablePartialPreview() {
   CHECK(!draw.drewForbiddenLabel);
 }
 
+// rowProvider resolves rows on demand into list()'s scratch slot: no ListItem
+// array exists at all, only the viewport's rows are ever requested, and
+// absolute indexing/interactions match the full-array form. The provider may
+// reuse one scratch buffer per call — each row is consumed before the next
+// provider call.
+void testListRowProvider() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<32> interactions;
+  Frame<32> frame(draw, device, input, interactions);
+
+  struct ProviderState {
+    char scratch[16];
+    int calls = 0;
+    uint16_t minIndex = 0xFFFF;
+    uint16_t maxIndex = 0;
+  } state;
+
+  ListProps props;
+  props.rowProvider = [](void* ctx, uint16_t index, ListItem& item) {
+    auto* s = static_cast<ProviderState*>(ctx);
+    ++s->calls;
+    if (index < s->minIndex) s->minIndex = index;
+    if (index > s->maxIndex) s->maxIndex = index;
+    std::snprintf(s->scratch, sizeof(s->scratch), "row%u", index);
+    item.label = s->scratch;
+    item.actionValue = static_cast<int16_t>(index);
+  };
+  props.rowProviderCtx = &state;
+  props.count = 100;
+  props.topIndex = 12;
+  props.selectedIndex = 14;
+  props.action = 9;
+  props.rowHeight = 40;
+  list(frame, Rect{0, 0, 480, 200}, props);  // fits 5 rows: absolute 12..16
+
+  CHECK_EQ(interactions.count(), 5u);
+  CHECK_EQ(interactions.data()[0].value, 12);
+  CHECK_EQ(interactions.data()[4].value, 16);
+  // Only the viewport's rows were materialized, one provider call each.
+  CHECK_EQ(state.calls, 5);
+  CHECK_EQ(state.minIndex, 12u);
+  CHECK_EQ(state.maxIndex, 16u);
+
+  // Tapping the third visible row resolves to absolute item 14.
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 100;
+  tap.touchY = 90;
+  ActionEvent event = interactions.route(tap);
+  CHECK_EQ(event.action, 9);
+  CHECK_EQ(event.value, 14);
+}
+
 void testListInlineSectionHeadingWindow() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -4657,6 +4712,7 @@ int main() {
   testListVirtualization();
   testListClampsBadTopIndex();
   testListItemsWindow();
+  testListRowProvider();
   testListItemsWindowStopsBeforePastEndMeasurement();
   testListItemsWindowSkipsUnavailablePartialPreview();
   testListInlineSectionHeadingWindow();

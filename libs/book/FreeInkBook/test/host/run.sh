@@ -69,7 +69,7 @@ python3 ../fixtures/gen_omnibus.py "$BUILD_DIR/fixtures/omnibus.epub" 1700 >/dev
 # include path for third_party/expat is dropped so <expat.h> resolves to the
 # system headers (mirrors the CrossPoint firmware consumption mode; verified
 # by checking the linked XML_* symbols match the system expat).
-INCLUDES="-I../../include -I../../third_party/miniz/include -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb"
+INCLUDES="-I../../include -I../../third_party/miniz/include -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb -I../../../../font/FreeInkFont/include -I../../../../font/FreeInkFont/third_party/stb"
 VENDOR_SRCS="miniz_impl miniz_cores_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl"
 if [ -n "$FREEINK_BOOK_EXTERNAL_EXPAT" ]; then
   CC_FLAGS="-O1 -std=c99 -DFREEINK_BOOK_EXTERNAL_EXPAT=1 $INCLUDES"
@@ -88,7 +88,7 @@ done
 CORE_SRCS="../../src/FreeInkBook.cpp ../../src/BookCatalog.cpp ../../src/epub/ZipCatalog.cpp ../../src/epub/XmlSax.cpp \
   ../../src/epub/PackageParsers.cpp ../../src/epub/ImageProbe.cpp ../../src/text/EntityFilter.cpp \
   ../../src/text/Hyphenator.cpp ../../src/css/Css.cpp ../../src/layout/ChapterLayout.cpp \
-  ../../src/cache/PageCache.cpp ../../src/render/ImageRenderer.cpp ../../src/render/TtfFont.cpp ../../src/render/PageRenderer.cpp"
+  ../../src/cache/PageCache.cpp ../../src/render/ImageRenderer.cpp ../../../../font/FreeInkFont/src/TtfFont.cpp ../../src/render/PageRenderer.cpp"
 
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_freeinkbook.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \

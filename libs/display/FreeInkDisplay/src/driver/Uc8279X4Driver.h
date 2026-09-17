@@ -93,13 +93,10 @@ class Uc8279X4Driver : public PanelDriver {
   // the absolute fold + post-DRF base restore (base = plane0 & plane1) fixes
   // both. Single-byte CDI (constant 0x97), PSR rewritten before DRF, panel LEFT
   // POWERED (vendor).
-  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
-    if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)
-      return {GrayscaleEncoding::AbsolutePlanes,
-              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate, false, false, false};
-    if (mode != GrayscaleMode::Overlay) return {};
-    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
-  }
+  // Defined in the .cpp: reports unsupported for LUT_VER 0x67, a variant
+  // stock's panel LUT registry (X4 Pro 260917 build) recognizes but ships no
+  // external-LUT tables for — that panel runs OTP waveforms only.
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override;
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;

@@ -57,6 +57,19 @@ struct ListProps {
   // materialized data. 0 preserves the full-array behavior for existing
   // callers.
   uint16_t itemsWindowCount = 0;
+  // Pull-based row source: when set, list() resolves each row it lays out by
+  // calling rowProvider(rowProviderCtx, index, item) into a loop-local
+  // scratch ListItem, and `items` may stay null. Nothing is materialized up
+  // front: the caller formats row `index` on demand (typically into small
+  // scratch buffers it owns) and points the item's strings there. Pointers
+  // written into the item are read within that row's layout/draw pass only,
+  // so they need to stay valid just until the next provider call. The
+  // provider runs on the render task for the handful of rows that fit the
+  // viewport, never for the rest of `count`.
+  // itemsWindowFirst/itemsWindowCount apply to the array path only and are
+  // ignored when a provider is set.
+  void (*rowProvider)(void *ctx, uint16_t index, ListItem &item) = nullptr;
+  void *rowProviderCtx = nullptr;
   // First item index drawn at the top of the rect. The list is virtualized:
   // only the rows that fully fit inside the rect are laid out, drawn, and
   // registered for interaction. Use listVisibleRows()/listTopIndexFor() to
@@ -477,7 +490,7 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
 
 template <size_t MaxInteractions>
 void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
-  if (!props.items || props.count == 0)
+  if ((!props.items && !props.rowProvider) || props.count == 0)
     return;
   const int16_t rowH = props.rowHeight > 0 ? props.rowHeight : 36;
   const int16_t rowGap = props.rowGap < 0 ? 0 : props.rowGap;
@@ -557,10 +570,19 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     // Stop before reading the next window entry. The size/layout work below
     // dereferences `item`, so checking after it would require callers that
     // virtualize their data to provide one extra, otherwise out-of-window row.
-    if (cursorY >= rowArea.bottom() || i < props.itemsWindowFirst ||
-        (props.itemsWindowCount > 0 && i - props.itemsWindowFirst >= props.itemsWindowCount))
+    if (cursorY >= rowArea.bottom() ||
+        (!props.rowProvider &&
+         (i < props.itemsWindowFirst ||
+          (props.itemsWindowCount > 0 &&
+           i - props.itemsWindowFirst >= props.itemsWindowCount))))
       break;
-    const ListItem &item = props.items[i - props.itemsWindowFirst];
+    // One reused stack slot on the provider path; the array path keeps its
+    // zero-copy reference.
+    ListItem scratch;
+    if (props.rowProvider)
+      props.rowProvider(props.rowProviderCtx, i, scratch);
+    const ListItem &item =
+        props.rowProvider ? scratch : props.items[i - props.itemsWindowFirst];
     if (item.isHeader) {
       const int16_t pad = i != top ? props.sectionGap : 0;
       if (static_cast<int16_t>(cursorY + pad + headerH) > rowArea.bottom())
