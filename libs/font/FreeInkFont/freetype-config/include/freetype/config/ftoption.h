@@ -425,8 +425,19 @@ FT_BEGIN_HEADER
    *
    * The size in bytes of the render pool used by the scan-line converter to
    * do all of its work.
+   *
+   * FreeInkFont: 4096 instead of the 16384 default. The smooth rasterizer
+   * allocates its worker — including this pool as a TCell array — ON THE
+   * CALLER'S STACK (ftgrays.c gray_TWorker worker[1] / gray_convert_glyph
+   * TCell buffer[]), so the default 16 KB pool alone makes every
+   * FT_Load_Char/FT_Render_Glyph burn ~16 KB of task stack: unusable on
+   * MCU-class task stacks (4–32 KB) and the root cause of a stack-overflow
+   * crash chain observed on device. 4 KB pools the same rasterizer into
+   * banded chunk passes — identical output, modest CPU increase per glyph.
+   * Measured (host, 64-bit): TrueType rasterize total 18.0 KB → 5.7 KB.
+   * The Adobe CFF engine adds its own (heap-dominated) depth on top.
    */
-#define FT_RENDER_POOL_SIZE  16384L
+#define FT_RENDER_POOL_SIZE  4096L
 
 
   /**************************************************************************
