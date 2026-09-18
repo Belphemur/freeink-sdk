@@ -212,7 +212,11 @@ bool FtFont::glyphBounds(const uint32_t codepoint, const uint16_t sizePx, int16_
   auto face = static_cast<FT_Face>(face_);
   if (FT_Get_Char_Index(face, codepoint) == 0) return false;
   // Outline load only: FreeType computes the metrics, no pixels are generated.
-  if (FT_Load_Char(face, codepoint, FT_LOAD_DEFAULT) != 0) return false;
+  // NO_HINTING: hinting is unnecessary for antialiased e-ink at reading sizes
+  // (the stb backend is unhinted too), and the CFF Adobe hinting engine's
+  // interpreter has a stack-resident footprint far beyond embedded task
+  // budgets — unhinted loads never enter it.
+  if (FT_Load_Char(face, codepoint, FT_LOAD_NO_HINTING) != 0) return false;
   if (face->glyph->format != FT_GLYPH_FORMAT_OUTLINE) return false;  // bitmap strike
   // Control box of the loaded outline in 26.6. Use the outline cbox rather
   // than glyph->metrics: the cbox reflects the FT_Set_Transform shear applied
@@ -267,7 +271,7 @@ int16_t FtFont::advance(const uint32_t codepoint, const uint16_t sizePx, uint8_t
   preserveGlyphBitmap();
   ensureSize(sizePx);
   auto face = static_cast<FT_Face>(face_);
-  if (FT_Load_Char(face, codepoint, FT_LOAD_DEFAULT) != 0) return 0;
+  if (FT_Load_Char(face, codepoint, FT_LOAD_NO_HINTING) != 0) return 0;
   return static_cast<int16_t>(face->glyph->advance.x >> 6);
 }
 
@@ -303,7 +307,7 @@ const GlyphBitmap* FtFont::rasterize(const uint32_t codepoint, const uint16_t si
   ensureSize(sizePx);
   auto face = static_cast<FT_Face>(face_);
   // Faux bold defers rendering: load the outline, thicken it, then render.
-  const FT_Int32 loadFlags = emboldenBold_ ? FT_LOAD_DEFAULT : FT_LOAD_RENDER;
+  const FT_Int32 loadFlags = emboldenBold_ ? FT_LOAD_NO_HINTING : FT_LOAD_RENDER | FT_LOAD_NO_HINTING;
   if (FT_Load_Char(face, codepoint, loadFlags) != 0) return nullptr;
   FT_GlyphSlot s = face->glyph;
   if (emboldenBold_) {
