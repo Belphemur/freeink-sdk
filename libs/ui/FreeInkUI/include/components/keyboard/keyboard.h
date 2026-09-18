@@ -597,21 +597,11 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     // no label the table could hold — which layout comes next is the app's
     // state, not the table's.
     if (key.kind == KeyKind::Delete || key.kind == KeyKind::Lang) {
-      // Size the glyph from the label font so it reads at the same weight as
-      // neighboring key labels; the source art carries ~3px of internal
-      // margin, so the box runs slightly over the line height. Snap to an
-      // integer multiple of 16 — non-integer nearest-neighbor scaling doubles
-      // some rows of the mask and not others, which reads as a ragged
-      // upscale.
       const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;
-      const int16_t lh = frame.target().lineHeight(keyText.font);
-      const int16_t desired = static_cast<int16_t>(lh + lh / 8);
-      int16_t iconSize = static_cast<int16_t>(((desired + 8) / 16) * 16);
-      if (iconSize < 16) iconSize = 16;
       const int16_t maxSize = keyRect.height < keyRect.width ? keyRect.height : keyRect.width;
-      while (iconSize > maxSize && iconSize > 16) iconSize = static_cast<int16_t>(iconSize - 16);
-      if (iconSize > maxSize) iconSize = maxSize;
-      const BitmapRef icon = key.kind == KeyKind::Delete ? lucideDeleteIcon16() : lucideGlobeIcon32();
+      const BitmapRef icon = key.kind == KeyKind::Delete ? lucideDeleteIcon28() : lucideGlobeIcon32();
+      const int16_t nativeSize = static_cast<int16_t>(icon.width < icon.height ? icon.width : icon.height);
+      const int16_t iconSize = nativeSize < maxSize ? nativeSize : maxSize;
       frame.target().bitmap(centeredRect(keyRect, Size{iconSize, iconSize}), icon, BitmapMode::Contain, ink);
       return;
     }

@@ -3354,7 +3354,12 @@ void testQwertyKeyboardComponent() {
   CHECK_EQ(interactions.data()[10].rect.width, 53);
   CHECK_EQ(interactions.data()[19].rect.x, 0);
   CHECK_EQ(interactions.data()[19].rect.width, 53);
-  CHECK(draw.countKind(FakeDrawTarget::Op::Bitmap) >= 1u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Bitmap), 1u);
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (draw.ops[i].kind != FakeDrawTarget::Op::Bitmap) continue;
+    CHECK_EQ(draw.ops[i].rect.width, 28);
+    CHECK_EQ(draw.ops[i].rect.height, 28);
+  }
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 
   InputSnapshot tap;
@@ -3788,7 +3793,7 @@ void testHeaderLeadingButton() {
   props.title = "Settings";
   props.centered = true;
   props.borderEdges = EdgeBottom;
-  props.leadingIcon = lucideDeleteIcon16();  // any bitmap works as the icon
+  props.leadingIcon = lucideDeleteIcon28();  // any bitmap works as the icon
   props.leadingAction = 500;
   header(frame, Rect{0, 0, 240, 44}, props);
 
