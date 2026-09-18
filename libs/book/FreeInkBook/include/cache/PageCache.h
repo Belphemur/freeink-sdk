@@ -14,7 +14,8 @@
 // File format (little-endian, all fields packed):
 //   header : 'F''I''B''P' u16 version u16 reserved u32 generationHash
 //   blobs  : per page — u32 charStart, u16 runCount, u16 imageCount,
-//            u16 linkCount, u16 ruleCount, u16 rubyCount, then runs
+//            u16 linkCount, u16 ruleCount, u16 rubyCount, u16 wordCount,
+//            then runs
 //            {i16 x, i16 baselineY, u16 sizePx, u8 flags, u8 reserved,
 //             u16 textLen, bytes}, images {i16 x, i16 y, u16 w, u16 h,
 //             u16 hrefLen, bytes}, links {i16 x, i16 y, u16 w, u16 h,

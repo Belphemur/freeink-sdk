@@ -170,6 +170,11 @@ struct Page {
   const PageRuby* rubies;
   uint16_t rubyCount;
   uint32_t pageIndex;  // 0-based within the chapter
+  // Words on the page, counted by the layout engine at emit time (whitespace-
+  // token count over the paragraph text BEFORE run segmentation — justified
+  // and CJK text have no space characters inside the word-level runs, so
+  // consumers cannot recover this from the runs themselves).
+  uint16_t wordCount;
   // Chapter character offset (codepoints of extracted text) of this page's
   // first text run. Whitespace collapse and entity resolution are layout-
   // parameter independent, so this offset addresses the same place in the

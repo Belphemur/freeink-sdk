@@ -198,6 +198,15 @@ bool isCjk(uint32_t cp) {
          (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0x20000 && cp <= 0x3FFFF);
 }
 
+// Word-count units: Han ideographs and kana. Deliberately NOT Hangul (Korean
+// is a spaced script — its words come from whitespace tokens) and NOT CJK
+// punctuation/symbols. Each counted char is one word — the standard
+// word-count convention for unspaced CJK, giving plausible CJK WPM.
+bool isCjkWordChar(uint32_t cp) {
+  return (cp >= 0x3400 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x3040 && cp <= 0x30FF) ||
+         (cp >= 0x20000 && cp <= 0x3FFFF);
+}
+
 bool isLatinWordChar(uint32_t cp) {
   return (cp >= '0' && cp <= '9') || (cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z');
 }
@@ -1983,6 +1992,37 @@ class LayoutEngine : public XmlHandler {
 
     // --- emit in visual order -------------------------------------------------
     const uint32_t pageAtLineStart = pageCount_;
+    // Page word count over the line's LOGICAL paragraph range (spaces still
+    // present there — justified runs are word-level with the spaces living in
+    // the inter-run gaps, so consumers cannot count words from run text). A
+    // line starts mid-word exactly when its first char is a non-whitespace
+    // non-CJK char preceded by non-whitespace (or the paragraph-segment-flush
+    // continuation): the token spanning the boundary was counted on the
+    // previous line/page. A line split across pages by capacity attributes
+    // all its words to the page where the line starts.
+    {
+      const bool startsMidWord = (rec.start > 0 ? !isWsByte(parText_[rec.start - 1]) : pendingWordContinuation_) &&
+                                 !isWsByte(parText_[rec.start]);
+      uint16_t words = 0;
+      bool prevWs = true;
+      bool first = true;
+      for (uint32_t i = rec.start; i < rec.end;) {
+        uint32_t next = i;
+        const uint32_t cp = decodeUtf8(parText_, rec.end, next);
+        if (cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r') {
+          prevWs = true;
+        } else if (isCjkWordChar(cp)) {
+          ++words;
+          prevWs = false;
+        } else {
+          if (prevWs && !(first && startsMidWord)) ++words;
+          prevWs = false;
+        }
+        first = false;
+        i = next;
+      }
+      pageWords_ = static_cast<uint16_t>(pageWords_ + words);
+    }
     int32_t segX[64];
     for (uint32_t v = 0; v < segCount; ++v) {
       const Seg& sg = segs[order[v]];
@@ -2178,7 +2218,7 @@ class LayoutEngine : public XmlHandler {
 
   void emitPage() {
     Page page{runs_,  runCount_,  images_, imageCount_, links_,     linkCount_,
-              rules_, ruleCount_, rubies_, rubyCount_,  pageCount_, pageCharStart_};
+              rules_, ruleCount_, rubies_, rubyCount_,  pageCount_, pageWords_, pageCharStart_};
     ++pageCount_;
     if (!sink_.onPage(page)) stopParse = true;
     runCount_ = 0;
@@ -2186,6 +2226,7 @@ class LayoutEngine : public XmlHandler {
     linkCount_ = 0;
     ruleCount_ = 0;
     rubyCount_ = 0;
+    pageWords_ = 0;
     pageArena_.reset();
     pageY_ = params_.marginTop;
     // A mid-line capacity split continues the line on the next page without
@@ -2272,6 +2313,7 @@ class LayoutEngine : public XmlHandler {
   bool lastBreakShy_ = false;     // last ALLOWBREAK sat on a soft hyphen
   uint32_t parCharBase_ = 0;      // chapter chars before the current paragraph
   uint32_t pageCharStart_ = 0;    // anchor of the page being assembled
+  uint16_t pageWords_ = 0;        // words accumulated for the page being assembled
   bool pageAnchorStale_ = false;  // set by emitPage until the page's first record lands
   bool failed_ = false;
 };

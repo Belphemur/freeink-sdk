@@ -10,13 +10,15 @@ namespace book {
 
 namespace {
 
-constexpr uint16_t kFormatVersion = 6;  // v6: ruby annotation records added on top of v5's
+constexpr uint16_t kFormatVersion = 7;  // v7: per-page wordCount added to the blob header
+                                        //     (v6: ruby annotation records added on top of v5's
                                         //     per-run chapter anchoring (charStart/charLen +
                                         //     continuation layoutFlags)
                                         //     (v5: per-run anchoring; v4: rule records,
                                         //      v3: link records + anchor table)
 constexpr uint32_t kHeaderSize = 12;
-constexpr uint32_t kBlobHeaderSize = 14;  // per-page blob: charStart u32 + run/image/link/rule/ruby counts u16
+constexpr uint32_t kBlobHeaderSize = 16;  // per-page blob: charStart u32 + run/image/link/rule/ruby counts u16
+                                          // + wordCount u16
 constexpr uint32_t kFooterSize = 24;  // v3: + anchors + totalChars
 // Partial (suspended-build) footer: the final footer's five u32 fields plus
 // bytesConsumed + bytesTotal, sealed with "FIBx" instead of "FIBX". Old
@@ -200,6 +202,7 @@ bool PageCacheWriter::onPage(const Page& page) {
   putU16(head + 8, page.linkCount);
   putU16(head + 10, page.ruleCount);
   putU16(head + 12, page.rubyCount);
+  putU16(head + 14, page.wordCount);
   if (!writeRaw(head, sizeof(head))) return false;
 
   for (uint16_t r = 0; r < page.runCount; ++r) {
@@ -564,6 +567,7 @@ static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t
   const uint16_t linkCount = getU16(blob + 8);
   const uint16_t ruleCount = getU16(blob + 10);
   const uint16_t rubyCount = getU16(blob + 12);
+  const uint16_t wordCount = getU16(blob + 14);
   PageTextRun* runs = scratch.allocArray<PageTextRun>(runCount);
   if (runs == nullptr && runCount != 0) return BookStatus::OutOfMemory;
   PageImage* images = scratch.allocArray<PageImage>(imageCount);
@@ -674,6 +678,7 @@ static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t
   out->rubyCount = rubyCount;
   out->pageIndex = pageIndex;
   out->charStart = charStart;
+  out->wordCount = wordCount;
   return BookStatus::Ok;
 }
 
