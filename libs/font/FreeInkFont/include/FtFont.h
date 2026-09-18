@@ -23,6 +23,8 @@
 
 #include <stdint.h>
 
+#include <cstddef>
+
 #include "Font.h"
 
 // Opaque FreeType handles kept out of the public header.
@@ -66,9 +68,10 @@ class FtFont : public RasterFont {
   bool hasGlyph(uint32_t codepoint) const override;
 
   // Metrics-only ink bounds: see RasterFont::glyphBounds. Loads the outline
-  // (no render) and reads the glyph metrics. The box is rounded outward and
-  // padded so it stays ⊇ the rasterized bitmap under hinting rounding and
-  // faux-bold emboldening. Returns false for missing glyphs / unready faces.
+  // (no render) and takes the ink box from FT_Outline_Get_CBox. Returns false
+  // for missing glyphs, unready faces, and non-outline glyphs (e.g. embedded
+  // bitmap strikes) — callers fall back to rasterize-then-inspect. Does not
+  // disturb the previously rasterized bitmap (see preserveGlyphBitmap).
   bool glyphBounds(uint32_t codepoint, uint16_t sizePx, int16_t& xoff, int16_t& yoff, uint16_t& width,
                    uint16_t& height) const override;
 
@@ -78,12 +81,20 @@ class FtFont : public RasterFont {
   int16_t kerning(uint32_t left, uint32_t right, uint16_t sizePx, uint8_t styleFlags) override;
 
   // Rasterizes one glyph to an 8-bit alpha GlyphBitmap. Valid until the next
-  // rasterize() on this face (FreeType glyph-slot lifetime).
+  // rasterize() on this face (FreeType glyph-slot lifetime): advance() and
+  // glyphBounds() preserve the bitmap through their internal loads, so only
+  // another rasterize() invalidates it.
   const GlyphBitmap* rasterize(uint32_t codepoint, uint16_t sizePx) override;
 
  private:
   void applyVariation(int weight, bool italic);
   void ensureSize(uint16_t sizePx);
+
+  // Copies the glyph-slot bitmap (the memory rasterize() handed out) into
+  // bitmapBacking_ before an FT_Load_Char on this face would overwrite it —
+  // the RasterFont contract keeps the last rasterize() bitmap valid until the
+  // NEXT rasterize(), so advance()/glyphBounds() must not clobber it.
+  void preserveGlyphBitmap();
 
   bool finishInit(uint16_t sizePx, int weight, bool italic);  // shared tail of init/initStream
 
@@ -94,7 +105,10 @@ class FtFont : public RasterFont {
   bool obliqueShear_ = false;  // faux italic (no ital/slnt axis)
   bool emboldenBold_ = false;  // faux bold (static or no wght axis); per-glyph outline embolden
   uint16_t sizePx_ = 0;
-  GlyphBitmap glyph_{};  // last rasterized glyph (points into the FT slot buffer)
+  GlyphBitmap glyph_{};  // last rasterized glyph (pixels point into the FT slot
+                         // buffer until preserved into bitmapBacking_)
+  uint8_t* bitmapBacking_ = nullptr;  // owned copy of the last rasterized bitmap
+  size_t bitmapBackingCap_ = 0;
 };
 
 }  // namespace font

@@ -9,6 +9,7 @@
 #include "FontAlloc.h"
 
 #include <limits>
+#include <cstring>
 
 namespace freeink {
 namespace font {
@@ -69,9 +70,30 @@ void FtFont::deinit() {
   stream_ = nullptr;
   delete static_cast<StreamCtx*>(streamCtx_);
   streamCtx_ = nullptr;
+  fiFontFree(bitmapBacking_);
+  bitmapBacking_ = nullptr;
+  bitmapBackingCap_ = 0;
+  glyph_ = {};
   ready_ = false;
   sizePx_ = 0;
   obliqueShear_ = false;
+}
+
+void FtFont::preserveGlyphBitmap() {
+  if (!face_ || glyph_.pixels == nullptr || glyph_.pixels == bitmapBacking_) return;
+  auto face = static_cast<FT_Face>(face_);
+  if (face->glyph->format != FT_GLYPH_FORMAT_BITMAP) return;
+  const FT_Bitmap& bm = face->glyph->bitmap;
+  const size_t bytes = static_cast<size_t>(bm.pitch > 0 ? bm.pitch : -bm.pitch) * bm.rows;
+  if (bytes == 0) return;
+  if (bytes > bitmapBackingCap_) {
+    void* grown = fiFontRealloc(bitmapBacking_, bytes);
+    if (grown == nullptr) return;  // keep the slot pointer; contract degraded, not corrupted
+    bitmapBacking_ = static_cast<uint8_t*>(grown);
+    bitmapBackingCap_ = bytes;
+  }
+  memcpy(bitmapBacking_, bm.buffer, bytes);
+  glyph_.pixels = bitmapBacking_;
 }
 
 bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx, const int weight, const bool italic) {
@@ -181,14 +203,17 @@ bool FtFont::hasGlyph(const uint32_t codepoint) const {
 bool FtFont::glyphBounds(const uint32_t codepoint, const uint16_t sizePx, int16_t& xoff, int16_t& yoff,
                          uint16_t& width, uint16_t& height) const {
   if (!ready_) return false;
-  // ensureSize only mutates the face's pixel size (the pointee of face_) plus
-  // sizePx_, so route the size change through a const_cast — the glyph data
-  // itself is untouched.
-  const_cast<FtFont*>(this)->ensureSize(sizePx);
+  // Both ensureSize() (sizePx_) and preserveGlyphBitmap() (glyph_, bitmapBacking_)
+  // mutate state the const surface of glyphBounds promises not to touch — the
+  // glyph data itself is untouched, so route through a const_cast.
+  auto* self = const_cast<FtFont*>(this);
+  self->preserveGlyphBitmap();
+  self->ensureSize(sizePx);
   auto face = static_cast<FT_Face>(face_);
   if (FT_Get_Char_Index(face, codepoint) == 0) return false;
   // Outline load only: FreeType computes the metrics, no pixels are generated.
   if (FT_Load_Char(face, codepoint, FT_LOAD_DEFAULT) != 0) return false;
+  if (face->glyph->format != FT_GLYPH_FORMAT_OUTLINE) return false;  // bitmap strike
   // Control box of the loaded outline in 26.6. Use the outline cbox rather
   // than glyph->metrics: the cbox reflects the FT_Set_Transform shear applied
   // for faux italic, which the metrics fields do not. Control points bound
@@ -239,6 +264,7 @@ bool FtFont::glyphBounds(const uint32_t codepoint, const uint16_t sizePx, int16_
 
 int16_t FtFont::advance(const uint32_t codepoint, const uint16_t sizePx, uint8_t) {
   if (!ready_) return 0;
+  preserveGlyphBitmap();
   ensureSize(sizePx);
   auto face = static_cast<FT_Face>(face_);
   if (FT_Load_Char(face, codepoint, FT_LOAD_DEFAULT) != 0) return 0;

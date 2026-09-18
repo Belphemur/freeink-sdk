@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <vector>
 
 namespace {
 
@@ -92,6 +93,13 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "cannot load fixture %s\n", path);
     return 2;
   }
+  std::snprintf(path, sizeof(path), "%s/fonts/AtkinsonHyperlegibleNext-Regular.otf", argv[1]);
+  uint8_t* dataCff = nullptr;
+  uint32_t lenCff = 0;
+  if (!loadFile(path, &dataCff, &lenCff)) {
+    std::fprintf(stderr, "cannot load fixture %s\n", path);
+    return 2;
+  }
 
   using freeink::font::FtFont;
 
@@ -167,6 +175,47 @@ int main(int argc, char** argv) {
     CHECK(h > 12);
   }
 
+  // --- regression: rasterize() bitmap survives glyphBounds()/advance() --------
+  // RasterFont keeps the last rasterize() bitmap valid until the NEXT
+  // rasterize(); the internal FT_Load_Char in glyphBounds()/advance() would
+  // otherwise clobber the glyph slot underneath it.
+  {
+    FtFont font;
+    CHECK(font.init(data, len, 16));
+    const freeink::font::GlyphBitmap* a = font.rasterize('A', 16);
+    CHECK(a != nullptr);
+    const std::vector<uint8_t> snap(a->pixels, a->pixels + static_cast<size_t>(a->width) * a->height);
+    CHECK(!snap.empty());
+    int16_t bx = 0;
+    int16_t by = 0;
+    uint16_t bw = 0;
+    uint16_t bh = 0;
+    CHECK(font.glyphBounds('M', 16, bx, by, bw, bh));  // loads 'M' into the slot
+    CHECK(std::memcmp(snap.data(), a->pixels, snap.size()) == 0);
+    (void)font.advance('W', 16, 0);  // same hazard through advance()
+    CHECK(std::memcmp(snap.data(), a->pixels, snap.size()) == 0);
+    // Size-change path too: bounds at a new size must not disturb 'A'.
+    CHECK(font.glyphBounds('g', 24, bx, by, bw, bh));
+    CHECK(std::memcmp(snap.data(), a->pixels, snap.size()) == 0);
+    // A final rasterize() hands out the fresh glyph — different content.
+    const uint16_t aWidth = a->width;
+    const uint16_t aHeight = a->height;
+    const freeink::font::GlyphBitmap* w = font.rasterize('W', 16);
+    CHECK(w != nullptr);
+    CHECK(w->width != aWidth || w->height != aHeight ||
+          std::memcmp(snap.data(), w->pixels, snap.size()) != 0);
+  }
+
+// --- CFF OpenType (.otf, OTTO/CFF outlines): must load like the stb backend
+// does, so the FT backend is not a regression for .otf families. Requires the
+// cff+psaux modules in the curated FreeType module list.
+  {
+    FtFont font;
+    CHECK(font.init(dataCff, lenCff, 16));
+    sweepContainment(font, 16);
+    sweepContainment(font, 24);
+  }
+
   // --- rejection of garbage faces ----------------------------------------------
   {
     FtFont font;
@@ -180,6 +229,8 @@ int main(int argc, char** argv) {
   }
 
   std::free(data);
+  std::free(dataCff);
+
   std::printf("%d checks, %d failures\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;
 }
