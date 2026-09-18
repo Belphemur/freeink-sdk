@@ -36,6 +36,11 @@ struct HeaderProps {
   int16_t trailingValue = 0;
   StyleSet trailingStyles{};
   uint8_t trailingRadius = 0;
+  // Optional second trailing action. It sits directly to the left of the
+  // primary trailing button, keeping related header actions together.
+  BitmapRef trailingAdjacentIcon{};
+  ActionId trailingAdjacentAction = NO_ACTION;
+  int16_t trailingAdjacentValue = 0;
   TextStyle trailingText{};
   bool trailingEnabled = true;
   int16_t minTouchSize = 44;
@@ -123,8 +128,22 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
            Rect{static_cast<int16_t>(rect.right() - 4 - btnW), static_cast<int16_t>(rect.y + 4 + props.actionOffsetY),
                 btnW, btnH},
            action);
+    const bool hasAdjacentTrailing = props.trailingAdjacentIcon && props.trailingAdjacentAction != NO_ACTION;
+    if (hasAdjacentTrailing) {
+      ButtonProps adjacent;
+      adjacent.icon = props.trailingAdjacentIcon;
+      adjacent.action = props.trailingAdjacentAction;
+      adjacent.value = props.trailingAdjacentValue;
+      adjacent.styles = props.trailingStyles;
+      adjacent.radius = props.trailingRadius;
+      adjacent.minTouchSize = props.minTouchSize;
+      button(frame,
+             Rect{static_cast<int16_t>(rect.right() - 8 - btnW - btnH),
+                  static_cast<int16_t>(rect.y + 4 + props.actionOffsetY), btnH, btnH},
+             adjacent);
+    }
     if (!props.centered) {
-      content.width = static_cast<int16_t>(content.width - btnW - 8);
+      content.width = static_cast<int16_t>(content.width - btnW - (hasAdjacentTrailing ? btnH + 4 : 0) - 8);
     }
   }
 
