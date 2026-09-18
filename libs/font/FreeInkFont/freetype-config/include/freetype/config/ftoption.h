@@ -924,15 +924,7 @@ FT_BEGIN_HEADER
    * between the two engines using the `hinting-engine` property of the 'cff'
    * driver module.
    */
-/* FreeInkFont: ENABLED + selected via the "hinting-engine" property in
- * FtFont.cpp ensureLib(). The default Adobe CFF engine (cf2_*) interprets
- * charstrings with stack-resident structures several KB deep — it blows
- * through embedded task stacks regardless of FT_LOAD_NO_HINTING. The old
- * "freetype" engine is an iterative interpreter with a modest stack, and
- * FreeInkFont renders unhinted anyway (stb parity), so hint quality is not
- * a factor. Same rationale as disabling TT_CONFIG_OPTION_BYTECODE_INTERPRETER
- * above: bounded stack depth on small MCU task stacks. */
-#define CFF_CONFIG_OPTION_OLD_ENGINE
+/* #define CFF_CONFIG_OPTION_OLD_ENGINE */
 
 
   /*************************************************************************/

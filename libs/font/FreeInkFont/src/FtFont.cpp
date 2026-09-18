@@ -5,7 +5,6 @@
 #include FT_MODULE_H
 #include FT_MULTIPLE_MASTERS_H
 #include FT_OUTLINE_H
-#include FT_DRIVER_H
 
 #include "FontAlloc.h"
 
@@ -38,13 +37,6 @@ bool ensureLib() {
   g_ftMemory.realloc = &ftRealloc;
   if (FT_New_Library(&g_ftMemory, &g_lib) != 0) return false;
   FT_Add_Default_Modules(g_lib);  // register the sfnt/truetype/smooth/... modules
-  // CFF: use the old "freetype" engine, not the Adobe one (CFF_CONFIG_OPTION_OLD_ENGINE
-  // in ftoption.h). The Adobe engine (cf2_*) interprets charstrings with
-  // stack-resident structures several KB deep — it overflows any embedded task
-  // stack even with FT_LOAD_NO_HINTING. The old engine is iterative with a
-  // modest stack; FreeInkFont renders unhinted, so hint quality is moot.
-  const FT_UInt cffEngine = FT_CFF_HINTING_FREETYPE;
-  FT_Property_Set(g_lib, "cff", "hinting-engine", &cffEngine);
   return true;
 }
 constexpr uint32_t kTagWght = FT_MAKE_TAG('w', 'g', 'h', 't');
