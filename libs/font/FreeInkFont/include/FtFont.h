@@ -15,11 +15,26 @@
 // surfaced to a renderer as regular/bold/italic/bold-italic.
 //
 // Memory: the font file bytes are BORROWED (PSRAM / resident buffer) and must
-// outlive the FtFont. FreeType owns the glyph slot, so rasterize() returns a
-// bitmap valid until the next rasterize() on this face (the RasterFont contract);
-// no external glyph arena is needed. FreeType's own allocations are routed to
-// PSRAM (when present) via a custom FT_Memory — see ensureLib() in FtFont.cpp
-// and FontAlloc.h.
+// outlive the FtFont. rasterize() results are served from a bounded per-face
+// glyph bitmap cache: the FT-rendered coverage bytes are copied out of the
+// glyph slot once per (glyph, size) and reused, so repeated renders are both
+// faster and deterministic (same FT version + face + options ⇒ identical
+// bytes; eviction only costs a re-render). The RasterFont lifetime contract
+// is unchanged and enforced: the returned bitmap stays valid until the next
+// rasterize() on this face — cache-owned coverage is moved into a private
+// backing buffer before any eviction or flush would free it. FreeType's own
+// allocations and the cache are routed to PSRAM (when present) via a custom
+// FT_Memory — see ensureLib() in FtFont.cpp and FontAlloc.h.
+//
+// Threading: one FtFont instance per task. The cache, the glyph slot and the
+// option state are all unsynchronized instance members; faces must not be
+// shared across tasks (each task builds its own faces). The one sanctioned
+// exception is caller-serialized access: when one task OWNS the face and a
+// second task only touches it while the owner is blocked from mutating it
+// (e.g. a render task walking a face the main task can only reload while
+// holding the caller's RenderLock — the XPoint settings-preview/applyFamily
+// pattern), the caller's lock is the synchronization; the cache adds no
+// new cross-task hazard beyond what the face's own members already had.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -189,6 +204,22 @@ class FtFont : public RasterFont {
   // this face's cmap before consulting GSUB.
   uint32_t ligatureGlyphId(const uint32_t* codepoints, unsigned length);
 
+  // Default per-face glyph cache budget (~a page of unique glyphs at reading
+  // sizes). kMaxGlyphCacheBudget caps setGlyphCacheBudget() requests.
+  static constexpr size_t kDefaultGlyphCacheBudget = 512 * 1024;
+  static constexpr size_t kMaxGlyphCacheBudget = 2 * 1024 * 1024;
+
+  // Per-face bound on the glyph bitmap cache, in bytes of rendered coverage
+  // plus per-entry bookkeeping. PER FACE — a 4-face family at the default
+  // holds up to ~2 MB aggregate (PSRAM-first via FontAlloc; on-ESP fallback
+  // to internal RAM when PSRAM is absent/exhausted, so callers on tight-DRAM
+  // boards should lower the budget explicitly). Rendering above the budget
+  // re-renders instead of caching (evicted entries and never-cached glyphs
+  // are always safe: the bytes are deterministic). 0 disables the cache
+  // entirely. Requests are clamped to kMaxGlyphCacheBudget. Flushes the
+  // existing cache (shrink-safe).
+  void setGlyphCacheBudget(size_t maxBytes);
+
   // Limit the maximum streamed GSUB allocation. The default is 1 MiB for
   // compatibility with large real-world fonts. The limit applies to owned
   // tables loaded through initStream(); memory-backed init() uses a borrowed
@@ -202,10 +233,15 @@ class FtFont : public RasterFont {
   // face is initialized again.
   void releaseLigatureTable();
 
-  // Rasterizes one glyph to an 8-bit alpha GlyphBitmap. Valid until the next
-  // rasterize() on this face (FreeType glyph-slot lifetime): advance() and
-  // glyphBounds() preserve the bitmap through their internal loads, so only
-  // another rasterize() invalidates it.
+  // Rasterizes one glyph to an 8-bit alpha GlyphBitmap, served from the glyph
+  // bitmap cache on a hit (no FT load/render). The returned bitmap is valid
+  // until the next rasterize() on this face — the base RasterFont contract,
+  // enforced through cache flushes and evictions alike (live cache-owned
+  // coverage is copied out before its block is freed); advance() and
+  // glyphBounds() preserve it through their internal loads. Consumers that
+  // hold a bitmap across unrelated rasterizes must copy it. Pixels are
+  // read-only: cache-owned bytes persist across renders and must never be
+  // mutated by a consumer.
   const GlyphBitmap* rasterize(uint32_t codepoint, uint16_t sizePx) override;
 
  private:
@@ -217,6 +253,31 @@ class FtFont : public RasterFont {
 
   bool finishInit(uint16_t sizePx, int weight, bool italic);  // shared tail of init/initStream
   void ensureGsubLoaded();
+
+  // Bounded LRU glyph bitmap cache (see the class comment). Keyed per face by
+  // (glyphId, pixelSize26_6); render options are per face and the cache is
+  // flushed whenever they change (setRenderOptions, size change, re-init), so
+  // they are not part of the key. Entries are fontAlloc'd in ONE block each
+  // (entry struct + coverage bytes) and freed on eviction/flush/deinit.
+  struct GlyphCacheEntry {
+    GlyphCacheEntry* newer;
+    GlyphCacheEntry* older;
+    GlyphId glyph;
+    uint32_t pixelSize26_6;
+    uint16_t width;
+    uint16_t height;
+    int16_t xoff;
+    int16_t yoff;
+    int16_t advance;
+    uint32_t pixelBytes;  // coverage bytes owned by this entry (width*height)
+    uint8_t* pixels;      // width*height, 8-bit coverage
+  };
+  void flushGlyphCache();
+  // Moves the entry the last rasterize() handed out into bitmapBacking_ so
+  // its cache block can be freed without breaking the RasterFont lifetime.
+  void retainLiveGlyphCoverage(const GlyphCacheEntry* entry);
+  const GlyphCacheEntry* findCachedGlyph(GlyphId glyph, uint32_t pixelSize26_6);
+  void evictOldestCachedGlyph();
 
   // A monochrome FT_Bitmap is 1-bpp packed (pitch = (width+7)/8), but
   // GlyphBitmap's contract is 8-bit coverage at stride `width` (see Font.h).
@@ -247,6 +308,13 @@ class FtFont : public RasterFont {
   size_t bitmapBackingCap_ = 0;
   uint8_t* monoBuf_ = nullptr;
   size_t monoBufCap_ = 0;
+
+  // Glyph bitmap cache state (all fontAlloc'd; freed in deinit()).
+  GlyphCacheEntry* cacheNewest_ = nullptr;
+  GlyphCacheEntry* cacheOldest_ = nullptr;
+  size_t cacheBytes_ = 0;      // entry structs + coverage bytes currently held
+  size_t cacheBudget_ = kDefaultGlyphCacheBudget;
+  const GlyphCacheEntry* glyphEntry_ = nullptr;  // entry glyph_.pixels points into
 
   // Memory-backed faces retain a borrowed view into their whole font and point
   // gsubTable_ at the raw GSUB bytes after a bounds-checked sfnt directory

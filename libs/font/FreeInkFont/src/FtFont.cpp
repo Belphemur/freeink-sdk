@@ -300,6 +300,10 @@ void FtFont::deinit() {
   size26_6_ = 0;
   obliqueShear_ = false;
   options_ = RenderOptions{};
+  // Glyph IDs are face-local (same reasoning as the GSUB table below): a
+  // cached bitmap from the PREVIOUS face would be served for the new face's
+  // completely different glyph IDs.
+  flushGlyphCache();
   freeMonoBuffer();
   fontFree(bitmapBacking_);
   bitmapBacking_ = nullptr;
@@ -322,6 +326,90 @@ void FtFont::freeGsubTable() {
   gsubTable_ = nullptr;
   gsubTableSize_ = 0;
   gsubTableOwned_ = false;
+}
+
+void FtFont::setGlyphCacheBudget(const size_t maxBytes) {
+  cacheBudget_ = maxBytes > kMaxGlyphCacheBudget ? kMaxGlyphCacheBudget : maxBytes;
+  if (!cacheBudget_) flushGlyphCache();
+  while (cacheBytes_ > cacheBudget_ && cacheOldest_) evictOldestCachedGlyph();
+}
+
+// Moves the entry the last rasterize() handed out into bitmapBacking_ before
+// its cache block is freed, so the RasterFont "valid until the next
+// rasterize()" contract holds across eviction and flushes too (no eviction
+// exception). Mirrors preserveGlyphBitmap()'s growth-then-copy; allocation
+// failure degrades to an invalid bitmap rather than a dangling one.
+void FtFont::retainLiveGlyphCoverage(const FtFont::GlyphCacheEntry* entry) {
+  const size_t bytes = entry->pixelBytes;
+  if (bytes == 0 || entry->pixels == nullptr) return;
+  if (bytes > bitmapBackingCap_) {
+    void* grown = fontRealloc(bitmapBacking_, bitmapBackingCap_, bytes);
+    if (grown == nullptr) {
+      glyphEntry_ = nullptr;
+      glyph_ = {};  // degrade to invalid; never dangle
+      return;
+    }
+    bitmapBacking_ = static_cast<uint8_t*>(grown);
+    bitmapBackingCap_ = bytes;
+  }
+  memcpy(bitmapBacking_, entry->pixels, bytes);
+  glyph_.pixels = bitmapBacking_;
+  glyphEntry_ = nullptr;
+}
+
+void FtFont::flushGlyphCache() {
+  if (glyphEntry_) retainLiveGlyphCoverage(glyphEntry_);
+  GlyphCacheEntry* entry = cacheNewest_;
+  while (entry) {
+    GlyphCacheEntry* older = entry->older;
+    fontFree(entry);
+    entry = older;
+  }
+  cacheNewest_ = nullptr;
+  cacheOldest_ = nullptr;
+  cacheBytes_ = 0;
+}
+
+const FtFont::GlyphCacheEntry* FtFont::findCachedGlyph(const GlyphId glyph, const uint32_t pixelSize26_6) {
+  for (GlyphCacheEntry* entry = cacheNewest_; entry; entry = entry->older) {
+    if (entry->glyph == glyph && entry->pixelSize26_6 == pixelSize26_6) {
+      if (entry != cacheNewest_) {
+        // Unlink (newer points toward newest, older toward oldest) ...
+        if (entry->older)
+          entry->older->newer = entry->newer;
+        else
+          cacheOldest_ = entry->newer;
+        if (entry->newer)
+          entry->newer->older = entry->older;
+        else
+          cacheNewest_ = entry->older;
+        // ... and prepend at the MRU end.
+        entry->older = cacheNewest_;
+        entry->newer = nullptr;
+        cacheNewest_->newer = entry;
+        cacheNewest_ = entry;
+      }
+      return entry;
+    }
+  }
+  return nullptr;
+}
+
+void FtFont::evictOldestCachedGlyph() {
+  GlyphCacheEntry* victim = cacheOldest_;
+  if (!victim) return;
+  cacheOldest_ = victim->newer;
+  if (cacheOldest_)
+    cacheOldest_->older = nullptr;
+  else
+    cacheNewest_ = nullptr;
+  victim->newer = nullptr;
+  cacheBytes_ -= victim->pixelBytes + sizeof(GlyphCacheEntry);
+  // The last rasterize() handed out a pointer into the victim: move the
+  // coverage into bitmapBacking_ so the "valid until the next rasterize()"
+  // contract survives the eviction (no eviction exception in the docs).
+  if (glyphEntry_ == victim) retainLiveGlyphCoverage(victim);
+  fontFree(victim);
 }
 
 void FtFont::setGsubByteBudget(const size_t maxBytes) {
@@ -452,6 +540,9 @@ void FtFont::applyVariation(const int weight, const bool italic) {
 
 bool FtFont::setRenderOptions(const RenderOptions& options) {
   options_ = options;
+  // Cached coverage was rendered under the previous options (hinting, mono
+  // mode, embolden/slant all change the bytes).
+  flushGlyphCache();
   // Report (without refusing) a request this build can't honor, so a caller
   // with real logging can warn instead of silently getting degraded output —
   // e.g. monochrome with FREEINK_FONT_ENABLE_MONOCHROME off fails every
@@ -501,6 +592,7 @@ void FtFont::freeMonoBuffer() {
 
 void FtFont::preserveGlyphBitmap() {
   if (!face_ || glyph_.pixels == nullptr || glyph_.pixels == bitmapBacking_) return;
+  if (glyphEntry_ != nullptr) return;  // cache-owned coverage is stable; nothing to preserve
   auto face = static_cast<FT_Face>(face_);
   if (face->glyph->format != FT_GLYPH_FORMAT_BITMAP) return;
   const FT_Bitmap& bm = face->glyph->bitmap;
@@ -543,6 +635,10 @@ bool FtFont::ensureSize26_6(const uint32_t pixelSize26_6) {
   if (pixelSize26_6 == size26_6_) return true;
   if (FT_Set_Char_Size(static_cast<FT_Face>(face_), pixelSize26_6, pixelSize26_6, 72, 72) != 0) return false;
   size26_6_ = pixelSize26_6;
+  // No cache flush here: (glyphId, pixelSize26_6) is the cache key, so
+  // entries from other sizes can never be served for this size, and the
+  // RasterFont contract keeps the last rasterize() bitmap valid across a
+  // size-changing glyphBounds()/advance() — a flush would free it.
   return true;
 }
 
@@ -849,6 +945,11 @@ const GlyphBitmap* FtFont::rasterize26_6(const uint32_t codepoint, const uint32_
 }
 
 const GlyphBitmap* FtFont::rasterizeGlyph26_6(const GlyphId glyph, const uint32_t pixelSize26_6) {
+  if (const GlyphCacheEntry* hit = findCachedGlyph(glyph, pixelSize26_6)) {
+    glyph_ = GlyphBitmap{hit->pixels, hit->width, hit->height, hit->xoff, hit->yoff, hit->advance};
+    glyphEntry_ = hit;
+    return &glyph_;
+  }
   if (!loadGlyph(glyph, pixelSize26_6)) return nullptr;
   FT_GlyphSlot s = static_cast<FT_Face>(face_)->glyph;
   if (s->format != FT_GLYPH_FORMAT_BITMAP && FT_Render_Glyph(s, renderModeFor(options_)) != 0) return nullptr;
@@ -870,6 +971,52 @@ const GlyphBitmap* FtFont::rasterizeGlyph26_6(const GlyphId glyph, const uint32_
   glyph_.xoff = static_cast<int16_t>(s->bitmap_left);
   glyph_.yoff = static_cast<int16_t>(-s->bitmap_top);  // top offset from baseline, negative = above
   glyph_.advance = static_cast<int16_t>(s->advance.x >> 6);
+  glyphEntry_ = nullptr;
+
+  // Copy the rendered coverage out of the (about-to-be-reused) FT slot into
+  // one cache block: entry struct + compact width-stride pixels. On
+  // allocation failure or budget rejection the glyph stays served from the
+  // slot / monoBuf_ exactly as before — never-cached is always safe.
+  const size_t pixelBytes = size_t(glyph_.width) * glyph_.height;
+  // Single-glyph size guard (CWE-400): one entry can never exceed the whole
+  // budget. Allocate, then evict least-recent entries until it fits.
+  if (cacheBudget_ && pixelBytes && uint32_t(pixelBytes) + sizeof(GlyphCacheEntry) <= cacheBudget_) {
+    auto* entry = static_cast<GlyphCacheEntry*>(fontAlloc(sizeof(GlyphCacheEntry) + pixelBytes));
+    if (entry) {
+      entry->pixels = reinterpret_cast<uint8_t*>(entry + 1);
+      const size_t copyPitch = s->bitmap.pixel_mode == FT_PIXEL_MODE_MONO
+                                   ? size_t(glyph_.width)  // monoBuf_: compact stride already
+                                   : size_t(s->bitmap.pitch > 0 ? s->bitmap.pitch : -s->bitmap.pitch);
+      for (unsigned y = 0; y < glyph_.height; ++y) {
+        // FT_Bitmap::pitch is a SIGNED row step: a negative pitch walks the
+        // rows upward from the end of the buffer (mirror expandMonoCoverage).
+        const uint8_t* row = s->bitmap.pixel_mode == FT_PIXEL_MODE_MONO
+                                 ? glyph_.pixels + size_t(y) * copyPitch
+                                 : (s->bitmap.pitch >= 0 ? glyph_.pixels + size_t(y) * copyPitch
+                                                         : glyph_.pixels + size_t(glyph_.height - 1 - y) * copyPitch);
+        memcpy(entry->pixels + size_t(y) * glyph_.width, row, glyph_.width);
+      }
+      entry->older = cacheNewest_;
+      entry->newer = nullptr;
+      entry->glyph = glyph;
+      entry->pixelSize26_6 = pixelSize26_6;
+      entry->width = glyph_.width;
+      entry->height = glyph_.height;
+      entry->xoff = glyph_.xoff;
+      entry->yoff = glyph_.yoff;
+      entry->advance = glyph_.advance;
+      entry->pixelBytes = static_cast<uint32_t>(pixelBytes);
+      if (cacheNewest_)
+        cacheNewest_->newer = entry;
+      else
+        cacheOldest_ = entry;
+      cacheNewest_ = entry;
+      cacheBytes_ += pixelBytes + sizeof(GlyphCacheEntry);
+      glyph_.pixels = entry->pixels;
+      glyphEntry_ = entry;
+      while (cacheBytes_ > cacheBudget_ && cacheOldest_ != entry) evictOldestCachedGlyph();
+    }
+  }
   return &glyph_;
 }
 

@@ -31,6 +31,24 @@ the first FreeType-backed operation.
   caller-provided allocation. The SDK deliberately does not convert points or
   assume a display DPI/PPI; that policy belongs to the application or board.
 
+### Glyph bitmap cache (FtFont)
+
+Every `rasterize()` result is served from a bounded per-face LRU cache: the
+FT-rendered coverage is copied out of the glyph slot once per
+`(glyphId, pixelSize26_6)` and reused verbatim from then on, so repeated page
+paints stop re-running `FT_Load_Glyph` + `FT_Render_Glyph` per glyph. Because
+the cache stores FreeType's own output (never re-derives it), hits are
+byte-identical to fresh renders — the host suite asserts this directly
+(`test/host/FtFontGlyphCacheTest.cpp`). Contract: the returned bitmap is valid
+until the next `rasterize()` — the base RasterFont lifetime, enforced through
+evictions and flushes alike (live cache-owned coverage is copied to a private
+backing buffer before its block is freed); `advance()`/`glyphBounds()`
+preserve it either way. The cache is flushed by `setRenderOptions()`, by
+`deinit()`/re-`init()` (glyph IDs are face-local), and by budget changes; it
+is keyed per size, so size changes need no flush. Default budget 512 KB per
+face (`kDefaultGlyphCacheBudget`), capped at 2 MB; `setGlyphCacheBudget(0)`
+disables it. One `FtFont` per task — faces must not be shared across tasks.
+
 Cache sizes are tunable via `-DFREEINK_FONT_ADVANCE_SLOTS` /
 `-DFREEINK_FONT_GLYPH_SLOTS` (defaults 512 / 128).
 
