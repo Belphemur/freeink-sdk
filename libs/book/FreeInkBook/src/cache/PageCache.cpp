@@ -41,8 +41,8 @@ void putU32(uint8_t* p, uint32_t v) {
 uint16_t getU16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
 
 uint32_t getU32(const uint8_t* p) {
-  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
 }
 
 // CacheStorage::readAt may return short (SD adapters often pass one
@@ -66,8 +66,7 @@ uint32_t hashMix(uint32_t hash, uint32_t value) {
 
 }  // namespace
 
-static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex,
-                                 Arena& scratch, Page* out);
+static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex, Arena& scratch, Page* out);
 
 // One serialized page-blob rule record.
 constexpr uint32_t kRuleRecSize = 7;
@@ -75,8 +74,9 @@ constexpr uint32_t kRuleRecSize = 7;
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 12;  // 12: ruby lines drop ascender/2, annotations render
-                                          //  (11: CSS padding folds into block geometry,
+constexpr uint32_t kLayoutRevision = 13;  // 13: FtFont::ligature() resolves ff/fi/fl/ffi/ffl via GSUB
+                                          //  (12: ruby lines drop ascender/2, annotations render,
+                                          //   11: CSS padding folds into block geometry,
                                           //   10: <hr> lays out as a drawn rule,
                                           //   9: uniform per-paragraph line grid (CrossPoint parity)
                                           //   8: inline CSS sizes/margins + line box sizing,
@@ -116,8 +116,7 @@ bool pageCacheName(uint16_t spineIndex, uint32_t generationHash, char* out, uint
 
 // --- writer ------------------------------------------------------------------
 
-bool PageCacheWriter::begin(CacheStorage& storage, const char* name, uint32_t generationHash,
-                            Arena& arena) {
+bool PageCacheWriter::begin(CacheStorage& storage, const char* name, uint32_t generationHash, Arena& arena) {
   storage_ = &storage;
   name_ = name;
   pageCount_ = 0;
@@ -406,8 +405,7 @@ BookStatus PageCacheWriter::readPage(uint32_t pageIndex, Arena& scratch, Page* o
   const uint32_t blobOffset = chunk->offsets[pageIndex % IndexChunk::kEntries];
   uint32_t blobEnd = writeOffset_;
   if (pageIndex + 1 < pageCount_) {
-    const IndexChunk* nextChunk =
-        (pageIndex + 1) % IndexChunk::kEntries == 0 ? chunk->next : chunk;
+    const IndexChunk* nextChunk = (pageIndex + 1) % IndexChunk::kEntries == 0 ? chunk->next : chunk;
     if (nextChunk == nullptr) return BookStatus::NotFound;
     blobEnd = nextChunk->offsets[(pageIndex + 1) % IndexChunk::kEntries];
   }
@@ -427,8 +425,7 @@ BookStatus PageCacheWriter::readPage(uint32_t pageIndex, Arena& scratch, Page* o
 
 // --- reader ------------------------------------------------------------------
 
-BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32_t expectedHash,
-                                 Arena& arena) {
+BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32_t expectedHash, Arena& arena) {
   storage_ = &storage;
   // Own a copy: readPage() runs long after open(), and a borrowed stack
   // buffer dangling here reads the wrong file (structurally-valid index,
@@ -476,10 +473,8 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
     buildBytesTotal_ = getU32(footer + 24);
   }
   if (indexOffset_ < kHeaderSize ||
-      static_cast<int64_t>(anchorOffset) + static_cast<int64_t>(anchorCount) * 8 + footerSize !=
-          size ||
-      static_cast<int64_t>(indexOffset_) + static_cast<int64_t>(pageCount) * 8 !=
-          static_cast<int64_t>(anchorOffset)) {
+      static_cast<int64_t>(anchorOffset) + static_cast<int64_t>(anchorCount) * 8 + footerSize != size ||
+      static_cast<int64_t>(indexOffset_) + static_cast<int64_t>(pageCount) * 8 != static_cast<int64_t>(anchorOffset)) {
     return BookStatus::Stale;
   }
 

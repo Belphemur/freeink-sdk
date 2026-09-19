@@ -36,6 +36,9 @@ struct QwertyKeyboardProps {
   ActionId langAction = NO_ACTION;
   TextStyle controlText{};
   int16_t rowGap = 6;
+  int16_t altHintRightPadding = 10;
+  int16_t altLabelGap = 4;
+  int16_t digitLabelOffsetX = -4;
 };
 
 // Mirror a KeyboardEntry's layer state into the props for this frame.
@@ -64,6 +67,9 @@ void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboa
   keyboardProps.labelText = props.labelText;
   keyboardProps.controlText = props.controlText;
   keyboardProps.altText = props.altText;
+  keyboardProps.altHintRightPadding = props.altHintRightPadding;
+  keyboardProps.altLabelGap = props.altLabelGap;
+  keyboardProps.digitLabelOffsetX = props.digitLabelOffsetX;
   keyboardProps.keyStyles = props.keyStyles;
   keyboardProps.padding = props.padding;
   keyboardProps.gap = props.gap;

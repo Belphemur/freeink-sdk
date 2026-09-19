@@ -60,13 +60,16 @@ class FakeDrawTarget : public DrawTarget {
   bool drewForbiddenLabel = false;
   int16_t charWidth = 6;
   int16_t lineH = 12;
+  int16_t fontLineH[DisplayTarget::FONT_SLOTS]{};
 
-  Size measureText(FontId, const char* text, TextStyle) const override {
+  Size measureText(FontId font, const char* text, TextStyle) const override {
     if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
       measuredForbiddenLabel = true;
-    return Size{static_cast<int16_t>(charWidth * static_cast<int16_t>(std::strlen(text))), lineH};
+    return Size{static_cast<int16_t>(charWidth * static_cast<int16_t>(std::strlen(text))), lineHeight(font)};
   }
-  int16_t lineHeight(FontId) const override { return lineH; }
+  int16_t lineHeight(FontId font) const override {
+    return font < DisplayTarget::FONT_SLOTS && fontLineH[font] > 0 ? fontLineH[font] : lineH;
+  }
   void fill(Rect rect, Paint paint, uint8_t radius, uint8_t corners) override {
     record(Op::Fill, rect, paint, radius, corners);
   }
@@ -3851,6 +3854,7 @@ void testKeyboardHighlightPadding() {
   props.selectedIndex = -1;
   const Rect keyRect{100, 100, 100, 80};
   Rect normalHint{};
+  Rect primaryLabel{};
   for (int phase = 0; phase < 3; ++phase) {
     draw.opCount = 0;
     if (phase == 1) props.selectedIndex = 0;
@@ -3878,7 +3882,7 @@ void testKeyboardHighlightPadding() {
       const auto& op = draw.ops[i];
       if (op.kind != FakeDrawTarget::Op::Text) continue;
       ++labels;
-      if (labels == 1) CHECK_EQ(op.rect.height, 76); // text position stays unchanged
+      if (labels == 1) primaryLabel = op.rect;
       if (labels == 2) {
         CHECK_EQ(keyRect.right() - op.rect.right(), 10);
         CHECK_EQ(op.rect.y, keyRect.y + 6);
@@ -3891,12 +3895,125 @@ void testKeyboardHighlightPadding() {
       }
     }
     CHECK_EQ(labels, 2);
+    CHECK_EQ(primaryLabel.y, static_cast<int16_t>(keyRect.y + (keyRect.height - draw.lineH) / 2));
+    CHECK_EQ(primaryLabel.height, draw.lineH);
   }
   InputSnapshot release;
   release.touchReleased = true;
   release.touchX = 150;
   release.touchY = 175;
   CHECK_EQ(interactions.routePublished(release).value, '1');
+}
+
+void testCompactKeyboardAltLabelStaysInsideKey() {
+  FakeDrawTarget draw;
+  draw.lineH = 36;
+  draw.fontLineH[FONT_SLOT_SMALL] = 11;
+  DeviceContext device = makeDevice(480, 800);
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+  const KeyboardKey key{"1", "1", KeyKind::Normal, StateNormal, '1', 1, true, "!"};
+  const KeyboardRow row{&key, 1, 0};
+  const KeyboardLayout layout{&row, 1};
+  KeyboardProps props;
+  props.layout = &layout;
+  props.keyAction = 1;
+  props.padding = Insets{};
+  props.altText.font = FONT_SLOT_SMALL;
+
+  keyboard(frame, Rect{100, 100, 100, 56}, props);
+
+  Rect primaryLabel{};
+  Rect altHint{};
+  int labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text) continue;
+    if (labels++ == 0) {
+      primaryLabel = op.rect;
+    } else {
+      altHint = op.rect;
+    }
+  }
+  CHECK_EQ(labels, 2);
+  CHECK_EQ(primaryLabel.height, draw.lineH);
+  CHECK_EQ(primaryLabel.x + primaryLabel.width / 2, 144);
+  CHECK(primaryLabel.y >= altHint.bottom() + 4);
+  CHECK(primaryLabel.y >= 100);
+  CHECK(primaryLabel.bottom() <= 156);
+
+  draw.opCount = 0;
+  const KeyboardKey letterKey{"e",  "e", KeyKind::Normal, StateNormal, 'e', 1,
+                              true, "é"};
+  const KeyboardRow letterRow{&letterKey, 1, 0};
+  const KeyboardLayout letterLayout{&letterRow, 1};
+  props.layout = &letterLayout;
+  keyboard(frame, Rect{100, 100, 100, 56}, props);
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto &op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text)
+      continue;
+    CHECK_EQ(op.rect.x + op.rect.width / 2, 150);
+    break;
+  }
+
+  draw.opCount = 0;
+  props.layout = &layout;
+  props.altLabelGap = -10;
+  keyboard(frame, Rect{100, 100, 100, 56}, props);
+  labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto &op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text)
+      continue;
+    if (labels++ == 0) {
+      primaryLabel = op.rect;
+    } else {
+      altHint = op.rect;
+    }
+  }
+  CHECK_EQ(labels, 2);
+  CHECK(primaryLabel.y >= altHint.bottom());
+}
+
+void testQwertyKeyboardSpacingOverrides() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(480, 800);
+  InputSnapshot input;
+  InteractionBuffer<64> interactions;
+  Frame<64> frame(draw, device, input, interactions);
+  QwertyKeyboardProps props;
+  props.keyAction = 1;
+  props.numberRow = true;
+  props.padding = Insets{};
+  props.altHintRightPadding = 6;
+  props.altLabelGap = 2;
+  props.digitLabelOffsetX = 3;
+
+  qwertyKeyboard(frame, Rect{0, 0, 480, 400}, props);
+
+  Rect firstKey{};
+  Rect primaryLabel{};
+  Rect altHint{};
+  int labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto &op = draw.ops[i];
+    if (op.kind == FakeDrawTarget::Op::Fill && firstKey.empty())
+      firstKey = op.rect;
+    if (op.kind != FakeDrawTarget::Op::Text || labels >= 2)
+      continue;
+    if (labels++ == 0) {
+      primaryLabel = op.rect;
+    } else {
+      altHint = op.rect;
+    }
+  }
+  CHECK_EQ(labels, 2);
+  CHECK_EQ(primaryLabel.x + primaryLabel.width / 2,
+           firstKey.x + firstKey.width / 2 + 3);
+  CHECK_EQ(firstKey.right() - altHint.right(), 6);
+  CHECK(primaryLabel.y >= altHint.bottom() + 2);
 }
 
 void testKeyboardTypography() {
@@ -4783,6 +4900,8 @@ int main() {
   testTallKeyboardSizing();
   testKeyboardTypography();
   testKeyboardHighlightPadding();
+  testCompactKeyboardAltLabelStaysInsideKey();
+  testQwertyKeyboardSpacingOverrides();
   testScreenContentMarginCoordinateSpaces();
   testEReaderChromeMenusAndPanels();
   testEReaderBookSurfaces();

@@ -106,20 +106,24 @@ struct KeyboardProps {
   TextStyle controlText{};
   // Vertical separation is independent of the horizontal key gap.
   int16_t rowGap = 6;
+  // Geometry for keys with alternate hints. digitLabelOffsetX is signed:
+  // negative moves a primary digit left, positive moves it right.
+  int16_t altHintRightPadding = 10;
+  int16_t altLabelGap = 4;
+  int16_t digitLabelOffsetX = -6;
 };
 
 // Preferred total height for touch entry. Size each row independently so a
 // dedicated number row adds height instead of compressing every key. Callers
 // using the low-level Rect API can use this when reserving their keyboard area.
-inline int16_t keyboardPreferredHeight(int16_t width, uint8_t rowCount,
-                                      Insets padding = Insets{5, 2, 5, 2},
-                                      int16_t rowGap = 6, int16_t minRowHeight = 64) {
+inline int16_t keyboardPreferredHeight(int16_t width, uint8_t rowCount, Insets padding = Insets{5, 2, 5, 2},
+                                       int16_t rowGap = 6, int16_t minRowHeight = 64) {
   if (rowCount == 0) return 0;
   int32_t rowHeight = width / 6;
   if (rowHeight < minRowHeight) rowHeight = minRowHeight;
   if (rowHeight < 1) rowHeight = 1;
-  const int32_t height = rowHeight * rowCount + (rowGap > 0 ? rowGap : 0) * (rowCount - 1)
-                         + padding.top + padding.bottom;
+  const int32_t height =
+      rowHeight * rowCount + (rowGap > 0 ? rowGap : 0) * (rowCount - 1) + padding.top + padding.bottom;
   return static_cast<int16_t>(height > 32767 ? 32767 : (height > 0 ? height : 1));
 }
 
@@ -177,7 +181,7 @@ struct KeyboardActivation {
 };
 
 inline KeyboardActivation keyboardActivationFor(const KeyboardLayout& layout, const int16_t value,
-                                                 const bool longPress = false) {
+                                                const bool longPress = false) {
   for (uint8_t row = 0; row < layout.rowCount; ++row) {
     for (uint8_t col = 0; col < layout.rows[row].count; ++col) {
       const KeyboardKey& key = layout.rows[row].keys[col];
@@ -187,8 +191,8 @@ inline KeyboardActivation keyboardActivationFor(const KeyboardLayout& layout, co
         case KeyKind::Space: {
           const char* text = longPress ? keyboardAltOutputFor(layout, value) : nullptr;
           if (!text) text = keyboardOutputFor(layout, value);
-          return KeyboardActivation{text ? KeyboardActivationKind::Text : KeyboardActivationKind::None,
-                                    text, value, longPress};
+          return KeyboardActivation{text ? KeyboardActivationKind::Text : KeyboardActivationKind::None, text, value,
+                                    longPress};
         }
         case KeyKind::Shift:
           return KeyboardActivation{KeyboardActivationKind::Shift, nullptr, value, longPress};
@@ -534,7 +538,8 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
   if (rect.empty() || rect.width < 10 || rect.height < 10) return;
   const int16_t gap = props.gap < 0 ? 0 : props.gap;
   const int16_t rowGap = props.rowGap < 0 ? 0 : props.rowGap;
-  const int16_t rowH = static_cast<int16_t>((rect.height - rowGap * (props.layout->rowCount - 1)) / props.layout->rowCount);
+  const int16_t rowH =
+      static_cast<int16_t>((rect.height - rowGap * (props.layout->rowCount - 1)) / props.layout->rowCount);
   int16_t logicalIndex = 0;
 
   auto actionFor = [&](KeyKind kind) {
@@ -552,10 +557,13 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     if (props.selectedIndex == selectedIndex) state |= props.inactiveSelection ? StateFocused : StateSelected;
     if (!key.enabled || key.kind == KeyKind::Disabled) state |= StateDisabled;
     const ActionId action = actionFor(key.kind);
+    const bool hasAltHint = key.kind == KeyKind::Normal && key.alt;
     ButtonProps bp;
-    bp.label = (key.kind == KeyKind::Space || key.kind == KeyKind::Delete || key.kind == KeyKind::Lang)
-                   ? nullptr
-                   : key.label;
+    const char* label =
+        (key.kind == KeyKind::Space || key.kind == KeyKind::Delete || key.kind == KeyKind::Lang) ? nullptr : key.label;
+    // A button centers its label, which makes a digit collide visually with
+    // its upper-corner alternate. Draw this label below the hint instead.
+    bp.label = hasAltHint ? nullptr : label;
     if (key.kind == KeyKind::Ok && props.okLabel) bp.label = props.okLabel;
     if (key.kind == KeyKind::Shift && props.shiftLabel) bp.label = props.shiftLabel;
     if (key.kind == KeyKind::Mode && props.modeLabel) bp.label = props.modeLabel;
@@ -606,7 +614,7 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       return;
     }
 
-    if (key.kind == KeyKind::Normal && key.alt) {
+    if (hasAltHint) {
       // Corner hint for the long-press alternate. Ink follows the key's
       // resolved foreground so the hint stays legible on selected/active keys.
       TextStyle altStyle = props.altText;
@@ -614,14 +622,41 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       altStyle.maxLines = 1;
       const State resolvedState = frame.stateFor(action, key.value, state);
       altStyle.color = styles.resolve(resolvedState).foreground.color;
-      // Reserve the same hint position before and during highlighting.
-      const int16_t rightPadding = 10;
-      const int16_t hintWidth = static_cast<int16_t>(keyRect.width - 2 - rightPadding);
+      const int16_t rightPadding = props.altHintRightPadding > 0 ? props.altHintRightPadding : 0;
+      const int32_t availableHintWidth = static_cast<int32_t>(keyRect.width) - 2 - rightPadding;
+      const int16_t hintWidth = static_cast<int16_t>(availableHintWidth > 0 ? availableHintWidth : 1);
       const int16_t altLh = frame.target().lineHeight(altStyle.font);
       const int16_t hintTop = static_cast<int16_t>(keyRect.y + 2 + bp.highlightInsets.top);
-      frame.target().text(Rect{static_cast<int16_t>(keyRect.x + 2), hintTop,
-                               static_cast<int16_t>(hintWidth > 0 ? hintWidth : 1), altLh},
-                          key.alt, altStyle);
+
+      // Keep a fixed gap below the hint before the primary label. This is
+      // especially important for the number row, where `$`, `%`, and similar
+      // alternates otherwise overlap their digit. Keep the label's full line
+      // box inside compact keys; a shorter box makes renderers draw the glyph
+      // from its top and lets the digit escape below the key.
+      const bool hasDigitLabel = label && label[0] >= '0' && label[0] <= '9' && label[1] == '\0';
+      const int32_t labelContentWidth = static_cast<int32_t>(keyRect.width) - 4;
+      const int32_t maxLabelOffset = labelContentWidth > 1 ? (labelContentWidth - 1) / 2 : 0;
+      int32_t labelOffsetX = hasDigitLabel ? props.digitLabelOffsetX : 0;
+      if (labelOffsetX < -maxLabelOffset) labelOffsetX = -maxLabelOffset;
+      if (labelOffsetX > maxLabelOffset) labelOffsetX = maxLabelOffset;
+      const int32_t labelOffsetMagnitude = labelOffsetX < 0 ? -labelOffsetX : labelOffsetX;
+      const int16_t labelX = static_cast<int16_t>(keyRect.x + 2 + (labelOffsetX > 0 ? labelOffsetX * 2 : 0));
+      const int16_t labelLh = frame.target().lineHeight(keyText.font);
+      const int16_t centeredLabelTop = static_cast<int16_t>(keyRect.y + (keyRect.height - labelLh) / 2);
+      const int16_t lowestLabelTop = static_cast<int16_t>(keyRect.bottom() - 2 - labelLh);
+      const int16_t labelWidth = static_cast<int16_t>(labelContentWidth - labelOffsetMagnitude * 2);
+      const int16_t labelGap = props.altLabelGap > 0 ? props.altLabelGap : 0;
+      int32_t labelTop = static_cast<int32_t>(hintTop) + altLh + labelGap;
+      if (labelTop < centeredLabelTop) labelTop = centeredLabelTop;
+      if (labelTop > lowestLabelTop) labelTop = lowestLabelTop;
+      if (labelTop < keyRect.y + 2) labelTop = static_cast<int16_t>(keyRect.y + 2);
+      if (label && labelLh > 0 && labelWidth > 0) {
+        TextStyle labelStyle = textStyleWithForeground(keyText, styles.resolve(resolvedState).foreground);
+        labelStyle.align = TextAlign::Center;
+        labelStyle.maxLines = 1;
+        frame.target().text(Rect{labelX, static_cast<int16_t>(labelTop), labelWidth, labelLh}, label, labelStyle);
+      }
+      frame.target().text(Rect{static_cast<int16_t>(keyRect.x + 2), hintTop, hintWidth, altLh}, key.alt, altStyle);
       return;
     }
 
@@ -652,8 +687,8 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     for (uint8_t col = 0; col < layoutRow.count; ++col) {
       const KeyboardKey& key = layoutRow.keys[col];
       const uint8_t keyUnits = key.widthUnits ? key.widthUnits : 1;
-      const int16_t w = col == layoutRow.count - 1 ? static_cast<int16_t>(rowRight - x)
-                                                   : static_cast<int16_t>(unitW * keyUnits);
+      const int16_t w =
+          col == layoutRow.count - 1 ? static_cast<int16_t>(rowRight - x) : static_cast<int16_t>(unitW * keyUnits);
       drawKey(Rect{x, y, w, rowH}, key, logicalIndex++);
       x = static_cast<int16_t>(x + w + gap);
     }

@@ -683,11 +683,15 @@ FT_BEGIN_HEADER
    * Do not `#undef` this macro here, since the build system might define it
    * for certain configurations only.
    */
-/* FreeInkFont: DISABLED. The TrueType bytecode interpreter (TT_RunIns) has very
- * deep stack frames that overflow small MCU task stacks, and hinting is
- * unnecessary for antialiased e-ink at reading sizes. Leaving it off renders
- * unhinted (smoother) glyphs and removes the largest single stack consumer. */
-/* #define TT_CONFIG_OPTION_BYTECODE_INTERPRETER */
+/* FreeInkFont: opt-in. The TrueType bytecode interpreter (TT_RunIns) has very
+ * deep stack frames that can overflow small MCU task stacks, so it stays off
+ * by default (unhinted/auto-hinted glyphs, smallest stack footprint). A
+ * consumer with PSRAM headroom and a large enough render-task stack can
+ * define FREEINK_FONT_ENABLE_NATIVE_HINTING to compile it in and pick native
+ * hinting per face via FtFont::RenderOptions. */
+#if FREEINK_FONT_ENABLE_NATIVE_HINTING
+#define TT_CONFIG_OPTION_BYTECODE_INTERPRETER
+#endif
 
 
   /**************************************************************************
@@ -721,9 +725,14 @@ FT_BEGIN_HEADER
    * [1]
    * https://learn.microsoft.com/typography/cleartype/truetypecleartype
    */
-/* FreeInkFont: DISABLED (requires the bytecode interpreter, which we turned
- * off; subpixel hinting is meaningless on a grayscale e-ink panel). */
-/* #define TT_CONFIG_OPTION_SUBPIXEL_HINTING */
+/* FreeInkFont: tied to FREEINK_FONT_ENABLE_NATIVE_HINTING above (it requires
+ * the bytecode interpreter). This does not add real LCD subpixel rendering —
+ * e-ink has no RGB stripe geometry for that — it only unlocks the v40
+ * "minimal hinting" interpreter mode as an alternative to classic v35, which
+ * FtFont::RenderOptions can select per face via FT_Property_Set. */
+#if FREEINK_FONT_ENABLE_NATIVE_HINTING
+#define TT_CONFIG_OPTION_SUBPIXEL_HINTING
+#endif
 
 
   /**************************************************************************

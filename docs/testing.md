@@ -23,6 +23,23 @@ The book engine consumes `esp_full_miniz` as a nested submodule. Clone with
 `git clone --recurse-submodules`, or run `git submodule update --init --recursive`
 first; the suite fails immediately if that checkout is missing.
 
+## Fonts
+
+```sh
+sh libs/font/FreeInkFont/test/host/run.sh
+sh libs/font/FreeInkFont/test/host/run_ligature.sh
+```
+
+Covers `FtFont::RenderOptions` (every `HintingMode` plus monochrome) against a
+real bundled font, plus a minimal build with none of the three
+`FREEINK_FONT_ENABLE_*` flags set to confirm existing consumers see no change
+in output and unsupported requests are reported rather than silently degraded.
+
+Covers `FtFont::ligature()`/`ligatureGlyphId()` (GSUB-based) against a real
+bundled font: exact-value assertions for the five standard Latin ligatures,
+the codepoint-vs-glyph-ID contract boundary, deinit()/re-init cache
+invalidation, and a null-pointer safety check on `Gsub::LigatureGlyphId`.
+
 ## Display drivers
 
 ```sh
