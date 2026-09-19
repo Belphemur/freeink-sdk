@@ -167,6 +167,32 @@ int main(int argc, char** argv) {
            "budget 0 face re-renders instead (contrast)");
   }
 
+  // --- Contract: the last rasterize() survives flush AND eviction ----------
+  // Rasterize, snapshot, force a flush (budget 0): the bitmap handed out
+  // must still be readable and byte-identical to a fresh render.
+  {
+    FtFont survivor;
+    expect(survivor.init(ttf.data(), static_cast<uint32_t>(ttf.size()), 16, 400, false), "survivor face init");
+    survivor.setGlyphCacheBudget(FtFont::kDefaultGlyphCacheBudget);
+    const auto* live = survivor.rasterize('A', 32);
+    expect(live && live->pixels && live->width > 0, "survivor live bitmap rendered");
+    std::vector<uint8_t> snap(live->pixels, live->pixels + size_t(live->width) * live->height);
+    survivor.setGlyphCacheBudget(0);  // flush: frees every cache entry
+    expect(live->pixels != nullptr && std::memcmp(snap.data(), live->pixels, snap.size()) == 0,
+           "flush preserves the last rasterize() bitmap (no eviction exception)");
+
+    // Eviction of the live entry without an intervening rasterize (a budget
+    // shrink evicts from oldest; the rasterize-store path only evicts OLDER
+    // entries) must preserve it the same way. Any rasterize after the
+    // snapshot would end the base contract by itself.
+    const auto* liveA = survivor.rasterize('A', 32);
+    expect(liveA && liveA->pixels, "live 'A' bitmap before eviction");
+    std::vector<uint8_t> snapA(liveA->pixels, liveA->pixels + size_t(liveA->width) * liveA->height);
+    survivor.setGlyphCacheBudget(1);  // evicts every cached entry, incl. the live one
+    expect(liveA->pixels != nullptr && std::memcmp(snapA.data(), liveA->pixels, snapA.size()) == 0,
+           "eviction preserves the last rasterize() bitmap");
+  }
+
   // --- Eviction: tiny budget re-renders identical bytes --------------------
   FtFont evicting;
   expect(evicting.init(ttf.data(), static_cast<uint32_t>(ttf.size()), 16, 400, false), "evicting face init");

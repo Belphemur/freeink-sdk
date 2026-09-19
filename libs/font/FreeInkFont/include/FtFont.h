@@ -17,13 +17,14 @@
 // Memory: the font file bytes are BORROWED (PSRAM / resident buffer) and must
 // outlive the FtFont. rasterize() results are served from a bounded per-face
 // glyph bitmap cache: the FT-rendered coverage bytes are copied out of the
-// glyph slot once per (glyph, size) and reused, so the returned bitmap stays
-// valid until EVICTION (LRU budget pressure) or the next rasterize() on this
-// face — strictly longer-lived than the raw slot, and hit-side deterministic
-// (same FT version + face + options ⇒ identical bytes; eviction only costs a
-// re-render). FreeType's own allocations and the cache are routed to PSRAM
-// (when present) via a custom FT_Memory — see ensureLib() in FtFont.cpp and
-// FontAlloc.h.
+// glyph slot once per (glyph, size) and reused, so repeated renders are both
+// faster and deterministic (same FT version + face + options ⇒ identical
+// bytes; eviction only costs a re-render). The RasterFont lifetime contract
+// is unchanged and enforced: the returned bitmap stays valid until the next
+// rasterize() on this face — cache-owned coverage is moved into a private
+// backing buffer before any eviction or flush would free it. FreeType's own
+// allocations and the cache are routed to PSRAM (when present) via a custom
+// FT_Memory — see ensureLib() in FtFont.cpp and FontAlloc.h.
 //
 // Threading: one FtFont instance per task. The cache, the glyph slot and the
 // option state are all unsynchronized instance members; faces must not be
@@ -234,10 +235,13 @@ class FtFont : public RasterFont {
 
   // Rasterizes one glyph to an 8-bit alpha GlyphBitmap, served from the glyph
   // bitmap cache on a hit (no FT load/render). The returned bitmap is valid
-  // until the next rasterize() on this face OR until LRU eviction (see the
-  // class comment) — advance() and glyphBounds() preserve it through their
-  // internal loads either way. Consumers that hold a bitmap across unrelated
-  // rasterizes must copy it.
+  // until the next rasterize() on this face — the base RasterFont contract,
+  // enforced through cache flushes and evictions alike (live cache-owned
+  // coverage is copied out before its block is freed); advance() and
+  // glyphBounds() preserve it through their internal loads. Consumers that
+  // hold a bitmap across unrelated rasterizes must copy it. Pixels are
+  // read-only: cache-owned bytes persist across renders and must never be
+  // mutated by a consumer.
   const GlyphBitmap* rasterize(uint32_t codepoint, uint16_t sizePx) override;
 
  private:
@@ -269,6 +273,9 @@ class FtFont : public RasterFont {
     uint8_t* pixels;      // width*height, 8-bit coverage
   };
   void flushGlyphCache();
+  // Moves the entry the last rasterize() handed out into bitmapBacking_ so
+  // its cache block can be freed without breaking the RasterFont lifetime.
+  void retainLiveGlyphCoverage(const GlyphCacheEntry* entry);
   const GlyphCacheEntry* findCachedGlyph(GlyphId glyph, uint32_t pixelSize26_6);
   void evictOldestCachedGlyph();
 

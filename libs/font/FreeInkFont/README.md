@@ -40,7 +40,9 @@ paints stop re-running `FT_Load_Glyph` + `FT_Render_Glyph` per glyph. Because
 the cache stores FreeType's own output (never re-derives it), hits are
 byte-identical to fresh renders — the host suite asserts this directly
 (`test/host/FtFontGlyphCacheTest.cpp`). Contract: the returned bitmap is valid
-until the next `rasterize()` **or LRU eviction**; `advance()`/`glyphBounds()`
+until the next `rasterize()` — the base RasterFont lifetime, enforced through
+evictions and flushes alike (live cache-owned coverage is copied to a private
+backing buffer before its block is freed); `advance()`/`glyphBounds()`
 preserve it either way. The cache is flushed by `setRenderOptions()`, by
 `deinit()`/re-`init()` (glyph IDs are face-local), and by budget changes; it
 is keyed per size, so size changes need no flush. Default budget 512 KB per
