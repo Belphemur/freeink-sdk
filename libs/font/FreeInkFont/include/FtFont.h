@@ -27,7 +27,13 @@
 //
 // Threading: one FtFont instance per task. The cache, the glyph slot and the
 // option state are all unsynchronized instance members; faces must not be
-// shared across tasks (each task builds its own faces).
+// shared across tasks (each task builds its own faces). The one sanctioned
+// exception is caller-serialized access: when one task OWNS the face and a
+// second task only touches it while the owner is blocked from mutating it
+// (e.g. a render task walking a face the main task can only reload while
+// holding the caller's RenderLock — the XPoint settings-preview/applyFamily
+// pattern), the caller's lock is the synchronization; the cache adds no
+// new cross-task hazard beyond what the face's own members already had.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -203,10 +209,14 @@ class FtFont : public RasterFont {
   static constexpr size_t kMaxGlyphCacheBudget = 2 * 1024 * 1024;
 
   // Per-face bound on the glyph bitmap cache, in bytes of rendered coverage
-  // plus per-entry bookkeeping. Rendering above the budget re-renders instead
-  // of caching (evicted entries and never-cached glyphs are always safe: the
-  // bytes are deterministic). 0 disables the cache entirely. Requests are
-  // clamped to kMaxGlyphCacheBudget. Flushes the existing cache (shrink-safe).
+  // plus per-entry bookkeeping. PER FACE — a 4-face family at the default
+  // holds up to ~2 MB aggregate (PSRAM-first via FontAlloc; on-ESP fallback
+  // to internal RAM when PSRAM is absent/exhausted, so callers on tight-DRAM
+  // boards should lower the budget explicitly). Rendering above the budget
+  // re-renders instead of caching (evicted entries and never-cached glyphs
+  // are always safe: the bytes are deterministic). 0 disables the cache
+  // entirely. Requests are clamped to kMaxGlyphCacheBudget. Flushes the
+  // existing cache (shrink-safe).
   void setGlyphCacheBudget(size_t maxBytes);
 
   // Limit the maximum streamed GSUB allocation. The default is 1 MiB for
