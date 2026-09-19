@@ -125,4 +125,13 @@ if [ "$HASH_NO_NATIVE" != "$HASH_MINIMAL" ]; then
   exit 1
 fi
 
+# --- Glyph bitmap cache test ----------------------------------------------
+# All-modules build (the cache itself is flag-independent, but the flush test
+# needs monochrome to be compile-in-able to prove a real byte change).
+c++ -std=c++17 -O1 -Wall -Wextra -Werror $INCLUDES $DEFINES \
+  ../../src/FtFont.cpp $GSUB_SOURCE \
+  FtFontGlyphCacheTest.cpp "$BUILD_DIR"/on_*.o \
+  -o "$BUILD_DIR/ftfont-glyph-cache-test"
+"$BUILD_DIR/ftfont-glyph-cache-test" "$FONT_FIXTURE" ../fixtures/fonts/AtkinsonHyperlegibleNext-Regular.otf
+
 echo "FreeInkFont host tests: OK"
