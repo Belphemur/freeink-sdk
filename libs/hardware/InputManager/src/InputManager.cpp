@@ -385,7 +385,13 @@ void InputManager::applyStateChange(const uint8_t state, const unsigned long cur
     buttonPressStart = currentTime;
   }
 
-  if (releasedEvents > 0 && state == 0) {
+  // Edge source is mode-specific: async runs this path on the poll task,
+  // where the app latch (published by the drain path) is another task's
+  // data — read the task registers. Sync runs it on the app task after the
+  // clear-then-set reset, where releasedEvents is always 0 here (historical
+  // behavior, preserved exactly).
+  const uint8_t releasedEdges = (_asyncTask != nullptr) ? taskReleasedEdges_ : releasedEvents;
+  if (releasedEdges > 0 && state == 0) {
     buttonPressFinish = currentTime;
   }
 
@@ -393,7 +399,7 @@ void InputManager::applyStateChange(const uint8_t state, const unsigned long cur
     powerButtonPressStart = currentTime;
   }
 
-  if (releasedEvents & (1 << BTN_POWER)) {
+  if (releasedEdges & (1 << BTN_POWER)) {
     powerButtonPressFinish = currentTime;
   }
 
@@ -535,7 +541,11 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
     nextState |= static_cast<uint8_t>(1u << logical);
   }
   applyStateChange(nextState, currentTime);
-  if (pressedEvents & (1u << BTN_POWER)) powerButtonPressStart = twoButtonPressStart;
+  // Mode-specific edge source (see applyStateChange): in async mode this
+  // path runs on the poll task — the shared latch is another task's data.
+  if (taskPressedEdges_ & (1u << BTN_POWER) || (_asyncTask == nullptr && (pressedEvents & (1u << BTN_POWER)))) {
+    powerButtonPressStart = twoButtonPressStart;
+  }
 }
 
 void InputManager::update() {

@@ -241,6 +241,14 @@ class InputManager {
   // standalone tools.
   bool popPress(AsyncInputEvent& ev);
 
+  // True while the background polling task owns edge sampling. Wait loops
+  // that call update() only to keep debounce progressing can skip it in
+  // this mode — the poll task samples every pollMs, and a wait-loop update()
+  // would drain queued edges into the frame latch where the loop's caller
+  // (which only reads levels) never sees them before the next
+  // beginInputFrame() clears the latch.
+  bool asyncActive() const { return _asyncTask != nullptr; }
+
   // Pop the next latched touch tap (normalized 0..1 panel-native coordinates,
   // same frame as wasTouchTap). The async task queues every completed tap, so
   // taps that land while the app thread renders or waits are never lost —
