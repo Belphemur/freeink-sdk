@@ -240,11 +240,18 @@ class GfxRendererTarget final : public DrawTarget {
           (epdStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB)) == 0) {
         const auto& fonts = renderer.getFontMap();
         const auto font = fonts.find(fontId);
-        const auto* glyph = font != fonts.end() ? font->second.getGlyph(static_cast<uint32_t>(textLine[0]), epdStyle)
-                                               : nullptr;
-        if (glyph && glyph->width > 0 && glyph->height > 0 && glyph->width <= rect.width && glyph->height <= rect.height) {
-          x = rect.x + (rect.width - glyph->width) / 2 - glyph->left;
-          drawY = rect.y + (rect.height - glyph->height) / 2 + glyph->top - renderer.getFontAscenderSize(fontId);
+        // `auto` and a scoped if, rather than naming the type and comparing a ternary against
+        // nullptr, so this compiles whatever getGlyph() returns. Some consumers hand back a
+        // `const EpdGlyph*`; others a resolved value type, because a font may store its glyph
+        // records in more than one shape and no single pointer can then serve them all. Both
+        // spellings are testable for presence and read their metrics through `->`.
+        if (font != fonts.end()) {
+          const auto glyph = font->second.getGlyph(static_cast<uint32_t>(textLine[0]), epdStyle);
+          if (glyph && glyph->width > 0 && glyph->height > 0 && glyph->width <= rect.width &&
+              glyph->height <= rect.height) {
+            x = rect.x + (rect.width - glyph->width) / 2 - glyph->left;
+            drawY = rect.y + (rect.height - glyph->height) / 2 + glyph->top - renderer.getFontAscenderSize(fontId);
+          }
         }
       }
       if (dithered && tryDrawTextDither(renderer, fontId, x, drawY, textLine, gfxColor(inkColor), epdStyle, 0)) {
