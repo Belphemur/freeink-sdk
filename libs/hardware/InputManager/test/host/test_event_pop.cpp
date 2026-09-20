@@ -28,8 +28,10 @@ struct PopStream {
     }
   } source;
   AsyncInputEvent scratch{};
-  uint8_t pendingPressed = 0;
-  uint8_t pendingReleased = 0;
+  // Counts per button (mirror of the SDK's pending cache): two edges of the
+  // same button queued before one check deliver two consumable edges.
+  uint8_t pendingPressCount[7] = {};
+  uint8_t pendingReleaseCount[7] = {};
   uint32_t pops = 0;
 
   const AsyncInputEvent* popEvent() {
@@ -40,33 +42,34 @@ struct PopStream {
   void drain() {
     while (const AsyncInputEvent* ev = popEvent()) {
       if (ev->kind == kAsyncEventPress) {
-        pendingPressed = static_cast<uint8_t>(pendingPressed | (1u << ev->button));
+        ++pendingPressCount[ev->button];
       } else {
-        pendingReleased = static_cast<uint8_t>(pendingReleased | (1u << ev->button));
+        ++pendingReleaseCount[ev->button];
       }
     }
   }
   bool wasPressed(uint8_t button) {
     drain();
-    const uint8_t bit = static_cast<uint8_t>(1u << button);
-    if ((pendingPressed & bit) != 0) {
-      pendingPressed = static_cast<uint8_t>(pendingPressed & ~bit);
+    if (pendingPressCount[button] > 0) {
+      --pendingPressCount[button];
       return true;
     }
     return false;
   }
   bool wasReleased(uint8_t button) {
     drain();
-    const uint8_t bit = static_cast<uint8_t>(1u << button);
-    if ((pendingReleased & bit) != 0) {
-      pendingReleased = static_cast<uint8_t>(pendingReleased & ~bit);
+    if (pendingReleaseCount[button] > 0) {
+      --pendingReleaseCount[button];
       return true;
     }
     return false;
   }
   bool wasAnyPressed() {  // report-only: never consumes
     drain();
-    return pendingPressed != 0;
+    for (const uint8_t count : pendingPressCount) {
+      if (count > 0) return true;
+    }
+    return false;
   }
 };
 
@@ -132,6 +135,21 @@ int main() {
     assert(s.wasAnyPressed());  // still pending
     assert(s.wasPressed(1));
     assert(!s.wasAnyPressed());
+  }
+
+  {  // Rapid repeated edges of the SAME button survive the pending cache:
+     // two full clicks queued before one check deliver TWO consumable
+     // releases (the double-click gesture depends on it).
+    PopStream s;
+    s.source.q.push_back({0, kAsyncEventPress});
+    s.source.q.push_back({0, kAsyncEventRelease});
+    s.source.q.push_back({0, kAsyncEventPress});
+    s.source.q.push_back({0, kAsyncEventRelease});
+    assert(s.wasReleased(0));  // first release
+    assert(s.wasPressed(0));   // second press — a bit cache would have lost it
+    assert(s.wasReleased(0));  // second release
+    assert(s.wasPressed(0));   // second press delivered (4 events, 4 consumptions)
+    assert(!s.wasPressed(0) && !s.wasReleased(0));  // stream empty
   }
 
   std::printf("event-pop policy tests: OK\n");

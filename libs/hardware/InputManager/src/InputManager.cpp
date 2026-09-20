@@ -225,7 +225,7 @@ InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
 void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs, const uint8_t queueLen) {
   if (_asyncTask) return;  // already running
   _asyncPollMs = pollMs;
-  _asyncQueue = xQueueCreate(queueLen, sizeof(uint8_t));
+  _asyncQueue = xQueueCreate(queueLen, sizeof(AsyncInputEvent));
   if (!_asyncQueue) return;
   _asyncTapQueue = xQueueCreate(queueLen, sizeof(float) * 2);
   _asyncSwipeQueue = xQueueCreate(queueLen, sizeof(float) * 4);
@@ -422,10 +422,11 @@ void InputManager::applyStateChange(const uint8_t state, const unsigned long cur
 
   // Edge source is mode-specific: async runs this path on the poll task,
   // where the app latch (published by the drain path) is another task's
-  // data — read the task registers. Sync runs it on the app task after the
-  // clear-then-set reset, where releasedEvents is always 0 here (historical
-  // behavior, preserved exactly).
-  const uint8_t releasedEdges = (_asyncTask != nullptr) ? taskReleasedEdges_ : releasedEvents;
+  // data — read the task registers. Sync runs it on the app task; the
+  // shared releasedEvents was cleared at update() entry, so the real edge
+  // lives in the task register here too (coderabbit review-r7: reading the
+  // cleared register left buttonPressFinish/powerButtonPressFinish stale).
+  const uint8_t releasedEdges = taskReleasedEdges_;
   if (releasedEdges > 0 && state == 0) {
     buttonPressFinish = currentTime;
   }
@@ -576,9 +577,10 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
     nextState |= static_cast<uint8_t>(1u << logical);
   }
   applyStateChange(nextState, currentTime);
-  // Mode-specific edge source (see applyStateChange): in async mode this
-  // path runs on the poll task — the shared latch is another task's data.
-  if (taskPressedEdges_ & (1u << BTN_POWER) || (_asyncTask == nullptr && (pressedEvents & (1u << BTN_POWER)))) {
+  // The press edge of this pass is in the task register (both modes —
+  // applyStateChange just wrote it; the shared register is not yet
+  // published in sync builds and is another task's data in async builds).
+  if (taskPressedEdges_ & (1u << BTN_POWER)) {
     powerButtonPressStart = twoButtonPressStart;
   }
 }
@@ -665,10 +667,10 @@ bool InputManager::isPowerButtonPhysicallyPressed() const {
 // sites must read once into a local and branch on that).
 bool InputManager::wasPressed(const uint8_t buttonIndex) const {
   if (_asyncTask != nullptr) {
+    if (buttonIndex > BTN_POWER) return false;
     drainQueueIntoPending();
-    const uint8_t bit = static_cast<uint8_t>(1u << buttonIndex);
-    if ((pendingPressed_ & bit) != 0) {
-      pendingPressed_ = static_cast<uint8_t>(pendingPressed_ & ~bit);
+    if (pendingPressCount_[buttonIndex] > 0) {
+      --pendingPressCount_[buttonIndex];
       return true;
     }
     return false;
@@ -679,17 +681,20 @@ bool InputManager::wasPressed(const uint8_t buttonIndex) const {
 bool InputManager::wasAnyPressed() const {
   if (_asyncTask != nullptr) {
     drainQueueIntoPending();
-    return pendingPressed_ != 0;  // report-only: specific checks consume
+    for (const uint8_t count : pendingPressCount_) {
+      if (count > 0) return true;  // report-only: specific checks consume
+    }
+    return false;
   }
   return pressedEvents > 0;
 }
 
 bool InputManager::wasReleased(const uint8_t buttonIndex) const {
   if (_asyncTask != nullptr) {
+    if (buttonIndex > BTN_POWER) return false;
     drainQueueIntoPending();
-    const uint8_t bit = static_cast<uint8_t>(1u << buttonIndex);
-    if ((pendingReleased_ & bit) != 0) {
-      pendingReleased_ = static_cast<uint8_t>(pendingReleased_ & ~bit);
+    if (pendingReleaseCount_[buttonIndex] > 0) {
+      --pendingReleaseCount_[buttonIndex];
       return true;
     }
     return false;
@@ -700,7 +705,10 @@ bool InputManager::wasReleased(const uint8_t buttonIndex) const {
 bool InputManager::wasAnyReleased() const {
   if (_asyncTask != nullptr) {
     drainQueueIntoPending();
-    return pendingReleased_ != 0;  // report-only: specific checks consume
+    for (const uint8_t count : pendingReleaseCount_) {
+      if (count > 0) return true;  // report-only: specific checks consume
+    }
+    return false;
   }
   return releasedEvents > 0;
 }
@@ -712,11 +720,13 @@ const InputManager::AsyncInputEvent* InputManager::popEvent() const {
 }
 
 void InputManager::drainQueueIntoPending() const {
-  while (const AsyncInputEvent* ev = popEvent()) {
-    if (ev->kind == kAsyncEventPress) {
-      pendingPressed_ = static_cast<uint8_t>(pendingPressed_ | (1u << ev->button));
-    } else {
-      pendingReleased_ = static_cast<uint8_t>(pendingReleased_ | (1u << ev->button));
+  while (const InputManager::AsyncInputEvent* ev = popEvent()) {
+    if (ev->button <= BTN_POWER) {
+      if (ev->kind == kAsyncEventPress) {
+        ++pendingPressCount_[ev->button];
+      } else {
+        ++pendingReleaseCount_[ev->button];
+      }
     }
   }
 }
@@ -1007,7 +1017,7 @@ bool InputManager::wasMultiTouchPinch(float& scale, float& nxCenter, float& nyCe
   const uint16_t cx = touchField(&TouchFrameState::multiTouchPinchCenterX, multiTouchPinchCenterX);
   const uint16_t cy = touchField(&TouchFrameState::multiTouchPinchCenterY, multiTouchPinchCenterY);
   normalizeTouchPoint(cx, cy, nxCenter, nyCenter);
-  durationMs = multiTouchPinchDurationMs;
+  durationMs = touchField(&TouchFrameState::multiTouchPinchDurationMs, multiTouchPinchDurationMs);
   return true;
 #else
   (void)scale;

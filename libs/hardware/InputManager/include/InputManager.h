@@ -221,10 +221,12 @@ class InputManager {
   // mid-refresh is otherwise lost. No-op if already started.
   //
   // When async polling is active the app must NOT sample hardware itself; the
-  // task owns the edge state. update() remains the app's entry point — it
-  // becomes a drain path (docs/design/2026-09-20-async-input.md §2.1) — and
-  // edge semantics (press AND release, hold machinery, level state) are
-  // preserved. Direct pop*() consumers (standalone tools) may still drain.
+  // task owns the edge state. update() is a NO-OP in async mode (the poll
+  // task owns sampling; edges move to the app only through the pending-edge
+  // checks wasPressed/wasReleased, the report-only wasAny* checks, and
+  // consumeTouchFrame()) — and edge semantics (press AND release, hold
+  // machinery, level state) are preserved. Direct pop*() consumers
+  // (standalone tools) may still drain the queue.
   void beginAsync(uint8_t taskPriority = 2, uint32_t pollMs = 15, uint8_t queueLen = 32);
 
   // Event record latched by the async poller: both press and release edges
@@ -362,17 +364,21 @@ class InputManager {
   // (consume-on-check). In sync builds the real path runs on the app task
   // and publishes its registers directly — historical semantics.
 
-  // The app-visible registers: the drain path's published edges (the
-  // getters' historical read surface — pressedEvents/releasedEvents keep
-  // their names below).
+  // The real sampling path's edge registers (task-local on the poll task;
+  // the app never sees them directly — it reads the consume-on-check cache
+  // and, in sync builds, the published registers below).
   uint8_t taskPressedEdges_ = 0;
   uint8_t taskReleasedEdges_ = 0;
 
-  // Consume-on-check cache: edges popped from the async queue land here and
-  // stay until their specific wasPressed/wasReleased check consumes them.
-  // mutable: the getters are const and drain on check (single consumer task).
-  mutable uint8_t pendingPressed_ = 0;
-  mutable uint8_t pendingReleased_ = 0;
+  // Consume-on-check cache: edges popped from the async queue land here
+  // and stay until their specific wasPressed/wasReleased check consumes
+  // them. COUNTS per button (not bits): two presses of the same button
+  // queued before one check deliver two consumable edges (coderabbit
+  // review-r7 — a bit cache would merge them and lose the second).
+  // mutable: the getters are const and drain on check (single consumer
+  // task). Index range: BTN_BACK..BTN_POWER.
+  mutable uint8_t pendingPressCount_[BTN_POWER + 1] = {};
+  mutable uint8_t pendingReleaseCount_[BTN_POWER + 1] = {};
   // popEvent()'s single scratch slot: the popped event lives here until the
   // next popEvent() call (the handle the API returns points into it).
   mutable AsyncInputEvent popScratch_ = {};
