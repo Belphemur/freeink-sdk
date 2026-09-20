@@ -215,19 +215,31 @@ class InputManager {
 
   // --- Optional background polling -------------------------------------------
   // Spawns a FreeRTOS task that samples the buttons every pollMs and latches
-  // each press edge (a BTN_* index) into an internal queue. This decouples
-  // input from rendering: on e-paper, a slow refresh blocks the app's main
-  // loop, so a press that lands mid-refresh is otherwise lost — the task keeps
-  // sampling (refresh busy-waits yield via delay()) and the app drains presses
-  // with popPress() afterward. No-op if already started.
+  // each edge into an internal queue. This decouples input from rendering: on
+  // e-paper, a slow refresh blocks the app's main loop, so a press that lands
+  // mid-refresh is otherwise lost. No-op if already started.
   //
-  // When async polling is active the app must NOT call update()/wasPressed()
-  // itself; the task owns the edge state. Drain with popPress() instead.
+  // When async polling is active the app must NOT sample hardware itself; the
+  // task owns the edge state. update() remains the app's entry point — it
+  // becomes a drain path (docs/design/2026-09-20-async-input.md §2.1) — and
+  // edge semantics (press AND release, hold machinery, level state) are
+  // preserved. Direct pop*() consumers (standalone tools) may still drain.
   void beginAsync(uint8_t taskPriority = 2, uint32_t pollMs = 15, uint8_t queueLen = 32);
 
-  // Pop the next latched button index (BTN_*) into `button`. Returns false when
-  // no press is pending (or async polling was never started).
-  bool popPress(uint8_t& button);
+  // Event record latched by the async poller: both press and release edges
+  // are queued so the app's release-driven grammar survives busy windows.
+  static constexpr uint8_t kAsyncEventPress = 0;
+  static constexpr uint8_t kAsyncEventRelease = 1;
+  struct AsyncInputEvent {
+    uint8_t button;  // BTN_* index
+    uint8_t kind;    // kAsyncEventPress / kAsyncEventRelease
+  };
+
+  // Pop the next latched edge (BTN_* + press/release kind). Returns false
+  // when nothing is pending (or async polling was never started). The
+  // async-aware update() drains this queue itself; direct consumers are
+  // standalone tools.
+  bool popPress(AsyncInputEvent& ev);
 
   // Pop the next latched touch tap (normalized 0..1 panel-native coordinates,
   // same frame as wasTouchTap). The async task queues every completed tap, so
@@ -256,6 +268,13 @@ class InputManager {
   // Pop a queued completed two-contact pinch/spread. Values use the same scale,
   // normalized center, and duration contract as wasMultiTouchPinch().
   bool popMultiTouchPinch(float& scale, float& nxCenter, float& nyCenter, unsigned long& durationMs);
+
+  // --- Async-mode frame boundary --------------------------------------------
+  // Call once per app tick BEFORE update(): clears the drained-edge latch so
+  // every edge queued since the previous frame is delivered to this frame
+  // exactly once. No-op until async polling is started; sync builds keep the
+  // historical one-shot semantics inside update() itself.
+  void beginInputFrame();
 
   // --- Diagnostics -----------------------------------------------------------
   // A live sample of one button-group ADC pin: the raw reading plus the BTN_*
@@ -309,6 +328,22 @@ class InputManager {
   uint32_t _asyncPollMs = 15;
   static void asyncTaskTrampoline(void* self);
   void asyncPoll();
+
+  // Async-mode edge split (docs/design/2026-09-20-async-input.md §2.1):
+  // taskPressedEdges_/taskReleasedEdges_ are the poll task's own registers
+  // (written by the real sampling path when it runs there, and by the hold
+  // machinery); pressedEvents_/releasedEvents_ are the APP-visible latch the
+  // drain path publishes. pending* accumulate drained events between
+  // beginInputFrame() calls. In sync builds the real path runs on the app
+  // task and publishes its registers directly — historical semantics.
+  uint8_t taskPressedEdges_ = 0;
+  uint8_t taskReleasedEdges_ = 0;
+  uint8_t pendingPressed_ = 0;
+  uint8_t pendingReleased_ = 0;
+
+  void drainAsyncEvents();
+  bool taskWasPressed(const uint8_t buttonIndex) const;
+  bool taskWasReleased(const uint8_t buttonIndex) const;
 
   int getButtonFromADC(int adcValue, const int ranges[], int numButtons);
   bool isDigitalPressed(int8_t pin) const;

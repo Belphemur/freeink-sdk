@@ -1,5 +1,7 @@
 #include "InputManager.h"
 
+#include <freertos/task.h>  // xTaskGetCurrentTaskHandle: async task identity check
+
 #include <algorithm>
 
 #include "MultiTouchGestureMath.h"
@@ -239,41 +241,64 @@ void InputManager::asyncPoll() {
   static const uint8_t kButtons[] = {BTN_BACK, BTN_CONFIRM, BTN_LEFT, BTN_RIGHT, BTN_UP, BTN_DOWN, BTN_POWER};
   for (;;) {
     update();
+    // Both edge kinds are queued: the app's release-driven grammar (page
+    // turns, menus) needs the release edge even when its frame missed the
+    // entire press+release window. The async task's own edges live in the
+    // task registers — the app latch is never touched from this task.
     for (const uint8_t b : kButtons) {
-      if (wasPressed(b)) xQueueSend(_asyncQueue, &b, 0);
+      if (taskWasPressed(b)) {
+        const AsyncInputEvent ev = {b, kAsyncEventPress};
+        xQueueSend(_asyncQueue, &ev, 0);
+      }
+      if (taskWasReleased(b)) {
+        const AsyncInputEvent ev = {b, kAsyncEventRelease};
+        xQueueSend(_asyncQueue, &ev, 0);
+      }
     }
-    float tap[2];
-    if (_asyncTapQueue && wasTouchTap(tap[0], tap[1])) {
-      xQueueSend(_asyncTapQueue, tap, 0);
-    }
-    float swipe[4];
-    if (_asyncSwipeQueue && wasSwipe(swipe[0], swipe[1], swipe[2], swipe[3])) {
-      xQueueSend(_asyncSwipeQueue, swipe, 0);
-    }
-    if (_asyncMultiTouchSwipeQueue && multiTouchSwipeEvent && !touchSuppressed) {
-      const QueuedMultiTouchSwipe multiTouchSwipe = {multiTouchSwipeStartX,       multiTouchSwipeStartY,
-                                                     multiTouchSwipeEndX,         multiTouchSwipeEndY,
-                                                     multiTouchSwipeContactCount, multiTouchSwipeDurationMs};
-      xQueueSend(_asyncMultiTouchSwipeQueue, &multiTouchSwipe, 0);
-    }
-    if (_asyncMultiTouchRotationQueue && multiTouchRotationEvent && !touchSuppressed) {
-      const QueuedMultiTouchRotation rotation = {multiTouchRotationDegrees, multiTouchRotationCenterX,
-                                                 multiTouchRotationCenterY, multiTouchRotationDurationMs};
-      xQueueSend(_asyncMultiTouchRotationQueue, &rotation, 0);
-    }
-    if (_asyncMultiTouchPinchQueue && multiTouchPinchEvent && !touchSuppressed) {
-      const QueuedMultiTouchPinch pinch = {multiTouchPinchScale, multiTouchPinchCenterX, multiTouchPinchCenterY,
-                                           multiTouchPinchDurationMs};
-      xQueueSend(_asyncMultiTouchPinchQueue, &pinch, 0);
-    }
+    // Touch queueing is DISABLED in the v1 async wiring: the one-shot touch
+    // flags accumulate on this task until the app's beginInputFrame()
+    // acknowledges them, so the getters here would re-latch the same event
+    // every 15 ms and flood the queues. Replay-through-queue is v2
+    // (docs/design/2026-09-20-async-input.md §2.1); the pop*() API stays for
+    // standalone consumers.
     vTaskDelay(pdMS_TO_TICKS(_asyncPollMs));
   }
 }
 
-bool InputManager::popPress(uint8_t& button) {
+bool InputManager::popPress(AsyncInputEvent& ev) {
   if (!_asyncQueue) return false;
-  return xQueueReceive(_asyncQueue, &button, 0) == pdTRUE;
+  return xQueueReceive(_asyncQueue, &ev, 0) == pdTRUE;
 }
+
+// Async-mode drain (docs/design/2026-09-20-async-input.md §2.1): pop the
+// task-queued edges into the frame latch and refresh the level snapshot the
+// app reads. Runs ONLY on the app/wait-loop task — never on the poll task.
+// The latches accumulate across wait-loop update() calls within one app
+// frame; beginInputFrame() clears them.
+void InputManager::drainAsyncEvents() {
+  AsyncInputEvent ev;
+  while (popPress(ev)) {
+    if (ev.kind == kAsyncEventPress) {
+      pendingPressed_ |= static_cast<uint8_t>(1u << ev.button);
+    } else {
+      pendingReleased_ |= static_cast<uint8_t>(1u << ev.button);
+    }
+  }
+  pressedEvents = pendingPressed_;
+  releasedEvents = pendingReleased_;
+}
+
+void InputManager::beginInputFrame() {
+  pendingPressed_ = 0;
+  pendingReleased_ = 0;
+  pressedEvents = 0;
+  releasedEvents = 0;
+}
+
+// The poll task's own edge registers (never the app latch — a 15 ms clear
+// there would erase events the app frame has not read yet).
+bool InputManager::taskWasPressed(const uint8_t buttonIndex) const { return taskPressedEdges_ & (1 << buttonIndex); }
+bool InputManager::taskWasReleased(const uint8_t buttonIndex) const { return taskReleasedEdges_ & (1 << buttonIndex); }
 
 bool InputManager::popTouchTap(float& nx, float& ny) {
   if (!_asyncTapQueue) return false;
@@ -353,10 +378,10 @@ uint8_t InputManager::getDigitalState() const {
 }
 
 void InputManager::applyStateChange(const uint8_t state, const unsigned long currentTime) {
-  pressedEvents = state & ~currentState;
-  releasedEvents = currentState & ~state;
+  taskPressedEdges_ = state & ~currentState;
+  taskReleasedEdges_ = currentState & ~state;
 
-  if (pressedEvents > 0 && currentState == 0) {
+  if (taskPressedEdges_ > 0 && currentState == 0) {
     buttonPressStart = currentTime;
   }
 
@@ -364,7 +389,7 @@ void InputManager::applyStateChange(const uint8_t state, const unsigned long cur
     buttonPressFinish = currentTime;
   }
 
-  if (pressedEvents & (1 << BTN_POWER)) {
+  if (taskPressedEdges_ & (1 << BTN_POWER)) {
     powerButtonPressStart = currentTime;
   }
 
@@ -410,8 +435,8 @@ void InputManager::updateConfirmBackHold(const unsigned long currentTime) {
   applyStateChange(nextState, currentTime);
 
   if (emitConfirmClick) {
-    pressedEvents |= (1 << BTN_CONFIRM);
-    releasedEvents |= (1 << BTN_CONFIRM);
+    taskPressedEdges_ |= (1 << BTN_CONFIRM);
+    taskReleasedEdges_ |= (1 << BTN_CONFIRM);
   }
 }
 
@@ -452,13 +477,13 @@ void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
 
   applyStateChange(nextState, currentTime);
 
-  if (pressedEvents & (1 << BTN_POWER)) {
+  if (taskPressedEdges_ & (1 << BTN_POWER)) {
     powerButtonPressStart = confirmPowerPressStart;
   }
 
   if (emitConfirmClick) {
-    pressedEvents |= (1 << BTN_CONFIRM);
-    releasedEvents |= (1 << BTN_CONFIRM);
+    taskPressedEdges_ |= (1 << BTN_CONFIRM);
+    taskReleasedEdges_ |= (1 << BTN_CONFIRM);
   }
 }
 
@@ -486,8 +511,8 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
     applyStateChange(auxiliaryState, currentTime);
     if (emitShort && (releasedPhysical == 1 || releasedPhysical == 2)) {
       const uint8_t logical = releasedPhysical == 1 ? BTN_UP : BTN_DOWN;
-      pressedEvents |= static_cast<uint8_t>(1u << logical);
-      releasedEvents |= static_cast<uint8_t>(1u << logical);
+      taskPressedEdges_ |= static_cast<uint8_t>(1u << logical);
+      taskReleasedEdges_ |= static_cast<uint8_t>(1u << logical);
       buttonPressStart = twoButtonPressStart;
       buttonPressFinish = currentTime;
     }
@@ -516,43 +541,64 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
 void InputManager::update() {
   const unsigned long currentTime = millis();
 
-  pressedEvents = 0;
-  releasedEvents = 0;
-  touchPressedEvent = false;  // one-shot touch coord events, cleared each update()
-  touchReleasedEvent = false;
-  touchLongPressEvent = false;
-  multiTouchSwipeEvent = false;
-  multiTouchRotationEvent = false;
-  multiTouchPinchEvent = false;
-  touchHomeKeyEvent = false;
-  touchHomeKeyTapEvent = false;
-  touchHomeKeyLongEvent = false;
+  // Async mode: the app's update() call is a DRAIN — pop the task-queued
+  // button edges into the frame latch and return. The full sampling path
+  // runs on the async task only (docs/design/2026-09-20-async-input.md §2.1).
+  if (_asyncTask != nullptr && xTaskGetCurrentTaskHandle() != _asyncTask) {
+    drainAsyncEvents();
+    return;
+  }
+
+  // Real path (sync builds: the app's task; async builds: the poll task).
+  taskPressedEdges_ = 0;
+  taskReleasedEdges_ = 0;
+  if (_asyncTask == nullptr) {
+    // Sync builds: one-shot edges, cleared each update() exactly as before.
+    pressedEvents = 0;
+    releasedEvents = 0;
+    touchPressedEvent = false;  // one-shot touch coord events, cleared each update()
+    touchReleasedEvent = false;
+    touchLongPressEvent = false;
+    multiTouchSwipeEvent = false;
+    multiTouchRotationEvent = false;
+    multiTouchPinchEvent = false;
+    touchHomeKeyEvent = false;
+    touchHomeKeyTapEvent = false;
+    touchHomeKeyLongEvent = false;
+  }
+  // Async builds: touch one-shot flags are NOT cleared here — the poll task
+  // runs every 15ms and would erase events before the app's (possibly
+  // seconds-later) frame reads them. They accumulate until beginInputFrame()
+  // acknowledges them on the app task.
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
-    return;
-  }
-  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold) {
+  } else if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold) {
     updateConfirmPowerHold(currentTime);
-    return;
-  }
-  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalTwoButton) {
+  } else if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalTwoButton) {
     updateDigitalTwoButton(currentTime);
-    return;
-  }
+  } else {
+    const uint8_t state = getState();
 
-  const uint8_t state = getState();
-
-  // Debounce
-  if (state != lastState) {
-    lastDebounceTime = currentTime;
-    lastState = state;
-  }
-
-  if ((currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
-    if (state != currentState) {
-      applyStateChange(state, currentTime);
+    // Debounce
+    if (state != lastState) {
+      lastDebounceTime = currentTime;
+      lastState = state;
     }
+
+    if ((currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
+      if (state != currentState) {
+        applyStateChange(state, currentTime);
+      }
+    }
+  }
+
+  if (_asyncTask == nullptr) {
+    // Sync builds: publish this pass's edges to the app registers (clear-then-
+    // set = the historical one-shot semantics). Async builds: the app latch is
+    // published by the drain path only — the poll task never touches it.
+    pressedEvents = taskPressedEdges_;
+    releasedEvents = taskReleasedEdges_;
   }
 }
 
