@@ -11,8 +11,11 @@
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <freertos/FreeRTOS.h>
+#include <atomic>
 #include <freertos/queue.h>
 #include <freertos/task.h>
+
+#include "InputFrameLatch.h"
 
 #include <cstdint>
 
@@ -341,15 +344,139 @@ class InputManager {
   // taskPressedEdges_/taskReleasedEdges_ are the poll task's own registers
   // (written by the real sampling path when it runs there, and by the hold
   // machinery); pressedEvents_/releasedEvents_ are the APP-visible latch the
-  // drain path publishes. pending* accumulate drained events between
-  // beginInputFrame() calls. In sync builds the real path runs on the app
-  // task and publishes its registers directly — historical semantics.
+  // drain path publishes. pending* are the CARRY registers: a drain that
+  // runs MID-frame (wait loops) pops into the carry so the next
+  // beginInputFrame() delivers it — clearing at the frame boundary would
+  // otherwise erase it unread (soak replay regression 2026-09-20, the
+  // lost-input direction). The policy (begin = latch ← carry, carry cleared;
+  // first post-begin drain publishes, mid-frame drains accumulate) lives in
+  // InputFrameLatch.h and is shared with the touch snapshot latch below.
+  // In sync builds the real path runs on the app task and publishes its
+  // registers directly — historical semantics.
+  struct ButtonEdges {
+    uint8_t pressed = 0;
+    uint8_t released = 0;
+    void mergeFrom(const ButtonEdges& other) {
+      pressed |= other.pressed;
+      released |= other.released;
+    }
+  };
+  InputFrameLatch<ButtonEdges> buttonFrameLatch_;
+
+  // The app-visible registers: published from buttonFrameLatch_'s latch on
+  // every drain and beginFrame — the getters' historical read surface
+  // (pressedEvents/releasedEvents keep their names below).
   uint8_t taskPressedEdges_ = 0;
   uint8_t taskReleasedEdges_ = 0;
-  uint8_t pendingPressed_ = 0;
-  uint8_t pendingReleased_ = 0;
+
+  // Per-frame snapshot of every field the touch/home-key one-shot getters
+  // evaluate (events + gating + points/params). The poll task's LIVE flags
+  // are NEVER cleared in async mode (their only clear lives in the sync-only
+  // block), so the getters must read this latch — acked (replaced) once per
+  // frame by beginInputFrame(); without it one tap/swipe/home-key event
+  // replayed on every frame (soak replay regression 2026-09-20). The carry
+  // serves mid-frame drains exactly like pending* for buttons. The merge is
+  // bools-OR (an event stays delivered), scalars-last-wins (newest gesture's
+  // geometry) — two interactions inside one app frame are rare and the
+  // newest geometry wins.
+  struct TouchFrameState {
+    bool touchPressedEvent = false;
+    bool touchReleasedEvent = false;
+    bool multiTouchSwipeEvent = false;
+    bool multiTouchRotationEvent = false;
+    bool multiTouchPinchEvent = false;
+    bool touchLongPressEvent = false;
+    bool touchHomeKeyEvent = false;
+    bool touchHomeKeyTapEvent = false;
+    bool touchHomeKeyLongEvent = false;
+    bool touchSuppressed = false;
+    bool touchMultiContactSequence = false;
+    bool touchMovedBeyondTapReleaseSlop = false;
+    bool touchPressed = false;
+    unsigned long lastTouchHeldDurationMs = 0;
+    TouchPoint touchDownPoint = {false, 0, 0, 0};
+    TouchPoint touchUpPoint = {false, 0, 0, 0};
+    uint8_t multiTouchSwipeContactCount = 0;
+    uint16_t multiTouchSwipeStartX = 0;
+    uint16_t multiTouchSwipeStartY = 0;
+    uint16_t multiTouchSwipeEndX = 0;
+    uint16_t multiTouchSwipeEndY = 0;
+    uint16_t multiTouchSwipeDurationMs = 0;
+    float multiTouchRotationDegrees = 0.0f;
+    uint16_t multiTouchRotationCenterX = 0;
+    uint16_t multiTouchRotationCenterY = 0;
+    uint16_t multiTouchRotationDurationMs = 0;
+    float multiTouchPinchScale = 1.0f;
+    uint16_t multiTouchPinchCenterX = 0;
+    uint16_t multiTouchPinchCenterY = 0;
+    uint16_t multiTouchPinchDurationMs = 0;
+
+    void mergeFrom(const TouchFrameState& live) {
+      touchPressedEvent |= live.touchPressedEvent;
+      touchReleasedEvent |= live.touchReleasedEvent;
+      multiTouchSwipeEvent |= live.multiTouchSwipeEvent;
+      multiTouchRotationEvent |= live.multiTouchRotationEvent;
+      multiTouchPinchEvent |= live.multiTouchPinchEvent;
+      touchLongPressEvent |= live.touchLongPressEvent;
+      touchHomeKeyEvent |= live.touchHomeKeyEvent;
+      touchHomeKeyTapEvent |= live.touchHomeKeyTapEvent;
+      touchHomeKeyLongEvent |= live.touchHomeKeyLongEvent;
+      // Gating + geometry: the newest interaction's context.
+      touchSuppressed = live.touchSuppressed;
+      touchMultiContactSequence = live.touchMultiContactSequence;
+      touchMovedBeyondTapReleaseSlop = live.touchMovedBeyondTapReleaseSlop;
+      touchPressed = live.touchPressed;
+      lastTouchHeldDurationMs = live.lastTouchHeldDurationMs;
+      touchDownPoint = live.touchDownPoint;
+      touchUpPoint = live.touchUpPoint;
+      multiTouchSwipeContactCount = live.multiTouchSwipeContactCount;
+      multiTouchSwipeStartX = live.multiTouchSwipeStartX;
+      multiTouchSwipeStartY = live.multiTouchSwipeStartY;
+      multiTouchSwipeEndX = live.multiTouchSwipeEndX;
+      multiTouchSwipeEndY = live.multiTouchSwipeEndY;
+      multiTouchSwipeDurationMs = live.multiTouchSwipeDurationMs;
+      multiTouchRotationDegrees = live.multiTouchRotationDegrees;
+      multiTouchRotationCenterX = live.multiTouchRotationCenterX;
+      multiTouchRotationCenterY = live.multiTouchRotationCenterY;
+      multiTouchRotationDurationMs = live.multiTouchRotationDurationMs;
+      multiTouchPinchScale = live.multiTouchPinchScale;
+      multiTouchPinchCenterX = live.multiTouchPinchCenterX;
+      multiTouchPinchCenterY = live.multiTouchPinchCenterY;
+      multiTouchPinchDurationMs = live.multiTouchPinchDurationMs;
+    }
+  };
+  InputFrameLatch<TouchFrameState> touchFrameLatch_{};
+
+  // The poll task's touch/home-key one-shot EVENTS as an atomic bitmask (the
+  // app latch carries their per-frame snapshot above; the events themselves
+  // are produced cross-task and must not race). Set sites fetch_or; the
+  // frame drain consumes with exchange(0) — atomic ack, so an event is
+  // delivered exactly once per drained frame and never replays.
+  enum : uint16_t {
+    kEvTouchPressed = 1u << 0,
+    kEvTouchReleased = 1u << 1,
+    kEvMultiTouchSwipe = 1u << 2,
+    kEvMultiTouchRotation = 1u << 3,
+    kEvMultiTouchPinch = 1u << 4,
+    kEvTouchLongPress = 1u << 5,
+    kEvTouchHomeKey = 1u << 6,
+    kEvTouchHomeKeyTap = 1u << 7,
+    kEvTouchHomeKeyLong = 1u << 8,
+  };
+  std::atomic<uint16_t> touchOneShots_{0};
+
+  // Mode-aware field read for the one-shot getters: async frames read the
+  // latch (acked per frame); sync frames read the live members (update()
+  // clears them historically).
+  template <typename T>
+  T touchField(T TouchFrameState::*latched, const T& live) const {
+    return _asyncTask != nullptr ? touchFrameLatch_.latch().*latched : live;
+  }
 
   void drainAsyncEvents();
+  // Builds the per-drain snapshot: event bits (already consumed from the
+  // atomic one-shot mask) + the poll task's current gating/geometry context.
+  TouchFrameState liveTouchState(uint16_t events) const;
   bool taskWasPressed(const uint8_t buttonIndex) const;
   bool taskWasReleased(const uint8_t buttonIndex) const;
 
