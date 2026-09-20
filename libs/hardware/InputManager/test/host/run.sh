@@ -7,7 +7,7 @@ mkdir -p "$BUILD_DIR"
 c++ -std=c++17 -Wall -Wextra -Werror test_multitouch_gesture_math.cpp -o "$BUILD_DIR/test_multitouch_gesture_math"
 "$BUILD_DIR/test_multitouch_gesture_math"
 
-c++ -std=c++17 -Wall -Wextra -Werror -I../../include test_latch_policy.cpp -o "$BUILD_DIR/test_latch_policy"
-"$BUILD_DIR/test_latch_policy"
+c++ -std=c++17 -Wall -Wextra -Werror -I../../include test_event_pop.cpp -o "$BUILD_DIR/test_event_pop"
+"$BUILD_DIR/test_event_pop"
 
 echo "InputManager host tests: OK"

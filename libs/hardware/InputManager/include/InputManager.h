@@ -15,8 +15,6 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
-#include "InputFrameLatch.h"
-
 #include <cstdint>
 
 class InputManager {
@@ -240,16 +238,24 @@ class InputManager {
 
   // Pop the next latched edge (BTN_* + press/release kind). Returns false
   // when nothing is pending (or async polling was never started). The
-  // async-aware update() drains this queue itself; direct consumers are
-  // standalone tools.
+  // async-aware update() is a no-op — edges move to the app only via the
+  // pending-edge checks (wasPressed/wasReleased) and consumeTouchFrame();
+  // direct consumers are standalone tools.
   bool popPress(AsyncInputEvent& ev);
+
+  // POP PROTOCOL (soak-fix7 final): pop the next queued edge and return a
+  // handle to it; nullptr means "nothing to consume" — one operation does
+  // consume + emptiness check, never blocks, never returns a zeroed or
+  // undefined struct. The handle stays valid until the next popEvent()
+  // call (single scratch slot — copy what you need). This is the primary
+  // consumption API; wasPressed/wasReleased are thin wrappers that walk
+  // the stream until they match, with identical exactly-once semantics.
+  const InputManager::AsyncInputEvent* popEvent() const;
 
   // True while the background polling task owns edge sampling. Wait loops
   // that call update() only to keep debounce progressing can skip it in
-  // this mode — the poll task samples every pollMs, and a wait-loop update()
-  // would drain queued edges into the frame latch where the loop's caller
-  // (which only reads levels) never sees them before the next
-  // beginInputFrame() clears the latch.
+  // this mode — the poll task samples every pollMs, and update() in async
+  // mode is a no-op anyway (edges move only through the checks).
   bool asyncActive() const { return _asyncTask != nullptr; }
 
   // Pop the next latched touch tap (normalized 0..1 panel-native coordinates,
@@ -280,12 +286,19 @@ class InputManager {
   // normalized center, and duration contract as wasMultiTouchPinch().
   bool popMultiTouchPinch(float& scale, float& nxCenter, float& nyCenter, unsigned long& durationMs);
 
-  // --- Async-mode frame boundary --------------------------------------------
-  // Call once per app tick BEFORE update(): clears the drained-edge latch so
-  // every edge queued since the previous frame is delivered to this frame
-  // exactly once. No-op until async polling is started; sync builds keep the
-  // historical one-shot semantics inside update() itself.
-  void beginInputFrame();
+  // --- Async-mode consumption model (soak-fix7 final: consume-on-check) ------
+  // Checking a button edge CONSUMES it: wasPressed()/wasReleased() drain the
+  // async queue into a pending cache and test-and-clear their bit — checked
+  // twice, the second read is false. Non-blocking when nothing is queued.
+  // Touch/home-key events are the exception: their getters share event bits
+  // with classification predicates (one release edge feeds the swipe, tap,
+  // AND raw-release classifiers in a single frame), so per-read consumption
+  // would break classification — the whole touch frame is consumed
+  // atomically by consumeTouchFrame() once per app tick instead. The old
+  // frame-boundary pair (beginInputFrame/drain) is a no-op kept for source
+  // compatibility; nothing may depend on it.
+  void consumeTouchFrame();
+  void beginInputFrame();  // no-op (consume-on-check replaced the frame ack)
 
   // --- Diagnostics -----------------------------------------------------------
   // A live sample of one button-group ADC pin: the raw reading plus the BTN_*
@@ -343,42 +356,39 @@ class InputManager {
   // Async-mode edge split (docs/design/2026-09-20-async-input.md §2.1):
   // taskPressedEdges_/taskReleasedEdges_ are the poll task's own registers
   // (written by the real sampling path when it runs there, and by the hold
-  // machinery); pressedEvents_/releasedEvents_ are the APP-visible latch the
-  // drain path publishes. pending* are the CARRY registers: a drain that
-  // runs MID-frame (wait loops) pops into the carry so the next
-  // beginInputFrame() delivers it — clearing at the frame boundary would
-  // otherwise erase it unread (soak replay regression 2026-09-20, the
-  // lost-input direction). The policy (begin = latch ← carry, carry cleared;
-  // first post-begin drain publishes, mid-frame drains accumulate) lives in
-  // InputFrameLatch.h and is shared with the touch snapshot latch below.
-  // In sync builds the real path runs on the app task and publishes its
-  // registers directly — historical semantics.
-  struct ButtonEdges {
-    uint8_t pressed = 0;
-    uint8_t released = 0;
-    void mergeFrom(const ButtonEdges& other) {
-      pressed |= other.pressed;
-      released |= other.released;
-    }
-  };
-  InputFrameLatch<ButtonEdges> buttonFrameLatch_;
+  // machinery); the app never sees them directly. Async edges flow
+  // queue → pendingPressed_/pendingReleased_ (drained on every edge check,
+  // UNION — no loss) → consumed bit-by-bit by wasPressed/wasReleased
+  // (consume-on-check). In sync builds the real path runs on the app task
+  // and publishes its registers directly — historical semantics.
 
-  // The app-visible registers: published from buttonFrameLatch_'s latch on
-  // every drain and beginFrame — the getters' historical read surface
-  // (pressedEvents/releasedEvents keep their names below).
+  // The app-visible registers: the drain path's published edges (the
+  // getters' historical read surface — pressedEvents/releasedEvents keep
+  // their names below).
   uint8_t taskPressedEdges_ = 0;
   uint8_t taskReleasedEdges_ = 0;
 
-  // Per-frame snapshot of every field the touch/home-key one-shot getters
-  // evaluate (events + gating + points/params). The poll task's LIVE flags
-  // are NEVER cleared in async mode (their only clear lives in the sync-only
-  // block), so the getters must read this latch — acked (replaced) once per
-  // frame by beginInputFrame(); without it one tap/swipe/home-key event
-  // replayed on every frame (soak replay regression 2026-09-20). The carry
-  // serves mid-frame drains exactly like pending* for buttons. The merge is
-  // bools-OR (an event stays delivered), scalars-last-wins (newest gesture's
-  // geometry) — two interactions inside one app frame are rare and the
-  // newest geometry wins.
+  // Consume-on-check cache: edges popped from the async queue land here and
+  // stay until their specific wasPressed/wasReleased check consumes them.
+  // mutable: the getters are const and drain on check (single consumer task).
+  mutable uint8_t pendingPressed_ = 0;
+  mutable uint8_t pendingReleased_ = 0;
+  // popEvent()'s single scratch slot: the popped event lives here until the
+  // next popEvent() call (the handle the API returns points into it).
+  mutable AsyncInputEvent popScratch_ = {};
+
+  // Per-CONSUMED-FRAME snapshot of every field the touch/home-key one-shot
+  // getters evaluate (events + gating + points/params). The poll task's LIVE
+  // flags are NEVER cleared in async mode (their only clear lives in the
+  // sync-only block), so the getters must read this snapshot — consumed
+  // atomically from touchOneShots_ by every consumeTouchFrame(); without it
+  // one tap/swipe/home-key event replayed on every frame (soak replay
+  // regression 2026-09-20). Consume-once per tick: the snapshot holds THIS
+  // tick's events; an event not yet consumed is still in touchOneShots_ and
+  // delivered by the next tick's consume. The snapshot build is events-OR +
+  // geometry-last-wins for
+  // the (rare) multi-event pop — two interactions inside one pop are rare
+  // and the newest geometry wins.
   struct TouchFrameState {
     bool touchPressedEvent = false;
     bool touchReleasedEvent = false;
@@ -444,8 +454,12 @@ class InputManager {
       multiTouchPinchCenterY = live.multiTouchPinchCenterY;
       multiTouchPinchDurationMs = live.multiTouchPinchDurationMs;
     }
-  };
-  InputFrameLatch<TouchFrameState> touchFrameLatch_{};
+  };  // TouchFrameState
+
+  // The app-task-owned touch snapshot: REPLACED by each consumeTouchFrame()
+  // with that tick's consumed events + the poll task's current context.
+  // Written only by the consumer task, so plain members (no latch needed).
+  TouchFrameState poppedTouch_{};
 
   // The poll task's touch/home-key one-shot EVENTS as an atomic bitmask (the
   // app latch carries their per-frame snapshot above; the events themselves
@@ -465,16 +479,18 @@ class InputManager {
   };
   std::atomic<uint16_t> touchOneShots_{0};
 
-  // Mode-aware field read for the one-shot getters: async frames read the
-  // latch (acked per frame); sync frames read the live members (update()
-  // clears them historically).
+  // Mode-aware field read for the one-shot getters: async mode reads this
+  // tick's consumed snapshot (consumeTouchFrame consumed the events once);
+  // sync frames read the live members (update() clears them historically).
   template <typename T>
   T touchField(T TouchFrameState::*latched, const T& live) const {
-    return _asyncTask != nullptr ? touchFrameLatch_.latch().*latched : live;
+    return _asyncTask != nullptr ? poppedTouch_.*latched : live;
   }
 
-  void drainAsyncEvents();
-  // Builds the per-drain snapshot: event bits (already consumed from the
+  // Async queue → pending cache (UNION — an edge drained is held until its
+  // specific check consumes it; nothing is dropped or duplicated).
+  void drainQueueIntoPending() const;
+  // Builds the per-tick snapshot: event bits (already consumed from the
   // atomic one-shot mask) + the poll task's current gating/geometry context.
   TouchFrameState liveTouchState(uint16_t events) const;
   bool taskWasPressed(const uint8_t buttonIndex) const;

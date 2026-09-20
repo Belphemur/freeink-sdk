@@ -1,7 +1,5 @@
 #include "InputManager.h"
 
-#include "InputFrameLatch.h"
-
 #include <freertos/task.h>  // xTaskGetCurrentTaskHandle: async task identity check
 
 #include <algorithm>
@@ -258,11 +256,11 @@ void InputManager::asyncPoll() {
       }
     }
     // Touch queueing is DISABLED in the v1 async wiring: the one-shot touch
-    // flags accumulate on this task until the app's beginInputFrame()
-    // acknowledges them, so the getters here would re-latch the same event
-    // every 15 ms and flood the queues. Replay-through-queue is v2
-    // (docs/design/2026-09-20-async-input.md §2.1); the pop*() API stays for
-    // standalone consumers.
+    // flags accumulate on this task until the app's consumeTouchFrame()
+    // consumes them (atomic exchange), so the getters here would re-latch
+    // the same event every 15 ms and flood the queues. Replay-through-queue
+    // is v2 (docs/design/2026-09-20-async-input.md §2.1); the pop*() API
+    // stays for standalone consumers.
     vTaskDelay(pdMS_TO_TICKS(_asyncPollMs));
   }
 }
@@ -272,44 +270,29 @@ bool InputManager::popPress(AsyncInputEvent& ev) {
   return xQueueReceive(_asyncQueue, &ev, 0) == pdTRUE;
 }
 
-// Async-mode drain (docs/design/2026-09-20-async-input.md §2.1): pop the
-// task-queued edges and publish them to the app latch. The FIRST drain after
-// beginInputFrame() publishes into THIS frame's latch; mid-frame drains
-// (wait loops) publish into the carry registers so the next frame's
-// beginInputFrame() delivers them — clearing at the boundary would erase a
-// mid-frame edge unread (soak replay regression 2026-09-20). Runs ONLY on
-// the app/wait-loop task — never on the poll task.
-void InputManager::drainAsyncEvents() {
-  AsyncInputEvent ev;
-  ButtonEdges popped;
-  while (popPress(ev)) {
-    if (ev.kind == kAsyncEventPress) {
-      popped.pressed |= static_cast<uint8_t>(1u << ev.button);
-    } else {
-      popped.released |= static_cast<uint8_t>(1u << ev.button);
-    }
-  }
-  buttonFrameLatch_.drain(popped);
-  pressedEvents = buttonFrameLatch_.latch().pressed;
-  releasedEvents = buttonFrameLatch_.latch().released;
+// Async-mode touch-frame consumption (soak-fix7 final): consume the poll
+// task's touch/home-key one-shots atomically (exchange) into the app's
+// touch snapshot — consume-once per tick, no replay. BUTTONS are NOT
+// consumed here: their checks consume on read (wasPressed/wasReleased
+// drain the queue into the pending cache and test-and-clear their bit),
+// which keeps multi-read semantics at the app's snapshot layer. Runs ONLY
+// on the consumer task (one caller per app tick); wait loops never call
+// it — their update() is a no-op in async mode.
+void InputManager::consumeTouchFrame() {
+  if (_asyncTask == nullptr) return;  // sync builds consume inside update()
 
   // Touch/home-key one-shots: consume the poll task's event bits (atomic
   // exchange — the live flags are NEVER cleared by the poll task in async
-  // mode) and merge them, with the newest gating/geometry context, through
-  // the same latch policy. Without the consume, one tap/swipe/home-key
-  // event replayed on every frame.
-  touchFrameLatch_.drain(liveTouchState(touchOneShots_.exchange(0)));
+  // mode) into this tick's snapshot. Without the consume, one tap/swipe/
+  // home-key event replayed on every frame.
+  poppedTouch_ = liveTouchState(touchOneShots_.exchange(0));
 }
 
 void InputManager::beginInputFrame() {
-  // Acknowledge the previous frame: whatever it drained mid-frame (carry)
-  // becomes this frame's delivery, and the previous latch dies with it
-  // (exactly-once per frame). The app-visible registers re-publish the
-  // fresh latch so the frame's first reads see the carried edges.
-  buttonFrameLatch_.beginFrame();
-  pressedEvents = buttonFrameLatch_.latch().pressed;
-  releasedEvents = buttonFrameLatch_.latch().released;
-  touchFrameLatch_.beginFrame();
+  // No-op (soak-fix7): the frame-boundary ack is dead weight under
+  // consume-on-check — button edges are consumed by their checks, touch
+  // frames by consumeTouchFrame(). Kept as a symbol so stale call sites
+  // compile; nothing may depend on it.
 }
 
 // The poll task's own edge registers (never the app latch — a 15 ms clear
@@ -603,11 +586,13 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
 void InputManager::update() {
   const unsigned long currentTime = millis();
 
-  // Async mode: the app's update() call is a DRAIN — pop the task-queued
-  // button edges into the frame latch and return. The full sampling path
-  // runs on the async task only (docs/design/2026-09-20-async-input.md §2.1).
+  // Async mode: update() is a NO-OP on any task that is not the poll task —
+  // edges move exclusively through the pending-edge checks (wasPressed/
+  // wasReleased, consume-on-check) and consumeTouchFrame(), so a wait
+  // loop's update() call can never consume an edge the real consumer has
+  // not read (soak-fix7). The full sampling path runs on the async task
+  // only.
   if (_asyncTask != nullptr && xTaskGetCurrentTaskHandle() != _asyncTask) {
-    drainAsyncEvents();
     return;
   }
 
@@ -631,8 +616,8 @@ void InputManager::update() {
   }
   // Async builds: touch one-shot flags are NOT cleared here — the poll task
   // runs every 15ms and would erase events before the app's (possibly
-  // seconds-later) frame reads them. They accumulate until beginInputFrame()
-  // acknowledges them on the app task.
+  // seconds-later) consumeTouchFrame() consumes them (atomic exchange) on the
+  // app task.
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
@@ -674,13 +659,67 @@ bool InputManager::isPowerButtonPhysicallyPressed() const {
   return digitalRead(pin) == activeLevel;
 }
 
-bool InputManager::wasPressed(const uint8_t buttonIndex) const { return pressedEvents & (1 << buttonIndex); }
+// Consume-on-check (soak-fix7): drain the async queue into the pending
+// cache (UNION — nothing dropped), then test-and-clear the checked bit.
+// Non-blocking; a second check of the same edge is false by contract (call
+// sites must read once into a local and branch on that).
+bool InputManager::wasPressed(const uint8_t buttonIndex) const {
+  if (_asyncTask != nullptr) {
+    drainQueueIntoPending();
+    const uint8_t bit = static_cast<uint8_t>(1u << buttonIndex);
+    if ((pendingPressed_ & bit) != 0) {
+      pendingPressed_ = static_cast<uint8_t>(pendingPressed_ & ~bit);
+      return true;
+    }
+    return false;
+  }
+  return pressedEvents & (1 << buttonIndex);
+}
 
-bool InputManager::wasAnyPressed() const { return pressedEvents > 0; }
+bool InputManager::wasAnyPressed() const {
+  if (_asyncTask != nullptr) {
+    drainQueueIntoPending();
+    return pendingPressed_ != 0;  // report-only: specific checks consume
+  }
+  return pressedEvents > 0;
+}
 
-bool InputManager::wasReleased(const uint8_t buttonIndex) const { return releasedEvents & (1 << buttonIndex); }
+bool InputManager::wasReleased(const uint8_t buttonIndex) const {
+  if (_asyncTask != nullptr) {
+    drainQueueIntoPending();
+    const uint8_t bit = static_cast<uint8_t>(1u << buttonIndex);
+    if ((pendingReleased_ & bit) != 0) {
+      pendingReleased_ = static_cast<uint8_t>(pendingReleased_ & ~bit);
+      return true;
+    }
+    return false;
+  }
+  return releasedEvents & (1 << buttonIndex);
+}
 
-bool InputManager::wasAnyReleased() const { return releasedEvents > 0; }
+bool InputManager::wasAnyReleased() const {
+  if (_asyncTask != nullptr) {
+    drainQueueIntoPending();
+    return pendingReleased_ != 0;  // report-only: specific checks consume
+  }
+  return releasedEvents > 0;
+}
+
+const InputManager::AsyncInputEvent* InputManager::popEvent() const {
+  if (_asyncQueue == nullptr) return nullptr;
+  if (xQueueReceive(_asyncQueue, &popScratch_, 0) != pdTRUE) return nullptr;
+  return &popScratch_;
+}
+
+void InputManager::drainQueueIntoPending() const {
+  while (const AsyncInputEvent* ev = popEvent()) {
+    if (ev->kind == kAsyncEventPress) {
+      pendingPressed_ = static_cast<uint8_t>(pendingPressed_ | (1u << ev->button));
+    } else {
+      pendingReleased_ = static_cast<uint8_t>(pendingReleased_ | (1u << ev->button));
+    }
+  }
+}
 
 unsigned long InputManager::getHeldTime() const {
   // Still hold a button
