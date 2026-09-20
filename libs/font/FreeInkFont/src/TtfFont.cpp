@@ -2,6 +2,8 @@
 
 #include "TtfFont.h"
 
+#include <chrono>
+
 #include <limits>
 #include <string.h>
 
@@ -252,8 +254,12 @@ RasterFont* FontChain::fontFor(uint32_t codepoint, uint8_t styleFlags,
 }
 
 int16_t FontChain::advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) {
+  const auto start = std::chrono::steady_clock::now();
   RasterFont* font = fontFor(codepoint, styleFlags);
-  return font != nullptr ? font->advance(codepoint, sizePx, styleFlags) : 0;
+  const int16_t adv = font != nullptr ? font->advance(codepoint, sizePx, styleFlags) : 0;
+  measureAccumUs_ +=
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+  return adv;
 }
 
 int16_t FontChain::lineHeight(uint16_t sizePx) {
@@ -284,11 +290,23 @@ bool FontChain::covers(uint32_t codepoint) {
 
 int16_t FontChain::kerning(uint32_t left, uint32_t right, uint16_t sizePx,
                            uint8_t styleFlags) {
+  const auto start = std::chrono::steady_clock::now();
   RasterFont* a = fontFor(left, styleFlags);
   RasterFont* b = fontFor(right, styleFlags);
-  if (a == nullptr || a != b) return 0;
-  return a->kerning(left, right, sizePx, styleFlags);
+  int16_t kern = 0;
+  if (a != nullptr && a == b) kern = a->kerning(left, right, sizePx, styleFlags);
+  measureAccumUs_ +=
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+  return kern;
 }
+
+uint64_t FontChain::takeMeasureAccumUs() {
+  const uint64_t v = measureAccumUs_;
+  measureAccumUs_ = 0;
+  return v;
+}
+
+void FontChain::resetMeasureAccum() { measureAccumUs_ = 0; }
 
 }  // namespace font
 }  // namespace freeink

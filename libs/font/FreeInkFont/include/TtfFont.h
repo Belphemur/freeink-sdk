@@ -137,6 +137,16 @@ class FontChain : public Font {
   // Bitmask of styles with a registered face (for cache fingerprints).
   uint8_t styleCoverage() const { return coverage_; }
 
+  // --- Layout-time measurement profile (build-session instrumentation) -----
+  // Cumulative microseconds spent inside advance()/kerning() (i.e. inside
+  // the font backends' metric path — FreeType/FT-cache work on the FT
+  // backend). The layout pump's PROF split reads this delta per page: what
+  // is NOT advance/kerning time is engine time (css resolve, line
+  // breaking, record write). Per-instance: the reader and the prefetch
+  // worker own separate chains, so each profile is its own session.
+  uint64_t takeMeasureAccumUs();
+  void resetMeasureAccum();
+
  private:
   struct Entry {
     RasterFont* font;
@@ -145,6 +155,7 @@ class FontChain : public Font {
   Entry entries_[8] = {};
   uint8_t count_ = 0;
   uint8_t coverage_ = 0;
+  uint64_t measureAccumUs_ = 0;
 };
 
 }  // namespace font
