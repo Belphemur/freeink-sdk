@@ -1,6 +1,9 @@
 #include "InputManager.h"
 
+#include <freertos/task.h>  // xTaskGetCurrentTaskHandle: async task identity check
+
 #include <algorithm>
+#include <cstdint>  // UINT8_MAX: saturating pending counters
 
 #include "MultiTouchGestureMath.h"
 
@@ -223,7 +226,7 @@ InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
 void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs, const uint8_t queueLen) {
   if (_asyncTask) return;  // already running
   _asyncPollMs = pollMs;
-  _asyncQueue = xQueueCreate(queueLen, sizeof(uint8_t));
+  _asyncQueue = xQueueCreate(queueLen, sizeof(AsyncInputEvent));
   if (!_asyncQueue) return;
   _asyncTapQueue = xQueueCreate(queueLen, sizeof(float) * 2);
   _asyncSwipeQueue = xQueueCreate(queueLen, sizeof(float) * 4);
@@ -239,40 +242,98 @@ void InputManager::asyncPoll() {
   static const uint8_t kButtons[] = {BTN_BACK, BTN_CONFIRM, BTN_LEFT, BTN_RIGHT, BTN_UP, BTN_DOWN, BTN_POWER};
   for (;;) {
     update();
+    // Both edge kinds are queued: the app's release-driven grammar (page
+    // turns, menus) needs the release edge even when its frame missed the
+    // entire press+release window. The async task's own edges live in the
+    // task registers — the app latch is never touched from this task.
     for (const uint8_t b : kButtons) {
-      if (wasPressed(b)) xQueueSend(_asyncQueue, &b, 0);
+      if (taskWasPressed(b)) {
+        const AsyncInputEvent ev = {b, kAsyncEventPress};
+        xQueueSend(_asyncQueue, &ev, 0);
+      }
+      if (taskWasReleased(b)) {
+        const AsyncInputEvent ev = {b, kAsyncEventRelease};
+        xQueueSend(_asyncQueue, &ev, 0);
+      }
     }
-    float tap[2];
-    if (_asyncTapQueue && wasTouchTap(tap[0], tap[1])) {
-      xQueueSend(_asyncTapQueue, tap, 0);
-    }
-    float swipe[4];
-    if (_asyncSwipeQueue && wasSwipe(swipe[0], swipe[1], swipe[2], swipe[3])) {
-      xQueueSend(_asyncSwipeQueue, swipe, 0);
-    }
-    if (_asyncMultiTouchSwipeQueue && multiTouchSwipeEvent && !touchSuppressed) {
-      const QueuedMultiTouchSwipe multiTouchSwipe = {multiTouchSwipeStartX,       multiTouchSwipeStartY,
-                                                     multiTouchSwipeEndX,         multiTouchSwipeEndY,
-                                                     multiTouchSwipeContactCount, multiTouchSwipeDurationMs};
-      xQueueSend(_asyncMultiTouchSwipeQueue, &multiTouchSwipe, 0);
-    }
-    if (_asyncMultiTouchRotationQueue && multiTouchRotationEvent && !touchSuppressed) {
-      const QueuedMultiTouchRotation rotation = {multiTouchRotationDegrees, multiTouchRotationCenterX,
-                                                 multiTouchRotationCenterY, multiTouchRotationDurationMs};
-      xQueueSend(_asyncMultiTouchRotationQueue, &rotation, 0);
-    }
-    if (_asyncMultiTouchPinchQueue && multiTouchPinchEvent && !touchSuppressed) {
-      const QueuedMultiTouchPinch pinch = {multiTouchPinchScale, multiTouchPinchCenterX, multiTouchPinchCenterY,
-                                           multiTouchPinchDurationMs};
-      xQueueSend(_asyncMultiTouchPinchQueue, &pinch, 0);
-    }
+    // Touch queueing is DISABLED in the v1 async wiring: the one-shot touch
+    // flags accumulate on this task until the app's consumeTouchFrame()
+    // consumes them (atomic exchange), so the getters here would re-latch
+    // the same event every 15 ms and flood the queues. Replay-through-queue
+    // is v2 (docs/design/2026-09-20-async-input.md §2.1); the pop*() API
+    // stays for standalone consumers.
     vTaskDelay(pdMS_TO_TICKS(_asyncPollMs));
   }
 }
 
-bool InputManager::popPress(uint8_t& button) {
+bool InputManager::popPress(AsyncInputEvent& ev) {
   if (!_asyncQueue) return false;
-  return xQueueReceive(_asyncQueue, &button, 0) == pdTRUE;
+  return xQueueReceive(_asyncQueue, &ev, 0) == pdTRUE;
+}
+
+// Async-mode touch-frame consumption (soak-fix7 final): consume the poll
+// task's touch/home-key one-shots atomically (exchange) into the app's
+// touch snapshot — consume-once per tick, no replay. BUTTONS are NOT
+// consumed here: their checks consume on read (wasPressed/wasReleased
+// drain the queue into the pending cache and test-and-clear their bit),
+// which keeps multi-read semantics at the app's snapshot layer. Runs ONLY
+// on the consumer task (one caller per app tick); wait loops never call
+// it — their update() is a no-op in async mode.
+void InputManager::consumeTouchFrame() {
+  if (_asyncTask == nullptr) return;  // sync builds consume inside update()
+
+  // Touch/home-key one-shots: consume the poll task's event bits (atomic
+  // exchange — the live flags are NEVER cleared by the poll task in async
+  // mode) into this tick's snapshot. Without the consume, one tap/swipe/
+  // home-key event replayed on every frame.
+  poppedTouch_ = liveTouchState(touchOneShots_.exchange(0));
+}
+
+void InputManager::beginInputFrame() {
+  // No-op (soak-fix7): the frame-boundary ack is dead weight under
+  // consume-on-check — button edges are consumed by their checks, touch
+  // frames by consumeTouchFrame(). Kept as a symbol so stale call sites
+  // compile; nothing may depend on it.
+}
+
+// The poll task's own edge registers (never the app latch — a 15 ms clear
+// there would erase events the app frame has not read yet).
+bool InputManager::taskWasPressed(const uint8_t buttonIndex) const { return taskPressedEdges_ & (1 << buttonIndex); }
+bool InputManager::taskWasReleased(const uint8_t buttonIndex) const { return taskReleasedEdges_ & (1 << buttonIndex); }
+
+InputManager::TouchFrameState InputManager::liveTouchState(const uint16_t events) const {
+  TouchFrameState s;
+  s.touchPressedEvent = events & kEvTouchPressed;
+  s.touchReleasedEvent = events & kEvTouchReleased;
+  s.multiTouchSwipeEvent = events & kEvMultiTouchSwipe;
+  s.multiTouchRotationEvent = events & kEvMultiTouchRotation;
+  s.multiTouchPinchEvent = events & kEvMultiTouchPinch;
+  s.touchLongPressEvent = events & kEvTouchLongPress;
+  s.touchHomeKeyEvent = events & kEvTouchHomeKey;
+  s.touchHomeKeyTapEvent = events & kEvTouchHomeKeyTap;
+  s.touchHomeKeyLongEvent = events & kEvTouchHomeKeyLong;
+  s.touchSuppressed = touchSuppressed;
+  s.touchMultiContactSequence = touchMultiContactSequence;
+  s.touchMovedBeyondTapReleaseSlop = touchMovedBeyondTapReleaseSlop;
+  s.touchPressed = touchPressed;
+  s.lastTouchHeldDurationMs = lastTouchHeldDurationMs;
+  s.touchDownPoint = touchDownPoint;
+  s.touchUpPoint = touchUpPoint;
+  s.multiTouchSwipeContactCount = multiTouchSwipeContactCount;
+  s.multiTouchSwipeStartX = multiTouchSwipeStartX;
+  s.multiTouchSwipeStartY = multiTouchSwipeStartY;
+  s.multiTouchSwipeEndX = multiTouchSwipeEndX;
+  s.multiTouchSwipeEndY = multiTouchSwipeEndY;
+  s.multiTouchSwipeDurationMs = multiTouchSwipeDurationMs;
+  s.multiTouchRotationDegrees = multiTouchRotationDegrees;
+  s.multiTouchRotationCenterX = multiTouchRotationCenterX;
+  s.multiTouchRotationCenterY = multiTouchRotationCenterY;
+  s.multiTouchRotationDurationMs = multiTouchRotationDurationMs;
+  s.multiTouchPinchScale = multiTouchPinchScale;
+  s.multiTouchPinchCenterX = multiTouchPinchCenterX;
+  s.multiTouchPinchCenterY = multiTouchPinchCenterY;
+  s.multiTouchPinchDurationMs = multiTouchPinchDurationMs;
+  return s;
 }
 
 bool InputManager::popTouchTap(float& nx, float& ny) {
@@ -353,22 +414,29 @@ uint8_t InputManager::getDigitalState() const {
 }
 
 void InputManager::applyStateChange(const uint8_t state, const unsigned long currentTime) {
-  pressedEvents = state & ~currentState;
-  releasedEvents = currentState & ~state;
+  taskPressedEdges_ = state & ~currentState;
+  taskReleasedEdges_ = currentState & ~state;
 
-  if (pressedEvents > 0 && currentState == 0) {
+  if (taskPressedEdges_ > 0 && currentState == 0) {
     buttonPressStart = currentTime;
   }
 
-  if (releasedEvents > 0 && state == 0) {
+  // Edge source is mode-specific: async runs this path on the poll task,
+  // where the app latch (published by the drain path) is another task's
+  // data — read the task registers. Sync runs it on the app task; the
+  // shared releasedEvents was cleared at update() entry, so the real edge
+  // lives in the task register here too (coderabbit review-r7: reading the
+  // cleared register left buttonPressFinish/powerButtonPressFinish stale).
+  const uint8_t releasedEdges = taskReleasedEdges_;
+  if (releasedEdges > 0 && state == 0) {
     buttonPressFinish = currentTime;
   }
 
-  if (pressedEvents & (1 << BTN_POWER)) {
+  if (taskPressedEdges_ & (1 << BTN_POWER)) {
     powerButtonPressStart = currentTime;
   }
 
-  if (releasedEvents & (1 << BTN_POWER)) {
+  if (releasedEdges & (1 << BTN_POWER)) {
     powerButtonPressFinish = currentTime;
   }
 
@@ -410,8 +478,8 @@ void InputManager::updateConfirmBackHold(const unsigned long currentTime) {
   applyStateChange(nextState, currentTime);
 
   if (emitConfirmClick) {
-    pressedEvents |= (1 << BTN_CONFIRM);
-    releasedEvents |= (1 << BTN_CONFIRM);
+    taskPressedEdges_ |= (1 << BTN_CONFIRM);
+    taskReleasedEdges_ |= (1 << BTN_CONFIRM);
   }
 }
 
@@ -452,13 +520,13 @@ void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
 
   applyStateChange(nextState, currentTime);
 
-  if (pressedEvents & (1 << BTN_POWER)) {
+  if (taskPressedEdges_ & (1 << BTN_POWER)) {
     powerButtonPressStart = confirmPowerPressStart;
   }
 
   if (emitConfirmClick) {
-    pressedEvents |= (1 << BTN_CONFIRM);
-    releasedEvents |= (1 << BTN_CONFIRM);
+    taskPressedEdges_ |= (1 << BTN_CONFIRM);
+    taskReleasedEdges_ |= (1 << BTN_CONFIRM);
   }
 }
 
@@ -486,8 +554,8 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
     applyStateChange(auxiliaryState, currentTime);
     if (emitShort && (releasedPhysical == 1 || releasedPhysical == 2)) {
       const uint8_t logical = releasedPhysical == 1 ? BTN_UP : BTN_DOWN;
-      pressedEvents |= static_cast<uint8_t>(1u << logical);
-      releasedEvents |= static_cast<uint8_t>(1u << logical);
+      taskPressedEdges_ |= static_cast<uint8_t>(1u << logical);
+      taskReleasedEdges_ |= static_cast<uint8_t>(1u << logical);
       buttonPressStart = twoButtonPressStart;
       buttonPressFinish = currentTime;
     }
@@ -510,49 +578,98 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
     nextState |= static_cast<uint8_t>(1u << logical);
   }
   applyStateChange(nextState, currentTime);
-  if (pressedEvents & (1u << BTN_POWER)) powerButtonPressStart = twoButtonPressStart;
+  // The press edge of this pass is in the task register (both modes —
+  // applyStateChange just wrote it; the shared register is not yet
+  // published in sync builds and is another task's data in async builds).
+  if (taskPressedEdges_ & (1u << BTN_POWER)) {
+    powerButtonPressStart = twoButtonPressStart;
+  }
 }
 
 void InputManager::update() {
   const unsigned long currentTime = millis();
 
-  pressedEvents = 0;
-  releasedEvents = 0;
-  touchPressedEvent = false;  // one-shot touch coord events, cleared each update()
-  touchReleasedEvent = false;
-  touchLongPressEvent = false;
-  multiTouchSwipeEvent = false;
-  multiTouchRotationEvent = false;
-  multiTouchPinchEvent = false;
-  touchHomeKeyEvent = false;
-  touchHomeKeyTapEvent = false;
-  touchHomeKeyLongEvent = false;
+  // Async mode: update() is a NO-OP on any task that is not the poll task —
+  // edges move exclusively through the pending-edge checks (wasPressed/
+  // wasReleased, consume-on-check) and consumeTouchFrame(), so a wait
+  // loop's update() call can never consume an edge the real consumer has
+  // not read (soak-fix7). The full sampling path runs on the async task
+  // only.
+  if (_asyncTask != nullptr && xTaskGetCurrentTaskHandle() != _asyncTask) {
+    return;
+  }
 
+  // Real path (sync builds: the app's task; async builds: the poll task).
+  taskPressedEdges_ = 0;
+  taskReleasedEdges_ = 0;
+  if (_asyncTask == nullptr) {
+    // Sync builds: one-shot edges, cleared each update() exactly as before.
+    pressedEvents = 0;
+    releasedEvents = 0;
+    touchPressedEvent = false;  // one-shot touch coord events, cleared each update()
+    touchReleasedEvent = false;
+    touchLongPressEvent = false;
+    multiTouchSwipeEvent = false;
+    multiTouchRotationEvent = false;
+    multiTouchPinchEvent = false;
+    touchHomeKeyEvent = false;
+    touchHomeKeyTapEvent = false;
+    touchHomeKeyLongEvent = false;
+    touchOneShots_.store(0, std::memory_order_relaxed);  // mirror the historical clear
+  }
+  // Async builds: the DURABLE bits (touchOneShots_) are NOT cleared here —
+  // the app consumes them via consumeTouchFrame()'s atomic exchange, and a
+  // 15ms poll-task clear would erase events the app's (possibly
+  // seconds-later) frame never saw. The live EVENT flags clear at the END
+  // of the poll task's pass (tail of this function) instead.
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
-    return;
-  }
-  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold) {
+  } else if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold) {
     updateConfirmPowerHold(currentTime);
-    return;
-  }
-  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalTwoButton) {
+  } else if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalTwoButton) {
     updateDigitalTwoButton(currentTime);
-    return;
-  }
+  } else {
+    const uint8_t state = getState();
 
-  const uint8_t state = getState();
-
-  // Debounce
-  if (state != lastState) {
-    lastDebounceTime = currentTime;
-    lastState = state;
-  }
-
-  if ((currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
-    if (state != currentState) {
-      applyStateChange(state, currentTime);
+    // Debounce
+    if (state != lastState) {
+      lastDebounceTime = currentTime;
+      lastState = state;
     }
+
+    if ((currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
+      if (state != currentState) {
+        applyStateChange(state, currentTime);
+      }
+    }
+  }
+
+  if (_asyncTask == nullptr) {
+    // Sync builds: publish this pass's edges to the app registers (clear-then-
+    // set = the historical one-shot semantics). Async builds: the app latch is
+    // published by the drain path only — the poll task never touches it.
+    pressedEvents = taskPressedEdges_;
+    releasedEvents = taskReleasedEdges_;
+  } else {
+    // Async mode (poll task, end of pass): clear the live EVENT one-shot
+    // flags exactly as the sync path does at entry. Without this,
+    // serviceTouch()'s reset gate (`!touchPressed && !touchReleasedEvent`)
+    // can never pass — the suppression/long-press/multi-touch state
+    // machines latch after the first gesture (kody JMyt). Safe: the app's
+    // event validity comes from the CONSUMED durable bits
+    // (touchOneShots_, cleared only by consumeTouchFrame()'s exchange —
+    // deliberately NOT touched here), never from these live flags. The
+    // context fields are left to the now-unblocked gate (deep context
+    // snapshotting is the documented v2).
+    touchPressedEvent = false;
+    touchReleasedEvent = false;
+    touchLongPressEvent = false;
+    multiTouchSwipeEvent = false;
+    multiTouchRotationEvent = false;
+    multiTouchPinchEvent = false;
+    touchHomeKeyEvent = false;
+    touchHomeKeyTapEvent = false;
+    touchHomeKeyLongEvent = false;
   }
 }
 
@@ -565,13 +682,77 @@ bool InputManager::isPowerButtonPhysicallyPressed() const {
   return digitalRead(pin) == activeLevel;
 }
 
-bool InputManager::wasPressed(const uint8_t buttonIndex) const { return pressedEvents & (1 << buttonIndex); }
+// Consume-on-check (soak-fix7): drain the async queue into the pending
+// cache (UNION — nothing dropped), then test-and-clear the checked bit.
+// Non-blocking; a second check of the same edge is false by contract (call
+// sites must read once into a local and branch on that).
+bool InputManager::wasPressed(const uint8_t buttonIndex) const {
+  if (_asyncTask != nullptr) {
+    if (buttonIndex > BTN_POWER) return false;
+    drainQueueIntoPending();
+    if (pendingPressCount_[buttonIndex] > 0) {
+      --pendingPressCount_[buttonIndex];
+      return true;
+    }
+    return false;
+  }
+  return pressedEvents & (1 << buttonIndex);
+}
 
-bool InputManager::wasAnyPressed() const { return pressedEvents > 0; }
+bool InputManager::wasAnyPressed() const {
+  if (_asyncTask != nullptr) {
+    drainQueueIntoPending();
+    for (const uint8_t count : pendingPressCount_) {
+      if (count > 0) return true;  // report-only: specific checks consume
+    }
+    return false;
+  }
+  return pressedEvents > 0;
+}
 
-bool InputManager::wasReleased(const uint8_t buttonIndex) const { return releasedEvents & (1 << buttonIndex); }
+bool InputManager::wasReleased(const uint8_t buttonIndex) const {
+  if (_asyncTask != nullptr) {
+    if (buttonIndex > BTN_POWER) return false;
+    drainQueueIntoPending();
+    if (pendingReleaseCount_[buttonIndex] > 0) {
+      --pendingReleaseCount_[buttonIndex];
+      return true;
+    }
+    return false;
+  }
+  return releasedEvents & (1 << buttonIndex);
+}
 
-bool InputManager::wasAnyReleased() const { return releasedEvents > 0; }
+bool InputManager::wasAnyReleased() const {
+  if (_asyncTask != nullptr) {
+    drainQueueIntoPending();
+    for (const uint8_t count : pendingReleaseCount_) {
+      if (count > 0) return true;  // report-only: specific checks consume
+    }
+    return false;
+  }
+  return releasedEvents > 0;
+}
+
+const InputManager::AsyncInputEvent* InputManager::popEvent() const {
+  if (_asyncQueue == nullptr) return nullptr;
+  if (xQueueReceive(_asyncQueue, &popScratch_, 0) != pdTRUE) return nullptr;
+  return &popScratch_;
+}
+
+void InputManager::drainQueueIntoPending() const {
+  while (const InputManager::AsyncInputEvent* ev = popEvent()) {
+    if (ev->button <= BTN_POWER) {
+      // Saturating increment (kody Nk4L): a uint8_t wrap to 0 would turn a
+      // queued edge into a LOST one on the next check. Counts only matter
+      // as "at least one"; multiplicity past 255 same-button edges in one
+      // unconsumed window is physically unreachable (human press+release
+      // cycles), so clamping distorts nothing that can be observed.
+      auto& count = ev->kind == kAsyncEventPress ? pendingPressCount_[ev->button] : pendingReleaseCount_[ev->button];
+      if (count < UINT8_MAX) ++count;
+    }
+  }
+}
 
 unsigned long InputManager::getHeldTime() const {
   // Still hold a button
@@ -641,12 +822,18 @@ InputManager::TouchSnapshot InputManager::getTouchSnapshot() const {
 }
 
 bool InputManager::isTouchPressed() const { return touchPressed; }
-bool InputManager::wasTouchPressed() const { return touchPressedEvent && !touchMultiContactSequence; }
+bool InputManager::wasTouchPressed() const {
+  return touchField(&TouchFrameState::touchPressedEvent, touchPressedEvent) &&
+         !touchField(&TouchFrameState::touchMultiContactSequence, touchMultiContactSequence);
+}
 bool InputManager::wasTouchReleased() const {
   // A multi-touch gesture must still provide the raw release edge so UI code
   // can drop pressed-state feedback, even though its tap/drag classifiers are
   // suppressed below.
-  return touchReleasedEvent && (!touchSuppressed || touchMultiContactSequence);
+  const bool released = touchField(&TouchFrameState::touchReleasedEvent, touchReleasedEvent);
+  const bool suppressed = touchField(&TouchFrameState::touchSuppressed, touchSuppressed);
+  const bool multi = touchField(&TouchFrameState::touchMultiContactSequence, touchMultiContactSequence);
+  return released && (!suppressed || multi);
 }
 
 void InputManager::normalizeTouchPoint(const uint16_t x, const uint16_t y, float& nx, float& ny) const {
@@ -660,17 +847,21 @@ void InputManager::normalizeTouchPoint(const uint16_t x, const uint16_t y, float
 
 bool InputManager::wasTouchTap(float& nx, float& ny) const {
 #if FREEINK_CAP_TOUCH
-  if (!touchReleasedEvent || touchSuppressed || touchMultiContactSequence) return false;
+  const bool released = touchField(&TouchFrameState::touchReleasedEvent, touchReleasedEvent);
+  const bool suppressed = touchField(&TouchFrameState::touchSuppressed, touchSuppressed);
+  const bool multi = touchField(&TouchFrameState::touchMultiContactSequence, touchMultiContactSequence);
+  if (!released || suppressed || multi) return false;
   // Hold/long-press detection uses the tighter 28 px stationary slop, but a
   // released tap remains valid until motion reaches the 60 px swipe threshold.
   // Using the stationary threshold here created a 29..59 px dead band where a
   // normal finger roll was neither a tap nor a swipe.
-  if (touchMovedBeyondTapReleaseSlop) return false;
+  if (touchField(&TouchFrameState::touchMovedBeyondTapReleaseSlop, touchMovedBeyondTapReleaseSlop)) return false;
   // Tap position = the FIRST contact sample (touch-down), not the last: the
   // reported centroid drifts 10-20px as a finger rolls off during lift, which
   // made small targets (steppers) feel unreliable with release-point routing.
   // A tap routes to where the user touched, not where the finger let go.
-  normalizeTouchPoint(touchDownPoint.x, touchDownPoint.y, nx, ny);
+  const TouchPoint down = touchField(&TouchFrameState::touchDownPoint, touchDownPoint);
+  normalizeTouchPoint(down.x, down.y, nx, ny);
   return true;
 #else
   (void)nx;
@@ -685,8 +876,11 @@ bool InputManager::wasTouchPressedAt(float& nx, float& ny) const {
   // writing the touch-down position normalized 0..1 in the panel's native
   // frame. Lets the app highlight what's under the finger on touch-down (before
   // release).
-  if (!touchPressedEvent || touchMultiContactSequence) return false;
-  normalizeTouchPoint(touchDownPoint.x, touchDownPoint.y, nx, ny);
+  const bool pressedEdge = touchField(&TouchFrameState::touchPressedEvent, touchPressedEvent);
+  const bool multi = touchField(&TouchFrameState::touchMultiContactSequence, touchMultiContactSequence);
+  if (!pressedEdge || multi) return false;
+  const TouchPoint down = touchField(&TouchFrameState::touchDownPoint, touchDownPoint);
+  normalizeTouchPoint(down.x, down.y, nx, ny);
   return true;
 #else
   (void)nx;
@@ -697,9 +891,15 @@ bool InputManager::wasTouchPressedAt(float& nx, float& ny) const {
 
 bool InputManager::isTouchTapCandidate(float& nx, float& ny, unsigned long& heldMs) const {
 #if FREEINK_CAP_TOUCH
-  if (!touchPressed || touchMovedBeyondTapSlop || touchSuppressed || touchMultiContactSequence) return false;
-  normalizeTouchPoint(touchDownPoint.x, touchDownPoint.y, nx, ny);
-  heldMs = millis() - touchDownPoint.timestamp;
+  // touchPressed is a LEVEL, not a one-shot — read it live in both modes.
+  if (!touchPressed || touchMovedBeyondTapSlop ||
+      touchField(&TouchFrameState::touchSuppressed, touchSuppressed) ||
+      touchField(&TouchFrameState::touchMultiContactSequence, touchMultiContactSequence)) {
+    return false;
+  }
+  const TouchPoint down = touchField(&TouchFrameState::touchDownPoint, touchDownPoint);
+  normalizeTouchPoint(down.x, down.y, nx, ny);
+  heldMs = millis() - down.timestamp;
   return true;
 #else
   (void)nx;
@@ -713,8 +913,12 @@ bool InputManager::isTouchHeldAt(float& nx, float& ny) const {
 #if FREEINK_CAP_TOUCH
   // Live drag tracking: the latest contact sample (touchUpPoint is refreshed on
   // every sample while pressed), with no tap-slop gate.
-  if (!touchPressed || touchSuppressed || touchMultiContactSequence) return false;
-  normalizeTouchPoint(touchUpPoint.x, touchUpPoint.y, nx, ny);
+  if (!touchPressed || touchField(&TouchFrameState::touchSuppressed, touchSuppressed) ||
+      touchField(&TouchFrameState::touchMultiContactSequence, touchMultiContactSequence)) {
+    return false;
+  }
+  const TouchPoint up = touchField(&TouchFrameState::touchUpPoint, touchUpPoint);
+  normalizeTouchPoint(up.x, up.y, nx, ny);
   return true;
 #else
   (void)nx;
@@ -725,7 +929,7 @@ bool InputManager::isTouchHeldAt(float& nx, float& ny) const {
 
 unsigned long InputManager::lastTouchHeldMs() const {
 #if FREEINK_CAP_TOUCH
-  return lastTouchHeldDurationMs;
+  return touchField(&TouchFrameState::lastTouchHeldDurationMs, lastTouchHeldDurationMs);
 #else
   return 0;
 #endif
@@ -733,8 +937,13 @@ unsigned long InputManager::lastTouchHeldMs() const {
 
 bool InputManager::wasTouchActivity() const {
 #if FREEINK_CAP_TOUCH
-  const bool screenActivity = touchPressedEvent || touchReleasedEvent;
-  const bool homeKeyActivity = touchHomeKeyEvent || touchHomeKeyTapEvent || touchHomeKeyLongEvent;
+  const bool pressedEvent = touchField(&TouchFrameState::touchPressedEvent, touchPressedEvent);
+  const bool releasedEvent = touchField(&TouchFrameState::touchReleasedEvent, touchReleasedEvent);
+  const bool homeKeyEvent = touchField(&TouchFrameState::touchHomeKeyEvent, touchHomeKeyEvent);
+  const bool homeKeyTapEvent = touchField(&TouchFrameState::touchHomeKeyTapEvent, touchHomeKeyTapEvent);
+  const bool homeKeyLongEvent = touchField(&TouchFrameState::touchHomeKeyLongEvent, touchHomeKeyLongEvent);
+  const bool screenActivity = pressedEvent || releasedEvent;
+  const bool homeKeyActivity = homeKeyEvent || homeKeyTapEvent || homeKeyLongEvent;
   // A held screen contact already owns this activity lifecycle. Do not let a
   // simultaneous Home-key edge retire screen-contact suppression early.
   return screenActivity || (!touchPressed && homeKeyActivity);
@@ -745,18 +954,23 @@ bool InputManager::wasTouchActivity() const {
 
 bool InputManager::wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const {
 #if FREEINK_CAP_TOUCH
-  if (!touchReleasedEvent || touchSuppressed || touchMultiContactSequence) return false;
+  const bool released = touchField(&TouchFrameState::touchReleasedEvent, touchReleasedEvent);
+  const bool suppressed = touchField(&TouchFrameState::touchSuppressed, touchSuppressed);
+  const bool multi = touchField(&TouchFrameState::touchMultiContactSequence, touchMultiContactSequence);
+  if (!released || suppressed || multi) return false;
   // A flick: travelled past a distance threshold within a time window. Distance
   // is measured in native px; the dominant axis is left to the app (after
   // mapping to its logical frame).
-  if (lastTouchHeldDurationMs > TOUCH_SWIPE_MAX_MS) return false;
-  const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
-  const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+  if (touchField(&TouchFrameState::lastTouchHeldDurationMs, lastTouchHeldDurationMs) > TOUCH_SWIPE_MAX_MS) return false;
+  const TouchPoint down = touchField(&TouchFrameState::touchDownPoint, touchDownPoint);
+  const TouchPoint up = touchField(&TouchFrameState::touchUpPoint, touchUpPoint);
+  const int dx = static_cast<int>(up.x) - static_cast<int>(down.x);
+  const int dy = static_cast<int>(up.y) - static_cast<int>(down.y);
   const int adx = absInt(dx);
   const int ady = absInt(dy);
   if (adx < TOUCH_SWIPE_MIN_PX && ady < TOUCH_SWIPE_MIN_PX) return false;
-  normalizeTouchPoint(touchDownPoint.x, touchDownPoint.y, nxStart, nyStart);
-  normalizeTouchPoint(touchUpPoint.x, touchUpPoint.y, nxEnd, nyEnd);
+  normalizeTouchPoint(down.x, down.y, nxStart, nyStart);
+  normalizeTouchPoint(up.x, up.y, nxEnd, nyEnd);
   return true;
 #else
   (void)nxStart;
@@ -770,11 +984,18 @@ bool InputManager::wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float&
 bool InputManager::wasMultiTouchSwipe(uint8_t& contactCount, float& nxStart, float& nyStart, float& nxEnd, float& nyEnd,
                                       unsigned long& durationMs) const {
 #if FREEINK_CAP_TOUCH
-  if (!multiTouchSwipeEvent || touchSuppressed) return false;
-  contactCount = multiTouchSwipeContactCount;
-  normalizeTouchPoint(multiTouchSwipeStartX, multiTouchSwipeStartY, nxStart, nyStart);
-  normalizeTouchPoint(multiTouchSwipeEndX, multiTouchSwipeEndY, nxEnd, nyEnd);
-  durationMs = multiTouchSwipeDurationMs;
+  if (!touchField(&TouchFrameState::multiTouchSwipeEvent, multiTouchSwipeEvent) ||
+      touchField(&TouchFrameState::touchSuppressed, touchSuppressed)) {
+    return false;
+  }
+  contactCount = touchField(&TouchFrameState::multiTouchSwipeContactCount, multiTouchSwipeContactCount);
+  const uint16_t startX = touchField(&TouchFrameState::multiTouchSwipeStartX, multiTouchSwipeStartX);
+  const uint16_t startY = touchField(&TouchFrameState::multiTouchSwipeStartY, multiTouchSwipeStartY);
+  const uint16_t endX = touchField(&TouchFrameState::multiTouchSwipeEndX, multiTouchSwipeEndX);
+  const uint16_t endY = touchField(&TouchFrameState::multiTouchSwipeEndY, multiTouchSwipeEndY);
+  normalizeTouchPoint(startX, startY, nxStart, nyStart);
+  normalizeTouchPoint(endX, endY, nxEnd, nyEnd);
+  durationMs = touchField(&TouchFrameState::multiTouchSwipeDurationMs, multiTouchSwipeDurationMs);
   return true;
 #else
   (void)contactCount;
@@ -790,10 +1011,15 @@ bool InputManager::wasMultiTouchSwipe(uint8_t& contactCount, float& nxStart, flo
 bool InputManager::wasMultiTouchRotation(float& degrees, float& nxCenter, float& nyCenter,
                                          unsigned long& durationMs) const {
 #if FREEINK_CAP_TOUCH
-  if (!multiTouchRotationEvent || touchSuppressed) return false;
-  degrees = multiTouchRotationDegrees;
-  normalizeTouchPoint(multiTouchRotationCenterX, multiTouchRotationCenterY, nxCenter, nyCenter);
-  durationMs = multiTouchRotationDurationMs;
+  if (!touchField(&TouchFrameState::multiTouchRotationEvent, multiTouchRotationEvent) ||
+      touchField(&TouchFrameState::touchSuppressed, touchSuppressed)) {
+    return false;
+  }
+  degrees = touchField(&TouchFrameState::multiTouchRotationDegrees, multiTouchRotationDegrees);
+  const uint16_t cx = touchField(&TouchFrameState::multiTouchRotationCenterX, multiTouchRotationCenterX);
+  const uint16_t cy = touchField(&TouchFrameState::multiTouchRotationCenterY, multiTouchRotationCenterY);
+  normalizeTouchPoint(cx, cy, nxCenter, nyCenter);
+  durationMs = touchField(&TouchFrameState::multiTouchRotationDurationMs, multiTouchRotationDurationMs);
   return true;
 #else
   (void)degrees;
@@ -806,10 +1032,15 @@ bool InputManager::wasMultiTouchRotation(float& degrees, float& nxCenter, float&
 
 bool InputManager::wasMultiTouchPinch(float& scale, float& nxCenter, float& nyCenter, unsigned long& durationMs) const {
 #if FREEINK_CAP_TOUCH
-  if (!multiTouchPinchEvent || touchSuppressed) return false;
-  scale = multiTouchPinchScale;
-  normalizeTouchPoint(multiTouchPinchCenterX, multiTouchPinchCenterY, nxCenter, nyCenter);
-  durationMs = multiTouchPinchDurationMs;
+  if (!touchField(&TouchFrameState::multiTouchPinchEvent, multiTouchPinchEvent) ||
+      touchField(&TouchFrameState::touchSuppressed, touchSuppressed)) {
+    return false;
+  }
+  scale = touchField(&TouchFrameState::multiTouchPinchScale, multiTouchPinchScale);
+  const uint16_t cx = touchField(&TouchFrameState::multiTouchPinchCenterX, multiTouchPinchCenterX);
+  const uint16_t cy = touchField(&TouchFrameState::multiTouchPinchCenterY, multiTouchPinchCenterY);
+  normalizeTouchPoint(cx, cy, nxCenter, nyCenter);
+  durationMs = touchField(&TouchFrameState::multiTouchPinchDurationMs, multiTouchPinchDurationMs);
   return true;
 #else
   (void)scale;
@@ -822,9 +1053,12 @@ bool InputManager::wasMultiTouchPinch(float& scale, float& nxCenter, float& nyCe
 
 bool InputManager::wasTouchLongPress(float& nx, float& ny) const {
 #if FREEINK_CAP_TOUCH
-  if (!touchLongPressEvent || touchMultiContactSequence) return false;
+  const bool longPress = touchField(&TouchFrameState::touchLongPressEvent, touchLongPressEvent);
+  const bool multi = touchField(&TouchFrameState::touchMultiContactSequence, touchMultiContactSequence);
+  if (!longPress || multi) return false;
   // Long-press routes to the touch-down point, same rationale as wasTouchTap.
-  normalizeTouchPoint(touchDownPoint.x, touchDownPoint.y, nx, ny);
+  const TouchPoint down = touchField(&TouchFrameState::touchDownPoint, touchDownPoint);
+  normalizeTouchPoint(down.x, down.y, nx, ny);
   return true;
 #else
   (void)nx;
@@ -876,6 +1110,7 @@ void InputManager::startMultiTouchGesture(const TouchSnapshot& snapshot, const u
   touchMovedBeyondTapSlop = true;
   touchMovedBeyondTapReleaseSlop = true;
   touchLongPressEvent = false;
+  touchOneShots_.fetch_and(~kEvTouchLongPress, std::memory_order_relaxed);
   touchLongPressFired = true;
 }
 
@@ -885,6 +1120,7 @@ void InputManager::blockMultiTouchGesture() {
   touchMovedBeyondTapSlop = true;
   touchMovedBeyondTapReleaseSlop = true;
   touchLongPressEvent = false;
+  touchOneShots_.fetch_and(~kEvTouchLongPress, std::memory_order_relaxed);
   touchLongPressFired = true;
 }
 
@@ -900,6 +1136,8 @@ void InputManager::cancelMultiTouchGesture() {
   multiTouchSwipeEvent = false;
   multiTouchRotationEvent = false;
   multiTouchPinchEvent = false;
+  touchOneShots_.fetch_and(~(kEvMultiTouchSwipe | kEvMultiTouchRotation | kEvMultiTouchPinch),
+                            std::memory_order_relaxed);
   multiTouchGestureState =
       (touchPressed || touchReleasedEvent) ? MultiTouchGestureState::Blocked : MultiTouchGestureState::Idle;
 }
@@ -1101,6 +1339,7 @@ bool InputManager::classifyMultiTouchRotation(const unsigned long now) {
   multiTouchRotationCenterY = result.centerY;
   multiTouchRotationDurationMs = static_cast<uint16_t>(now - multiTouchContacts[0].start.timestamp);
   multiTouchRotationEvent = true;
+  touchOneShots_.fetch_or(kEvMultiTouchRotation, std::memory_order_relaxed);
   return true;
 }
 
@@ -1124,6 +1363,7 @@ bool InputManager::classifyMultiTouchPinch(const unsigned long now) {
   multiTouchPinchCenterY = result.centerY;
   multiTouchPinchDurationMs = static_cast<uint16_t>(now - multiTouchContacts[0].start.timestamp);
   multiTouchPinchEvent = true;
+  touchOneShots_.fetch_or(kEvMultiTouchPinch, std::memory_order_relaxed);
   return true;
 }
 
@@ -1154,6 +1394,7 @@ void InputManager::finishMultiTouchGesture(const unsigned long now) {
     multiTouchSwipeEndY = static_cast<uint16_t>(endY / trackedTouchContactCount);
     multiTouchSwipeDurationMs = static_cast<uint16_t>(now - multiTouchContacts[0].start.timestamp);
     multiTouchSwipeEvent = true;
+    touchOneShots_.fetch_or(kEvMultiTouchSwipe, std::memory_order_relaxed);
   }
   multiTouchGestureState = MultiTouchGestureState::Blocked;
 }
@@ -1210,11 +1451,17 @@ void InputManager::updateMultiTouchGesture(const TouchSnapshot& snapshot, const 
   if (multiTouchRotationEligible && !hasEligibleRotationScale()) multiTouchRotationEligible = false;
 }
 
-bool InputManager::wasHomeKeyPressed() const { return touchHomeKeyEvent; }
+bool InputManager::wasHomeKeyPressed() const {
+  return touchField(&TouchFrameState::touchHomeKeyEvent, touchHomeKeyEvent);
+}
 
-bool InputManager::wasHomeKeyTapped() const { return touchHomeKeyTapEvent; }
+bool InputManager::wasHomeKeyTapped() const {
+  return touchField(&TouchFrameState::touchHomeKeyTapEvent, touchHomeKeyTapEvent);
+}
 
-bool InputManager::wasHomeKeyLongPressed() const { return touchHomeKeyLongEvent; }
+bool InputManager::wasHomeKeyLongPressed() const {
+  return touchField(&TouchFrameState::touchHomeKeyLongEvent, touchHomeKeyLongEvent);
+}
 
 void InputManager::beginTouch() {
 #if FREEINK_CAP_TOUCH
@@ -1287,6 +1534,7 @@ uint8_t InputManager::serviceTouch() {
       !touchSuppressed && now - touchDownPoint.timestamp >= TOUCH_LONG_PRESS_MS) {
     touchLongPressFired = true;
     touchLongPressEvent = true;
+    touchOneShots_.fetch_or(kEvTouchLongPress, std::memory_order_relaxed);
   }
 
   return (t.synthesizeConfirm && now < touchIrqPulseUntil) ? (1 << BTN_CONFIRM) : 0;
@@ -1314,6 +1562,7 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
       if (!touchPressed) {
         touchPressed = true;
         touchPressedEvent = true;
+        touchOneShots_.fetch_or(kEvTouchPressed, std::memory_order_relaxed);
         touchDownPoint = point;  // first contact sample, used for tap routing
         touchUpPoint = point;
         touchMovedBeyondTapSlop = false;
@@ -1336,6 +1585,7 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
   if (touchPressed && now >= touchReleaseAt) {
     touchPressed = false;
     touchReleasedEvent = true;
+    touchOneShots_.fetch_or(kEvTouchReleased, std::memory_order_relaxed);
     lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
   }
 }
@@ -1512,6 +1762,7 @@ void InputManager::pollFt5x06(const unsigned long now) {
       touchPressed = false;
       touchPoint.valid = false;
       touchReleasedEvent = true;
+      touchOneShots_.fetch_or(kEvTouchReleased, std::memory_order_relaxed);
       lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
     }
     return;
@@ -1524,6 +1775,7 @@ void InputManager::pollFt5x06(const unsigned long now) {
       touchPressed = false;
       touchPoint.valid = false;
       touchReleasedEvent = true;
+      touchOneShots_.fetch_or(kEvTouchReleased, std::memory_order_relaxed);
       lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
 #ifdef TOUCH_PROBE_DEBUG
       touchDebugPrintf("[touch] FT release via TD_STATUS=0 held=%lums\n", lastTouchHeldDurationMs);
@@ -1550,6 +1802,7 @@ void InputManager::pollFt5x06(const unsigned long now) {
   if (!touchPressed) {
     touchPressed = true;
     touchPressedEvent = true;
+    touchOneShots_.fetch_or(kEvTouchPressed, std::memory_order_relaxed);
     touchDownPoint = touchPoint;
     touchUpPoint = touchPoint;
     touchMovedBeyondTapSlop = false;
@@ -1705,7 +1958,10 @@ void InputManager::pollGslx680(const unsigned long now) {
   auto finishHomeKey = [&]() {
     if (!touchHomeKeyDown) return;
     lastTouchHeldDurationMs = now - touchHomeKeyDownAt;
-    if (!touchHomeKeyLongFired) touchHomeKeyTapEvent = true;
+    if (!touchHomeKeyLongFired) {
+      touchHomeKeyTapEvent = true;
+      touchOneShots_.fetch_or(kEvTouchHomeKeyTap, std::memory_order_relaxed);
+    }
     touchHomeKeyDown = false;
     touchHomeKeyLongFired = false;
   };
@@ -1717,6 +1973,7 @@ void InputManager::pollGslx680(const unsigned long now) {
       touchPressed = false;
       touchPoint.valid = false;
       touchReleasedEvent = true;
+      touchOneShots_.fetch_or(kEvTouchReleased, std::memory_order_relaxed);
       lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
     }
     return;
@@ -1731,11 +1988,13 @@ void InputManager::pollGslx680(const unsigned long now) {
   if (homeKeyDown) {
     if (!touchHomeKeyDown) {
       touchHomeKeyEvent = true;
+      touchOneShots_.fetch_or(kEvTouchHomeKey, std::memory_order_relaxed);
       touchHomeKeyDown = true;
       touchHomeKeyLongFired = false;
       touchHomeKeyDownAt = now;
     } else if (!touchHomeKeyLongFired && now - touchHomeKeyDownAt >= HOME_KEY_LONG_PRESS_MS) {
       touchHomeKeyLongEvent = true;
+      touchOneShots_.fetch_or(kEvTouchHomeKeyLong, std::memory_order_relaxed);
       touchHomeKeyLongFired = true;
     }
     touchPressed = false;
@@ -1762,6 +2021,7 @@ void InputManager::pollGslx680(const unsigned long now) {
   if (!touchPressed) {
     touchPressed = true;
     touchPressedEvent = true;
+    touchOneShots_.fetch_or(kEvTouchPressed, std::memory_order_relaxed);
     touchDownPoint = touchPoint;
     touchUpPoint = touchPoint;
     touchMovedBeyondTapSlop = false;
@@ -2097,6 +2357,7 @@ void InputManager::pollFt6336u(const unsigned long now) {
     touchPoint.timestamp = now;
     if (!touchPressed) {
       touchPressedEvent = true;
+      touchOneShots_.fetch_or(kEvTouchPressed, std::memory_order_relaxed);
       touchDownPoint = touchPoint;
       touchMovedBeyondTapSlop = false;
     }
@@ -2110,6 +2371,7 @@ void InputManager::pollFt6336u(const unsigned long now) {
   } else {
     if (touchPressed) {
       touchReleasedEvent = true;
+      touchOneShots_.fetch_or(kEvTouchReleased, std::memory_order_relaxed);
       lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
       touchUpPoint = touchPoint;
     }
@@ -2149,6 +2411,7 @@ void InputManager::pollGt911(const unsigned long now) {
   // press/release EDGES still come from fresh frames (handled after the gate).
   if (touchHomeKeyDown && !touchHomeKeyLongFired && now - touchHomeKeyDownAt >= HOME_KEY_LONG_PRESS_MS) {
     touchHomeKeyLongEvent = true;  // crossed the threshold (a hold shortcut)
+    touchOneShots_.fetch_or(kEvTouchHomeKeyLong, std::memory_order_relaxed);
     touchHomeKeyLongFired = true;  // once per hold; also suppresses the release tap
   }
 
@@ -2161,10 +2424,12 @@ void InputManager::pollGt911(const unsigned long now) {
   const bool homeKeyDown = (status & 0x10) != 0;
   if (homeKeyDown && !touchHomeKeyDown) {  // press edge
     touchHomeKeyEvent = true;
+    touchOneShots_.fetch_or(kEvTouchHomeKey, std::memory_order_relaxed);
     touchHomeKeyDownAt = now;
     touchHomeKeyLongFired = false;
   } else if (!homeKeyDown && touchHomeKeyDown && !touchHomeKeyLongFired) {
     touchHomeKeyTapEvent = true;  // release edge of a short press
+    touchOneShots_.fetch_or(kEvTouchHomeKeyTap, std::memory_order_relaxed);
   }
   touchHomeKeyDown = homeKeyDown;
 
@@ -2212,6 +2477,7 @@ void InputManager::pollGt911(const unsigned long now) {
       touchPoint = touchSnapshot.points[0].point;
       if (!touchPressed) {
         touchPressedEvent = true;
+        touchOneShots_.fetch_or(kEvTouchPressed, std::memory_order_relaxed);
         touchDownPoint = touchPoint;  // first contact sample, used for tap
                                       // routing (wasTouchTap)
         touchMovedBeyondTapSlop = false;
@@ -2250,6 +2516,7 @@ void InputManager::pollGt911(const unsigned long now) {
     updateMultiTouchGesture(touchSnapshot, now);
     if (touchPressed) {
       touchReleasedEvent = true;
+      touchOneShots_.fetch_or(kEvTouchReleased, std::memory_order_relaxed);
       lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
       touchUpPoint = touchPoint;  // last contact sample, used for swipe routing
     }
