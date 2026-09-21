@@ -170,6 +170,13 @@ class FtFont : public RasterFont {
   // Generic low-level access for renderers that cache glyph IDs or need
   // fractional pixel sizes. A zero glyph ID is always missing. Bitmap data is
   // 8-bit coverage and remains valid until the next glyph load on this face.
+  //
+  // Kerning consults the legacy 'kern' table first (FT_Get_Kerning), then
+  // falls back to the GPOS 'kern' feature's pair-adjustment lookups (see
+  // Gpos.h) — modern fonts ship pair kerning exclusively there, which
+  // FreeType alone cannot see. The GPOS table stays cached for the face's
+  // lifetime (queries arrive per adjacent pair at render time); a streamed
+  // face's owned copy is bounded by setGposByteBudget().
   GlyphId glyphId(uint32_t codepoint) const;
   bool metrics26_6(uint32_t codepoint, uint32_t pixelSize26_6, GlyphMetrics& out);
   bool metricsGlyph26_6(GlyphId glyph, uint32_t pixelSize26_6, GlyphMetrics& out);
@@ -233,6 +240,14 @@ class FtFont : public RasterFont {
   // face is initialized again.
   void releaseLigatureTable();
 
+  // GPOS analogues of the GSUB pair above, governing the kerning fallback's
+  // table cache. The stream budget matters more here than for GSUB: GPOS
+  // cannot be resolved once and released (kern pairs are queried throughout
+  // rendering), so a streamed face's owned copy stays resident — a rejected
+  // or failed load simply disables GPOS kerning (legacy 'kern' still works).
+  void setGposByteBudget(size_t maxBytes);
+  void releaseKerningTable();
+
   // Rasterizes one glyph to an 8-bit alpha GlyphBitmap, served from the glyph
   // bitmap cache on a hit (no FT load/render). The returned bitmap is valid
   // until the next rasterize() on this face — the base RasterFont contract,
@@ -253,6 +268,7 @@ class FtFont : public RasterFont {
 
   bool finishInit(uint16_t sizePx, int weight, bool italic);  // shared tail of init/initStream
   void ensureGsubLoaded();
+  void ensureGposLoaded();
 
   // Bounded LRU glyph bitmap cache (see the class comment). Keyed per face by
   // (glyphId, pixelSize26_6); render options are per face and the cache is
@@ -342,6 +358,16 @@ class FtFont : public RasterFont {
   bool gsubLoadAttempted_ = false;
   size_t gsubByteBudget_ = kMaxGsubBytes;
   void freeGsubTable();
+
+  // GPOS kerning cache — same ownership/lifetime discipline as the GSUB
+  // fields above (borrowed view for memory-backed faces, budgeted owned copy
+  // for streamed ones, reset in deinit() because glyph IDs are face-local).
+  const uint8_t* gposTable_ = nullptr;
+  size_t gposTableSize_ = 0;
+  bool gposTableOwned_ = false;
+  bool gposLoadAttempted_ = false;
+  size_t gposByteBudget_ = kMaxGsubBytes;
+  void freeGposTable();
 };
 
 }  // namespace font
