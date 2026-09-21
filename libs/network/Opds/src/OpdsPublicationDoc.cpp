@@ -337,7 +337,23 @@ void pubOnObjStart(void* ud) {
 }
 
 void pubApplyLink(PubDoc2Ctx& c) {
-  if (c.link.href.empty() || c.link.rank < 0 || !(c.link.isEpub || c.link.isPubDoc)) return;
+  if (c.link.href.empty() || c.link.rank < 0) return;
+  // A non-downloadable buy link (HTML checkout, format nested in
+  // properties.indirectAcquisition): keep the purchase + price so the detail
+  // page shows them, even without a resolvable acquisition href.
+  if (!(c.link.isEpub || c.link.isPubDoc)) {
+    if (c.link.rank == 0 && !c.out->purchase) {
+      c.out->purchase = true;
+      if (c.out->price.empty() && !c.link.priceValue.empty()) {
+        c.out->price = c.link.priceValue;
+        if (!c.link.priceCurrency.empty()) {
+          c.out->price += ' ';
+          c.out->price += c.link.priceCurrency;
+        }
+      }
+    }
+    return;
+  }
   if (!c.out->acquisitionHref.empty() && c.link.rank <= c.bestRank) return;
   c.bestRank = c.link.rank;
   c.out->acquisitionHref = c.link.href;

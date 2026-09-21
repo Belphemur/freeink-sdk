@@ -469,9 +469,26 @@ void Opds2Parser::commitPubLink() {
     currentEntry.selfHref = link.href;
     return;
   }
-  // Accept a direct EPUB or an indirect acquisition (a publication document
-  // resolved at download time). Library feeds (Lirtuel) only offer the latter.
-  if (link.href.empty() || link.acqRank < 0 || !(link.typeEpub || link.typeIndirect)) return;
+  if (link.href.empty() || link.acqRank < 0) return;
+
+  // A buy/acquisition link may point at an HTML checkout page (shops like
+  // Readino nest the real format in properties.indirectAcquisition), which the
+  // reader can't download directly. Still record the purchase + price so the
+  // book lists and opens its detail page; a real EPUB/indirect link, if any,
+  // supplies the download href below.
+  if (!(link.typeEpub || link.typeIndirect)) {
+    if (link.acqRank == 0 && !currentEntry.purchase) {
+      currentEntry.purchase = true;
+      if (currentEntry.detail.empty() && !link.priceValue.empty()) {
+        currentEntry.detail = link.priceValue;
+        if (!link.priceCurrency.empty()) {
+          currentEntry.detail += ' ';
+          currentEntry.detail += link.priceCurrency;
+        }
+      }
+    }
+    return;
+  }
 
   const bool isPlainEpub =
       link.typeEpub && (link.href.find(".epub") != std::string::npos || link.href.find("/epub/") != std::string::npos);
@@ -504,7 +521,10 @@ void Opds2Parser::commitPubLink() {
   }
 }
 void Opds2Parser::commitPublication() {
-  if (currentEntry.title.empty() || currentEntry.href.empty()) return;
+  // A publication is listable if it has a title and either a download href or a
+  // self (detail-page) link. Shop entries often carry only a self link plus a
+  // non-downloadable buy link; they still browse to their detail page.
+  if (currentEntry.title.empty() || (currentEntry.href.empty() && currentEntry.selfHref.empty())) return;
   // Grouped publications (stack ... GROUP > PUBS > [PUB just popped]) are a
   // preview: keep only the first MAX_GROUP_PREVIEW so a large group doesn't
   // starve the rest. Top-level (flat-feed) publications are not capped.
