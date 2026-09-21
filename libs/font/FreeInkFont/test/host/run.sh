@@ -19,8 +19,8 @@ GSUB_SOURCE=
 if [ -f ../../src/Gsub.cpp ]; then
   GSUB_SOURCE="../../src/Gsub.cpp"
 fi
-if [ -f "$FONT_ROOT/src/Gpos.cpp" ]; then
-  GSUB_SOURCE="$GSUB_SOURCE $FONT_ROOT/src/Gpos.cpp"
+if [ -f ../../src/Gpos.cpp ]; then
+  GSUB_SOURCE="$GSUB_SOURCE ../../src/Gpos.cpp"
 fi
 
 if cc --version 2>&1 | grep -qi clang; then

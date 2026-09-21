@@ -23,6 +23,14 @@
 #include <ft2build.h>
 
 
+/* FreeInkFont fork default: psnames is REQUIRED here — the CFF driver (kept
+ * for .otf faces) synthesizes a bare-CFF Unicode charmap through psnames, so
+ * upstream's opt-in default (glyph-name-lookup-only builds without a CFF
+ * driver) does not hold for this build. Define it 0 to force it off. */
+#ifndef FREEINK_FONT_ENABLE_PSNAMES
+#define FREEINK_FONT_ENABLE_PSNAMES 1
+#endif
+
 FT_BEGIN_HEADER
 
   /**************************************************************************
