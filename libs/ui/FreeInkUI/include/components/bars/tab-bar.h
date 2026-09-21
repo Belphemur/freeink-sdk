@@ -37,6 +37,7 @@ using TabIconPainter = bool (*)(DrawTarget& target, Rect rect, const TabItem& ta
 enum class TabBarLayout : uint8_t {
   EqualWidth,
   ContentWidth,
+  SpaceBetween,
 };
 
 struct TabBarProps {
@@ -55,6 +56,8 @@ struct TabBarProps {
   // width tabs from the leading edge, falling back to EqualWidth if they do
   // not fit inside the bar.
   TabBarLayout layout = TabBarLayout::EqualWidth;
+  // SpaceBetween uses fixed slots; zero chooses the widest natural tab.
+  int16_t distributedSlotWidth = 0;
   int16_t leadingInset = 0;
   int16_t gap = 0;
   int16_t iconSize = 0;
@@ -138,19 +141,34 @@ void tabBar(Frame<MaxInteractions>& frame, Rect rect, const TabBarProps& props) 
     // the safe fallback for long labels or narrow screens.
     if (naturalWidth > rect.width) contentWidthLayout = false;
   }
+  bool distribute = props.layout == TabBarLayout::SpaceBetween;
+  int16_t distributedWidth = props.distributedSlotWidth;
+  if (distribute) {
+    if (distributedWidth <= 0) {
+      for (uint8_t i = 0; i < props.count; ++i) {
+        const int16_t width = contentSlotWidth(props.tabs[i]);
+        if (width > distributedWidth) distributedWidth = width;
+      }
+    }
+    if (distributedWidth <= 0 || static_cast<int32_t>(distributedWidth) * props.count +
+                                    static_cast<int32_t>(gap) * (props.count - 1) > rect.width) distribute = false;
+  }
   const int16_t slotGap = !contentWidthLayout && props.layout == TabBarLayout::ContentWidth ? 0 : gap;
   const int16_t equalSlotW =
       static_cast<int16_t>((rect.width - static_cast<int32_t>(slotGap) * (props.count - 1)) / props.count);
   int16_t nextSlotX = static_cast<int16_t>(rect.x + (contentWidthLayout ? leadingInset : 0));
   for (uint8_t i = 0; i < props.count; ++i) {
     const TabItem& tab = props.tabs[i];
-    const int16_t slotW = contentWidthLayout ? contentSlotWidth(tab) : equalSlotW;
-    const int16_t slotX = contentWidthLayout
+    const int16_t slotW = distribute ? distributedWidth : (contentWidthLayout ? contentSlotWidth(tab) : equalSlotW);
+    const int16_t slotX = distribute
+        ? static_cast<int16_t>(rect.x + (props.count > 1
+            ? static_cast<int32_t>(i) * (rect.width - slotW) / (props.count - 1) : (rect.width - slotW) / 2))
+        : contentWidthLayout
                               ? nextSlotX
                               : static_cast<int16_t>(rect.x + static_cast<int32_t>(i) * (equalSlotW + slotGap));
     if (contentWidthLayout) nextSlotX = static_cast<int16_t>(slotX + slotW + slotGap);
     Rect slot{slotX, rect.y,
-              static_cast<int16_t>(!contentWidthLayout && i == props.count - 1 ? rect.right() - slotX : slotW), slotH};
+              static_cast<int16_t>(!distribute && !contentWidthLayout && i == props.count - 1 ? rect.right() - slotX : slotW), slotH};
     Rect pill = slot.inset(props.tabInset);
     if (props.contentInset.left > 0 || props.contentInset.right > 0) {
       const TabContentMetrics metrics = measureContent(tab);

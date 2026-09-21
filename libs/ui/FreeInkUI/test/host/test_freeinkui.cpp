@@ -52,6 +52,7 @@ class FakeDrawTarget : public DrawTarget {
     uint8_t corners;
     Rotation rotation;
     FontId font = 0;
+    TextAlign align = TextAlign::Left;
   };
 
   Op ops[256]{};
@@ -88,7 +89,10 @@ class FakeDrawTarget : public DrawTarget {
     if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
       drewForbiddenLabel = true;
     record(Op::Text, rect, Paint::solid(style.color), 0, CornersAll, style.rotation);
-    if (opCount) ops[opCount - 1].font = style.font;
+    if (opCount) {
+      ops[opCount - 1].font = style.font;
+      ops[opCount - 1].align = style.align;
+    }
   }
   void bitmap(Rect rect, BitmapRef, BitmapMode, Paint foreground, Rotation rotation) override {
     record(Op::Bitmap, rect, foreground, 0, CornersAll, rotation);
@@ -4256,6 +4260,164 @@ void testEReaderBookSurfaces() {
   CHECK(draw.countKind(FakeDrawTarget::Op::Fill) >= 5);
 }
 
+void testBookCardCenteredTextAndProgressLabel() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(320, 240);
+  InputSnapshot input;
+  InteractionBuffer<24> interactions;
+  Frame<24> frame(draw, device, input, interactions);
+  BookCardProps card;
+  card.title = "Title";
+  card.author = "Author";
+  card.coverSize = Size{62, 140};
+  card.centerTextOnCover = true;
+  card.progress = 42;
+  card.progressLabel = "42%";
+  card.action = 502;
+  bookCard(frame, Rect{0, 0, 320, 160}, card);
+  int textCount = 0;
+  bool sawBar = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind == FakeDrawTarget::Op::Text) {
+      CHECK_EQ(op.rect.x, 84);
+      if (textCount == 0) CHECK_EQ(op.rect.y, 66);
+      if (textCount == 1) CHECK_EQ(op.rect.y, 82);
+      if (textCount == 2) {
+        CHECK_EQ(op.rect.y, 138);
+        CHECK_EQ(op.rect.width, 18);
+        CHECK_EQ(op.rect.height, 12);
+      }
+      ++textCount;
+    }
+    if (op.kind == FakeDrawTarget::Op::Fill && op.rect.x == 110 && op.rect.y == 142 &&
+        op.rect.width == 202 && op.rect.height == 4) sawBar = true;
+  }
+  CHECK_EQ(textCount, 3);
+  CHECK(sawBar);
+  CHECK_EQ(interactions.count(), 1u);
+  CHECK_EQ(interactions.data()[0].action, 502);
+}
+
+void testSpaceBetweenLayouts() {
+  for (const int width : {300, 301}) {
+    for (const int count : {1, 4, 5}) {
+      FakeDrawTarget draw;
+      DeviceContext device = makeDevice(480, 800);
+      InputSnapshot input;
+      InteractionBuffer<8> interactions;
+      Frame<8> frame(draw, device, input, interactions);
+      TabItem items[5]{};
+      Rect icons[5]{};
+      for (int i = 0; i < count; ++i) items[i].value = 10 + i;
+      TabBarProps tabs;
+      tabs.tabs = items;
+      tabs.count = count;
+      tabs.action = 501;
+      tabs.layout = TabBarLayout::SpaceBetween;
+      tabs.distributedSlotWidth = 44;
+      tabs.iconSize = 32;
+      tabs.iconPainterUserData = icons;
+      tabs.iconPainter = [](DrawTarget&, Rect rect, const TabItem&, uint8_t index, void* user) {
+        static_cast<Rect*>(user)[index] = rect;
+        return true;
+      };
+      tabBar(frame, Rect{10, 20, static_cast<int16_t>(width), 56}, tabs);
+      CHECK_EQ(interactions.count(), static_cast<size_t>(count));
+      for (int i = 0; i < count; ++i) {
+        const int x = 10 + (count > 1 ? i * (width - 44) / (count - 1) : (width - 44) / 2);
+        CHECK_EQ(icons[i].x, x + 6);
+        CHECK_EQ(interactions.data()[i].value, 10 + i);
+        InputSnapshot tap;
+        tap.touchReleased = true;
+        tap.touchX = icons[i].x + 16;
+        tap.touchY = icons[i].y + 16;
+        CHECK_EQ(interactions.route(tap).value, 10 + i);
+      }
+    }
+    FakeDrawTarget draw;
+    DeviceContext device = makeDevice(480, 800);
+    InputSnapshot input;
+    InteractionBuffer<8> interactions;
+    Frame<8> frame(draw, device, input, interactions);
+    CoverGridItem items[6]{};
+    Rect covers[6]{};
+    for (int i = 0; i < 6; ++i) items[i] = coverGridItem(nullptr, i + 1);
+    CoverGridProps grid;
+    grid.items = items;
+    grid.count = 6;
+    grid.columns = 3;
+    grid.action = 502;
+    grid.columnLayout = CoverGridColumnLayout::SpaceBetween;
+    grid.coverSize = Size{60, 90};
+    grid.cellInset = Insets{6, 6, 6, 6};
+    grid.rowHeight = 102;
+    grid.rowGap = 8;
+    grid.labelHeight = 0;
+    grid.coverPainterUserData = covers;
+    grid.coverPainter = [](DrawTarget&, Rect rect, const CoverGridItem&, uint16_t index, void* user) {
+      static_cast<Rect*>(user)[index] = rect;
+      return true;
+    };
+    coverGrid(frame, Rect{10, 100, static_cast<int16_t>(width), 212}, grid);
+    CHECK_EQ(interactions.count(), 6u);
+    CHECK_EQ(covers[0].x, 16);
+    CHECK_EQ(covers[2].right(), 10 + width - 6);
+    CHECK_EQ(covers[3].x, covers[0].x);
+    CHECK_EQ(covers[5].right(), covers[2].right());
+    CHECK_EQ(covers[3].y - covers[0].y, 110);
+    for (int i = 0; i < 6; ++i) CHECK_EQ(interactions.data()[i].value, i + 1);
+  }
+}
+
+void testCoverGridLabelAlignment() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(320, 240);
+  InputSnapshot input;
+  InteractionBuffer<24> interactions;
+  Frame<24> frame(draw, device, input, interactions);
+  const CoverGridItem items[2] = {coverGridItem("One", 1), coverGridItem("Two", 2)};
+  CoverGridProps grid;
+  grid.items = items;
+  grid.count = 2;
+  grid.action = 501;
+  grid.columns = 2;
+  grid.rowHeight = 120;
+  grid.coverSize = Size{48, 72};
+  grid.cellInset = Insets{6, 10, 0, 10};
+  grid.labelInset = Insets{0, 5, 0, 3};
+  grid.titleText.align = TextAlign::Right;
+  coverGrid(frame, Rect{10, 20, 220, 120}, grid);
+  size_t labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text) continue;
+    CHECK_EQ(op.align, TextAlign::Center);
+    CHECK_EQ(op.rect.x, 23 + static_cast<int>(labels) * 114);
+    CHECK_EQ(op.rect.width, 78);
+    ++labels;
+  }
+  CHECK_EQ(labels, 2u);
+  draw.opCount = 0;
+  grid.labelAlign = TextAlign::Left;
+  grid.labelFollowsCover = true;
+  coverGrid(frame, Rect{10, 20, 220, 120}, grid);
+  labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text) continue;
+    CHECK_EQ(op.align, TextAlign::Left);
+    CHECK_EQ(op.rect.x, 42 + static_cast<int>(labels) * 114);
+    CHECK_EQ(op.rect.y, 100);
+    CHECK_EQ(op.rect.width, 40);
+    ++labels;
+  }
+  CHECK_EQ(labels, 2u);
+  CHECK_EQ(interactions.count(), 4u);
+  CHECK_EQ(interactions.data()[2].value, 1);
+  CHECK_EQ(interactions.data()[3].value, 2);
+}
+
 static constexpr ActionId ActionOpen = 101;
 static constexpr ActionId ActionBack = 102;
 
@@ -5233,6 +5395,9 @@ int main() {
   testScreenContentMarginCoordinateSpaces();
   testEReaderChromeMenusAndPanels();
   testEReaderBookSurfaces();
+  testSpaceBetweenLayouts();
+  testCoverGridLabelAlignment();
+  testBookCardCenteredTextAndProgressLabel();
   testHeaderBorderEdges();
   testPopupAutoSizeAndAlignment();
   testScreenAnchoredLayout();
