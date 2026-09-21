@@ -4811,6 +4811,334 @@ void testWhiteForegroundDoesNotFlipBackToBlack() {
 
 }  // namespace
 
+void testPublicationStylingAndButtons() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  device.width = 480;
+  device.height = 800;
+  device.hasTouch = false;
+  device.hasButtons = true;
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  PublicationPageProps props;
+  props.book.title = "Title";
+  props.book.action = 94;
+  props.availability.status = "Available";
+  props.availability.action = 95;
+  props.primary.label = "Borrow";
+  props.primary.action = 91;
+  props.primary.value = 7;
+  props.primary.radius = 9;
+  props.primary.padding = Insets{10, 20, 10, 20};
+  props.primary.minTouchSize = 64;
+  props.secondary.label = "Sample";
+  props.secondary.action = 92;
+  props.more.label = "Full description";
+  props.more.action = 93;
+  props.radius = 12;
+  props.styles = outlinedButtonStyles();
+  props.padding = Insets{24, 26, 28, 30};
+  publicationPage(frame, device.screen(), props);
+  CHECK_EQ(hits.count(), 5u);
+  CHECK_EQ(draw.ops[0].radius, 12);
+  CHECK_EQ(hits.data()[0].rect.x, 30);
+  CHECK_EQ(hits.data()[0].rect.height, 64);
+  CHECK_EQ(hits.data()[0].rect.bottom(), 772);
+  bool paddedLabel = false;
+  bool roundedAction = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind == FakeDrawTarget::Op::Text && op.rect.y == 718) {
+      paddedLabel = op.rect.x == 50 && op.rect.height == 44;
+    }
+    if (op.kind == FakeDrawTarget::Op::Fill && op.rect.y == 708 && op.radius == 9)
+      roundedAction = true;
+  }
+  CHECK(paddedLabel);
+  CHECK(roundedAction);
+
+  // Every actionable section is reachable without touch, with wraparound.
+  InputSnapshot next, previous, confirm;
+  next.focusNext = true;
+  previous.focusPrev = true;
+  confirm.confirm = true;
+  const ActionId expected[] = {91, 92, 93, 94, 95, 91};
+  for (ActionId action : expected) {
+    hits.route(next);
+    CHECK_EQ(hits.route(confirm).action, action);
+  }
+  CHECK_EQ(hits.route(confirm).value, 7);
+  hits.route(previous);
+  CHECK_EQ(hits.route(confirm).action, 95);
+
+  // Focus survives a redraw and uses the caller's focused style.
+  props.availability.styles = defaultListRowStyles();
+  props.availability.styles.focused.background = Paint::solid(Color::Black);
+  props.availability.styles.focused.foreground = Paint::solid(Color::White);
+  props.availability.radius = 7;
+  hits.clear();
+  draw.opCount = 0;
+  publicationPage(frame, device.screen(), props);
+  CHECK_EQ(hits.route(confirm).action, 95);
+  bool focusPainted = false;
+  for (size_t i = 0; i < draw.opCount; ++i)
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Fill && draw.ops[i].radius == 7 &&
+        draw.ops[i].color == Color::Black) focusPainted = true;
+  CHECK(focusPainted);
+
+  // Disabled controls and touch-only controls cannot be focused/confirmed.
+  hits.clear();
+  props.primary.enabled = false;
+  props.secondary.state = StateDisabled;
+  props.book.inputMask = InputTouch;
+  publicationPage(frame, device.screen(), props);
+  hits.setFocusedIndex(-1);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 93);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 95);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 93);
+  hits.route(previous);
+  CHECK_EQ(hits.route(confirm).action, 95);
+  hits.clear();
+  props.enabled = false;
+  publicationPage(frame, device.screen(), props);
+  CHECK_EQ(hits.count(), 0u);
+  CHECK_EQ(hits.route(confirm).action, NO_ACTION);
+
+  // Standalone sections honor padding, border, radius and foreground.
+  hits.clear();
+  draw.opCount = 0;
+  PublicationAvailabilityProps av;
+  av.status = "Ready";
+  av.padding = Insets{17, 19, 13, 23};
+  av.divider = Paint::none();
+  av.radius = 8;
+  av.styles = outlinedButtonStyles();
+  av.styles.normal.foreground = Paint::solid(Color::White);
+  av.styles.normal.background = Paint::solid(Color::Black);
+  publicationAvailability(frame, Rect{10, 20, 300, 100}, av);
+  CHECK_EQ(draw.ops[0].radius, 8);
+  CHECK_EQ(draw.ops[1].kind, FakeDrawTarget::Op::Stroke);
+  CHECK_EQ(draw.ops[2].kind, FakeDrawTarget::Op::Text);
+  CHECK_EQ(draw.ops[2].rect.x, 33);
+  CHECK_EQ(draw.ops[2].rect.y, 37);
+  CHECK_EQ(draw.ops[2].color, Color::White);
+  draw.opCount = 0;
+  PublicationHeaderProps book;
+  book.title = "Title";
+  book.coverSize = Size{0, 0};
+  book.padding = Insets{11, 12, 13, 14};
+  book.radius = 6;
+  book.styles = outlinedButtonStyles();
+  publicationHeader(frame, Rect{10, 20, 300, 100}, book);
+  CHECK_EQ(draw.ops[0].radius, 6);
+  CHECK_EQ(draw.ops[2].kind, FakeDrawTarget::Op::Text);
+  CHECK_EQ(draw.ops[2].rect.x, 24);
+  CHECK_EQ(draw.ops[2].rect.y, 31);
+}
+
+struct CatalogTestSource {
+  uint16_t calls = 0;
+  uint16_t first = 0;
+  uint16_t last = 0;
+};
+CatalogItem catalogTestItem(uint16_t index, void* user) {
+  auto& source = *static_cast<CatalogTestSource*>(user);
+  if (source.calls == 0) source.first = index;
+  ++source.calls;
+  source.last = index;
+  CatalogItem item;
+  item.title = "Book title";
+  item.author = "Author";
+  item.value = static_cast<int16_t>(1000 + index);
+  return item;
+}
+
+void testCatalogShelves() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  device.width = 480;
+  device.height = 800;
+  device.hasTouch = false;
+  InputSnapshot input;
+  InteractionBuffer<32> hits;
+  Frame<32> frame(draw, device, input, hits);
+  CatalogTestSource source;
+  CatalogWindow horizontal[3];
+  CoverShelfProps shelves[3];
+  for (int i = 0; i < 3; ++i) {
+    shelves[i].title = "Popular books";
+    shelves[i].count = 100;
+    shelves[i].itemProvider = catalogTestItem;
+    shelves[i].itemProviderUserData = &source;
+    shelves[i].window = &horizontal[i];
+    shelves[i].card.action = 101;
+    shelves[i].next.label = ">";
+    shelves[i].next.action = 102;
+    shelves[i].next.value = i;
+    shelves[i].previous.label = "<";
+    shelves[i].previous.action = 103;
+    shelves[i].previous.value = i;
+    shelves[i].seeAll.label = "See all";
+    shelves[i].seeAll.action = 104;
+    shelves[i].seeAll.value = i;
+  }
+  CatalogWindow vertical;
+  CatalogPageProps page;
+  page.shelves = shelves;
+  page.count = 3;
+  page.window = &vertical;
+  page.next.label = "More groups";
+  page.next.action = 105;
+  page.previous.label = "Previous groups";
+  page.previous.action = 106;
+  page.activeShelf = 1;
+  catalogPage(frame, device.screen(), page);
+  CHECK_EQ(vertical.visibleCount, 2);
+  CHECK_EQ(horizontal[0].visibleCount, 3);
+  CHECK_EQ(horizontal[1].visibleCount, 3);
+  CHECK_EQ(source.calls, 6);  // only visible cards, no expanded group list
+  CHECK(!hits.overflowed());
+  InputSnapshot swipe;
+  swipe.swipeLeft = true;
+  CHECK_EQ(hits.route(swipe).action, 102);
+  CHECK_EQ(hits.route(swipe).value, 1); // only the active group claims the gesture
+
+  // Next/Previous/Confirm alone reaches paging, see-all, and every visible book.
+  InputSnapshot next, previous, confirm;
+  next.focusNext = true;
+  previous.focusPrev = true;
+  confirm.confirm = true;
+  hits.setFocusedIndex(-1);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 102);
+  CHECK_EQ(hits.route(confirm).value, 0);
+  horizontal[0].next();
+  CHECK_EQ(horizontal[0].firstIndex, 3);
+  CHECK_EQ(horizontal[1].firstIndex, 0);
+  hits.clear();
+  draw.opCount = 0;
+  source = {};
+  catalogPage(frame, device.screen(), page);
+  CHECK_EQ(source.first, 3);
+  CHECK_EQ(source.calls, 6);
+  bool sawBook = false, sawAll = false, sawMoreGroups = false;
+  for (size_t i = 0; i < hits.count() + 1; ++i) {
+    hits.route(next);
+    const ActionEvent event = hits.route(confirm);
+    sawBook |= event.action == 101 && event.value == 1003;
+    sawAll |= event.action == 104;
+    sawMoreGroups |= event.action == 105;
+  }
+  CHECK(sawBook && sawAll && sawMoreGroups);
+  hits.route(previous);
+  CHECK(hits.route(confirm).action != NO_ACTION);
+  horizontal[0].previous();
+  CHECK_EQ(horizontal[0].firstIndex, 0);
+  vertical.next();
+  CHECK_EQ(vertical.firstIndex, 1);
+  hits.clear();
+  catalogPage(frame, device.screen(), page);
+  CHECK_EQ(vertical.firstIndex, 1);
+  CHECK(!vertical.canNext());
+  CHECK(vertical.canPrevious());
+
+  // Stable item IDs also route from taps after horizontal paging.
+  hits.clear();
+  horizontal[0].firstIndex = 97;
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK(!horizontal[0].canNext());
+  bool tapped = false;
+  for (size_t i = 0; i < hits.count(); ++i) {
+    const auto& hit = hits.data()[i];
+    if (hit.action != 101) continue;
+    InputSnapshot tap;
+    tap.touchReleased = true;
+    tap.touchX = hit.rect.x + hit.rect.width / 2;
+    tap.touchY = hit.rect.y + hit.rect.height / 2;
+    CHECK_EQ(hits.route(tap).value, hit.value);
+    tapped = true;
+  }
+  CHECK(tapped);
+  shelves[0].count = 1;
+  hits.clear();
+  source = {};
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK_EQ(horizontal[0].firstIndex, 0);
+  CHECK_EQ(source.calls, 1);
+  shelves[0].enabled = false;
+  hits.clear();
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK_EQ(hits.count(), 0u);
+  shelves[0].count = 0;
+  source = {};
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK_EQ(source.calls, 0);
+  CHECK(!horizontal[0].canNext() && !horizontal[0].canPrevious());
+
+  // Narrow surfaces still render bounded geometry and skip hidden providers.
+  for (Size size : {Size{240, 480}, Size{120, 160}, Size{0, 0}}) {
+    hits.clear();
+    draw.opCount = 0;
+    source = {};
+    catalogPage(frame, Rect{0, 0, size.width, size.height}, page);
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const Rect r = draw.ops[i].rect;
+      CHECK(r.width > 0 && r.height > 0);
+      CHECK(r.x >= 0 && r.y >= 0 && r.right() <= size.width && r.bottom() <= size.height);
+    }
+  }
+}
+
+void testPublicationPage() {
+  for (const Size size : {Size{480, 800}, Size{240, 480}, Size{800, 480}, Size{120, 160}}) {
+    FakeDrawTarget draw;
+    DeviceContext device;
+    device.width = size.width;
+    device.height = size.height;
+    InputSnapshot input;
+    InteractionBuffer<16> hits;
+    Frame<16> frame(draw, device, input, hits);
+    PublicationPageProps props;
+    props.book.title = "A very long publication title that wraps across multiple lines";
+    props.book.author = "Author name";
+    props.availability.status = "Unavailable";
+    props.availability.holds = "You are #3 in line";
+    props.description = "A long description should never cover an acquisition control.";
+    props.primary.label = "Place hold";
+    props.primary.action = 91;
+    props.secondary.label = "Read sample";
+    props.secondary.action = 92;
+    publicationPage(frame, device.screen(), props);
+    CHECK(hits.count() >= 1);
+    CHECK_EQ(hits.data()[0].action, 91);
+    InputSnapshot tap;
+    tap.touchReleased = true;
+    tap.touchX = hits.data()[0].rect.x + 4;
+    tap.touchY = hits.data()[0].rect.y + 4;
+    CHECK_EQ(hits.route(tap).action, 91);
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const Rect r = draw.ops[i].rect;
+      CHECK(r.width > 0 && r.height > 0);
+      CHECK(r.x >= 0 && r.y >= 0 && r.right() <= size.width && r.bottom() <= size.height);
+    }
+    for (size_t i = 1; i < hits.count(); ++i) {
+      CHECK(hits.data()[i].rect.bottom() <= hits.data()[i - 1].rect.y);
+    }
+    hits.clear();
+    props.primary.enabled = false;
+    props.secondary.label = nullptr;
+    publicationPage(frame, device.screen(), props);
+    CHECK_EQ(hits.count(), 0u);
+    hits.clear();
+    publicationPage(frame, Rect{0, 0, 0, 0}, props);
+    CHECK_EQ(hits.count(), 0u);
+  }
+}
+
 int main() {
   testRect();
   testDisplayTarget();
@@ -4914,6 +5242,9 @@ int main() {
   testTextArea();
   testCapsuleSlider();
   testSliderRow();
+  testPublicationPage();
+  testCatalogShelves();
+  testPublicationStylingAndButtons();
   testTileGrid();
   testSheet();
   testScreenControlCenterWrappers();

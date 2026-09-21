@@ -2,6 +2,9 @@
   "schema": 1,
   "generatedBy": "libs/ui/FreeInkUI/tools/render_gallery.cpp",
   "images": [
+    {"file": "freeinkui-catalog.svg", "category": "catalog", "title": "Horizontal catalog shelves", "components": ["catalogCover", "coverShelf", "catalogPage"]},
+    {"file": "freeinkui-publication.svg", "category": "publication", "title": "Borrow a publication", "components": ["publicationHeader", "publicationAvailability", "publicationPage"]},
+    {"file": "freeinkui-publication-hold.svg", "category": "publication", "title": "Publication on hold", "components": ["publicationPage"]},
     {
       "file": "freeinkui-settings.svg",
       "category": "settings",

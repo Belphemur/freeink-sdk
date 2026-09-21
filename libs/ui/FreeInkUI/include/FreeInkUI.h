@@ -46,6 +46,8 @@
 #include "components/media/cover-carousel.h"
 #include "components/media/cover-grid.h"
 #include "components/media/book-card.h"
+#include "components/media/publication-page.h"
+#include "components/media/catalog.h"
 #include "components/media/metric-card.h"
 #include "components/keyboard/key-grid.h"
 #include "components/keyboard/keyboard.h"
