@@ -3,6 +3,7 @@
 #include <freertos/task.h>  // xTaskGetCurrentTaskHandle: async task identity check
 
 #include <algorithm>
+#include <cstdint>  // UINT8_MAX: saturating pending counters
 
 #include "MultiTouchGestureMath.h"
 
@@ -616,11 +617,11 @@ void InputManager::update() {
     touchHomeKeyLongEvent = false;
     touchOneShots_.store(0, std::memory_order_relaxed);  // mirror the historical clear
   }
-  // Async builds: touch one-shot flags are NOT cleared here — the poll task
-  // runs every 15ms and would erase events before the app's (possibly
-  // seconds-later) consumeTouchFrame() consumes them (atomic exchange) on the
-  // app task.
-
+  // Async builds: the DURABLE bits (touchOneShots_) are NOT cleared here —
+  // the app consumes them via consumeTouchFrame()'s atomic exchange, and a
+  // 15ms poll-task clear would erase events the app's (possibly
+  // seconds-later) frame never saw. The live EVENT flags clear at the END
+  // of the poll task's pass (tail of this function) instead.
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
   } else if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold) {
@@ -649,6 +650,26 @@ void InputManager::update() {
     // published by the drain path only — the poll task never touches it.
     pressedEvents = taskPressedEdges_;
     releasedEvents = taskReleasedEdges_;
+  } else {
+    // Async mode (poll task, end of pass): clear the live EVENT one-shot
+    // flags exactly as the sync path does at entry. Without this,
+    // serviceTouch()'s reset gate (`!touchPressed && !touchReleasedEvent`)
+    // can never pass — the suppression/long-press/multi-touch state
+    // machines latch after the first gesture (kody JMyt). Safe: the app's
+    // event validity comes from the CONSUMED durable bits
+    // (touchOneShots_, cleared only by consumeTouchFrame()'s exchange —
+    // deliberately NOT touched here), never from these live flags. The
+    // context fields are left to the now-unblocked gate (deep context
+    // snapshotting is the documented v2).
+    touchPressedEvent = false;
+    touchReleasedEvent = false;
+    touchLongPressEvent = false;
+    multiTouchSwipeEvent = false;
+    multiTouchRotationEvent = false;
+    multiTouchPinchEvent = false;
+    touchHomeKeyEvent = false;
+    touchHomeKeyTapEvent = false;
+    touchHomeKeyLongEvent = false;
   }
 }
 
@@ -722,11 +743,13 @@ const InputManager::AsyncInputEvent* InputManager::popEvent() const {
 void InputManager::drainQueueIntoPending() const {
   while (const InputManager::AsyncInputEvent* ev = popEvent()) {
     if (ev->button <= BTN_POWER) {
-      if (ev->kind == kAsyncEventPress) {
-        ++pendingPressCount_[ev->button];
-      } else {
-        ++pendingReleaseCount_[ev->button];
-      }
+      // Saturating increment (kody Nk4L): a uint8_t wrap to 0 would turn a
+      // queued edge into a LOST one on the next check. Counts only matter
+      // as "at least one"; multiplicity past 255 same-button edges in one
+      // unconsumed window is physically unreachable (human press+release
+      // cycles), so clamping distorts nothing that can be observed.
+      auto& count = ev->kind == kAsyncEventPress ? pendingPressCount_[ev->button] : pendingReleaseCount_[ev->button];
+      if (count < UINT8_MAX) ++count;
     }
   }
 }

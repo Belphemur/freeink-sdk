@@ -42,9 +42,11 @@ struct PopStream {
   void drain() {
     while (const AsyncInputEvent* ev = popEvent()) {
       if (ev->kind == kAsyncEventPress) {
-        ++pendingPressCount[ev->button];
+        // Saturating increment (mirror of the SDK's kody-Nk4L fix): a wrap
+        // to 0 would turn a queued edge into a lost one.
+        if (pendingPressCount[ev->button] < UINT8_MAX) ++pendingPressCount[ev->button];
       } else {
-        ++pendingReleaseCount[ev->button];
+        if (pendingReleaseCount[ev->button] < UINT8_MAX) ++pendingReleaseCount[ev->button];
       }
     }
   }
@@ -150,6 +152,29 @@ int main() {
     assert(s.wasReleased(0));  // second release
     assert(s.wasPressed(0));   // second press delivered (4 events, 4 consumptions)
     assert(!s.wasPressed(0) && !s.wasReleased(0));  // stream empty
+  }
+
+  {  // Nk4L boundary: a burst exceeding the counter width must NOT wrap the
+     // pending count to zero (a wrap would resurrect a phantom edge after
+     // the real ones were consumed). The cache saturates instead.
+    PopStream s;
+    for (int i = 0; i < 300; ++i) {
+      s.source.q.push_back({3, kAsyncEventPress});
+      s.source.q.push_back({3, kAsyncEventRelease});
+    }
+    s.drain();
+    // 255 press+release pairs consumable (the counters SATURATE — edges
+    // beyond that are counted as "at least one" multiplicity, exactly the
+    // Nk4L contract). The regression being pinned: a WRAP to 0 would
+    // resurrect phantom edges after the real ones were consumed.
+    for (int i = 0; i < 255; ++i) {
+      assert(s.wasPressed(3));   // press consumed
+      assert(s.wasReleased(3));  // release consumed
+    }
+    // Depleted — and it must STAY depleted across repeated checks (the wrap
+    // would make wasPressed true again here).
+    assert(!s.wasPressed(3) && !s.wasReleased(3));
+    assert(!s.wasPressed(3) && !s.wasReleased(3));
   }
 
   std::printf("event-pop policy tests: OK\n");
