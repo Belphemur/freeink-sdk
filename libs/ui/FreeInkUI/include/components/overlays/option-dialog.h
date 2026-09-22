@@ -12,6 +12,9 @@ struct DialogOption {
   int16_t value = 0;
   State state = StateNormal;
   bool enabled = true;
+  // Horizontal rows only: fixed slot width (e.g. a square "+" button); 0
+  // shares the remaining width equally with the other flexible options.
+  int16_t width = 0;
 };
 
 struct OptionDialogProps {
@@ -153,6 +156,17 @@ Rect optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
 
   if (!props.options || props.optionCount == 0) return contentBand;
   Rect buttons{content.x, static_cast<int16_t>(content.bottom() - buttonsH), content.width, buttonsH};
+  // Horizontal rows: fixed-width options keep their width, the rest split the
+  // remainder equally.
+  int32_t fixedW = 0;
+  uint8_t flexCount = 0;
+  for (uint8_t i = 0; i < props.optionCount; ++i) {
+    if (props.options[i].width > 0) fixedW += props.options[i].width;
+    else ++flexCount;
+  }
+  const int32_t flexTotal = buttons.width - (props.optionCount - 1) * props.gap - fixedW;
+  const int16_t flexW = flexCount > 0 && flexTotal > 0 ? static_cast<int16_t>(flexTotal / flexCount) : 0;
+  int16_t optionX = buttons.x;
   for (uint8_t i = 0; i < props.optionCount; ++i) {
     const DialogOption& option = props.options[i];
     Rect optionRect;
@@ -160,9 +174,9 @@ Rect optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
       optionRect = Rect{buttons.x, static_cast<int16_t>(buttons.y + i * (props.buttonHeight + props.gap)),
                         buttons.width, props.buttonHeight};
     } else {
-      const int16_t w =
-          static_cast<int16_t>((buttons.width - (props.optionCount - 1) * props.gap) / props.optionCount);
-      optionRect = Rect{static_cast<int16_t>(buttons.x + i * (w + props.gap)), buttons.y, w, buttons.height};
+      const int16_t w = option.width > 0 ? option.width : flexW;
+      optionRect = Rect{optionX, buttons.y, w, buttons.height};
+      optionX = static_cast<int16_t>(optionX + w + props.gap);
     }
     ButtonProps bp;
     bp.label = option.label;
