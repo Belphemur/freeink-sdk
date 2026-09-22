@@ -52,6 +52,7 @@ class FakeDrawTarget : public DrawTarget {
     uint8_t corners;
     Rotation rotation;
     FontId font = 0;
+    TextAlign align = TextAlign::Left;
   };
 
   Op ops[256]{};
@@ -88,7 +89,10 @@ class FakeDrawTarget : public DrawTarget {
     if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
       drewForbiddenLabel = true;
     record(Op::Text, rect, Paint::solid(style.color), 0, CornersAll, style.rotation);
-    if (opCount) ops[opCount - 1].font = style.font;
+    if (opCount) {
+      ops[opCount - 1].font = style.font;
+      ops[opCount - 1].align = style.align;
+    }
   }
   void bitmap(Rect rect, BitmapRef, BitmapMode, Paint foreground, Rotation rotation) override {
     record(Op::Bitmap, rect, foreground, 0, CornersAll, rotation);
@@ -4256,6 +4260,164 @@ void testEReaderBookSurfaces() {
   CHECK(draw.countKind(FakeDrawTarget::Op::Fill) >= 5);
 }
 
+void testBookCardCenteredTextAndProgressLabel() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(320, 240);
+  InputSnapshot input;
+  InteractionBuffer<24> interactions;
+  Frame<24> frame(draw, device, input, interactions);
+  BookCardProps card;
+  card.title = "Title";
+  card.author = "Author";
+  card.coverSize = Size{62, 140};
+  card.centerTextOnCover = true;
+  card.progress = 42;
+  card.progressLabel = "42%";
+  card.action = 502;
+  bookCard(frame, Rect{0, 0, 320, 160}, card);
+  int textCount = 0;
+  bool sawBar = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind == FakeDrawTarget::Op::Text) {
+      CHECK_EQ(op.rect.x, 84);
+      if (textCount == 0) CHECK_EQ(op.rect.y, 66);
+      if (textCount == 1) CHECK_EQ(op.rect.y, 82);
+      if (textCount == 2) {
+        CHECK_EQ(op.rect.y, 138);
+        CHECK_EQ(op.rect.width, 18);
+        CHECK_EQ(op.rect.height, 12);
+      }
+      ++textCount;
+    }
+    if (op.kind == FakeDrawTarget::Op::Fill && op.rect.x == 110 && op.rect.y == 142 &&
+        op.rect.width == 202 && op.rect.height == 4) sawBar = true;
+  }
+  CHECK_EQ(textCount, 3);
+  CHECK(sawBar);
+  CHECK_EQ(interactions.count(), 1u);
+  CHECK_EQ(interactions.data()[0].action, 502);
+}
+
+void testSpaceBetweenLayouts() {
+  for (const int width : {300, 301}) {
+    for (const int count : {1, 4, 5}) {
+      FakeDrawTarget draw;
+      DeviceContext device = makeDevice(480, 800);
+      InputSnapshot input;
+      InteractionBuffer<8> interactions;
+      Frame<8> frame(draw, device, input, interactions);
+      TabItem items[5]{};
+      Rect icons[5]{};
+      for (int i = 0; i < count; ++i) items[i].value = 10 + i;
+      TabBarProps tabs;
+      tabs.tabs = items;
+      tabs.count = count;
+      tabs.action = 501;
+      tabs.layout = TabBarLayout::SpaceBetween;
+      tabs.distributedSlotWidth = 44;
+      tabs.iconSize = 32;
+      tabs.iconPainterUserData = icons;
+      tabs.iconPainter = [](DrawTarget&, Rect rect, const TabItem&, uint8_t index, void* user) {
+        static_cast<Rect*>(user)[index] = rect;
+        return true;
+      };
+      tabBar(frame, Rect{10, 20, static_cast<int16_t>(width), 56}, tabs);
+      CHECK_EQ(interactions.count(), static_cast<size_t>(count));
+      for (int i = 0; i < count; ++i) {
+        const int x = 10 + (count > 1 ? i * (width - 44) / (count - 1) : (width - 44) / 2);
+        CHECK_EQ(icons[i].x, x + 6);
+        CHECK_EQ(interactions.data()[i].value, 10 + i);
+        InputSnapshot tap;
+        tap.touchReleased = true;
+        tap.touchX = icons[i].x + 16;
+        tap.touchY = icons[i].y + 16;
+        CHECK_EQ(interactions.route(tap).value, 10 + i);
+      }
+    }
+    FakeDrawTarget draw;
+    DeviceContext device = makeDevice(480, 800);
+    InputSnapshot input;
+    InteractionBuffer<8> interactions;
+    Frame<8> frame(draw, device, input, interactions);
+    CoverGridItem items[6]{};
+    Rect covers[6]{};
+    for (int i = 0; i < 6; ++i) items[i] = coverGridItem(nullptr, i + 1);
+    CoverGridProps grid;
+    grid.items = items;
+    grid.count = 6;
+    grid.columns = 3;
+    grid.action = 502;
+    grid.columnLayout = CoverGridColumnLayout::SpaceBetween;
+    grid.coverSize = Size{60, 90};
+    grid.cellInset = Insets{6, 6, 6, 6};
+    grid.rowHeight = 102;
+    grid.rowGap = 8;
+    grid.labelHeight = 0;
+    grid.coverPainterUserData = covers;
+    grid.coverPainter = [](DrawTarget&, Rect rect, const CoverGridItem&, uint16_t index, void* user) {
+      static_cast<Rect*>(user)[index] = rect;
+      return true;
+    };
+    coverGrid(frame, Rect{10, 100, static_cast<int16_t>(width), 212}, grid);
+    CHECK_EQ(interactions.count(), 6u);
+    CHECK_EQ(covers[0].x, 16);
+    CHECK_EQ(covers[2].right(), 10 + width - 6);
+    CHECK_EQ(covers[3].x, covers[0].x);
+    CHECK_EQ(covers[5].right(), covers[2].right());
+    CHECK_EQ(covers[3].y - covers[0].y, 110);
+    for (int i = 0; i < 6; ++i) CHECK_EQ(interactions.data()[i].value, i + 1);
+  }
+}
+
+void testCoverGridLabelAlignment() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(320, 240);
+  InputSnapshot input;
+  InteractionBuffer<24> interactions;
+  Frame<24> frame(draw, device, input, interactions);
+  const CoverGridItem items[2] = {coverGridItem("One", 1), coverGridItem("Two", 2)};
+  CoverGridProps grid;
+  grid.items = items;
+  grid.count = 2;
+  grid.action = 501;
+  grid.columns = 2;
+  grid.rowHeight = 120;
+  grid.coverSize = Size{48, 72};
+  grid.cellInset = Insets{6, 10, 0, 10};
+  grid.labelInset = Insets{0, 5, 0, 3};
+  grid.titleText.align = TextAlign::Right;
+  coverGrid(frame, Rect{10, 20, 220, 120}, grid);
+  size_t labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text) continue;
+    CHECK_EQ(op.align, TextAlign::Center);
+    CHECK_EQ(op.rect.x, 23 + static_cast<int>(labels) * 114);
+    CHECK_EQ(op.rect.width, 78);
+    ++labels;
+  }
+  CHECK_EQ(labels, 2u);
+  draw.opCount = 0;
+  grid.labelAlign = TextAlign::Left;
+  grid.labelFollowsCover = true;
+  coverGrid(frame, Rect{10, 20, 220, 120}, grid);
+  labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text) continue;
+    CHECK_EQ(op.align, TextAlign::Left);
+    CHECK_EQ(op.rect.x, 42 + static_cast<int>(labels) * 114);
+    CHECK_EQ(op.rect.y, 100);
+    CHECK_EQ(op.rect.width, 40);
+    ++labels;
+  }
+  CHECK_EQ(labels, 2u);
+  CHECK_EQ(interactions.count(), 4u);
+  CHECK_EQ(interactions.data()[2].value, 1);
+  CHECK_EQ(interactions.data()[3].value, 2);
+}
+
 static constexpr ActionId ActionOpen = 101;
 static constexpr ActionId ActionBack = 102;
 
@@ -4811,6 +4973,334 @@ void testWhiteForegroundDoesNotFlipBackToBlack() {
 
 }  // namespace
 
+void testPublicationStylingAndButtons() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  device.width = 480;
+  device.height = 800;
+  device.hasTouch = false;
+  device.hasButtons = true;
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  PublicationPageProps props;
+  props.book.title = "Title";
+  props.book.action = 94;
+  props.availability.status = "Available";
+  props.availability.action = 95;
+  props.primary.label = "Borrow";
+  props.primary.action = 91;
+  props.primary.value = 7;
+  props.primary.radius = 9;
+  props.primary.padding = Insets{10, 20, 10, 20};
+  props.primary.minTouchSize = 64;
+  props.secondary.label = "Sample";
+  props.secondary.action = 92;
+  props.more.label = "Full description";
+  props.more.action = 93;
+  props.radius = 12;
+  props.styles = outlinedButtonStyles();
+  props.padding = Insets{24, 26, 28, 30};
+  publicationPage(frame, device.screen(), props);
+  CHECK_EQ(hits.count(), 5u);
+  CHECK_EQ(draw.ops[0].radius, 12);
+  CHECK_EQ(hits.data()[0].rect.x, 30);
+  CHECK_EQ(hits.data()[0].rect.height, 64);
+  CHECK_EQ(hits.data()[0].rect.bottom(), 772);
+  bool paddedLabel = false;
+  bool roundedAction = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind == FakeDrawTarget::Op::Text && op.rect.y == 718) {
+      paddedLabel = op.rect.x == 50 && op.rect.height == 44;
+    }
+    if (op.kind == FakeDrawTarget::Op::Fill && op.rect.y == 708 && op.radius == 9)
+      roundedAction = true;
+  }
+  CHECK(paddedLabel);
+  CHECK(roundedAction);
+
+  // Every actionable section is reachable without touch, with wraparound.
+  InputSnapshot next, previous, confirm;
+  next.focusNext = true;
+  previous.focusPrev = true;
+  confirm.confirm = true;
+  const ActionId expected[] = {91, 92, 93, 94, 95, 91};
+  for (ActionId action : expected) {
+    hits.route(next);
+    CHECK_EQ(hits.route(confirm).action, action);
+  }
+  CHECK_EQ(hits.route(confirm).value, 7);
+  hits.route(previous);
+  CHECK_EQ(hits.route(confirm).action, 95);
+
+  // Focus survives a redraw and uses the caller's focused style.
+  props.availability.styles = defaultListRowStyles();
+  props.availability.styles.focused.background = Paint::solid(Color::Black);
+  props.availability.styles.focused.foreground = Paint::solid(Color::White);
+  props.availability.radius = 7;
+  hits.clear();
+  draw.opCount = 0;
+  publicationPage(frame, device.screen(), props);
+  CHECK_EQ(hits.route(confirm).action, 95);
+  bool focusPainted = false;
+  for (size_t i = 0; i < draw.opCount; ++i)
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Fill && draw.ops[i].radius == 7 &&
+        draw.ops[i].color == Color::Black) focusPainted = true;
+  CHECK(focusPainted);
+
+  // Disabled controls and touch-only controls cannot be focused/confirmed.
+  hits.clear();
+  props.primary.enabled = false;
+  props.secondary.state = StateDisabled;
+  props.book.inputMask = InputTouch;
+  publicationPage(frame, device.screen(), props);
+  hits.setFocusedIndex(-1);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 93);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 95);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 93);
+  hits.route(previous);
+  CHECK_EQ(hits.route(confirm).action, 95);
+  hits.clear();
+  props.enabled = false;
+  publicationPage(frame, device.screen(), props);
+  CHECK_EQ(hits.count(), 0u);
+  CHECK_EQ(hits.route(confirm).action, NO_ACTION);
+
+  // Standalone sections honor padding, border, radius and foreground.
+  hits.clear();
+  draw.opCount = 0;
+  PublicationAvailabilityProps av;
+  av.status = "Ready";
+  av.padding = Insets{17, 19, 13, 23};
+  av.divider = Paint::none();
+  av.radius = 8;
+  av.styles = outlinedButtonStyles();
+  av.styles.normal.foreground = Paint::solid(Color::White);
+  av.styles.normal.background = Paint::solid(Color::Black);
+  publicationAvailability(frame, Rect{10, 20, 300, 100}, av);
+  CHECK_EQ(draw.ops[0].radius, 8);
+  CHECK_EQ(draw.ops[1].kind, FakeDrawTarget::Op::Stroke);
+  CHECK_EQ(draw.ops[2].kind, FakeDrawTarget::Op::Text);
+  CHECK_EQ(draw.ops[2].rect.x, 33);
+  CHECK_EQ(draw.ops[2].rect.y, 37);
+  CHECK_EQ(draw.ops[2].color, Color::White);
+  draw.opCount = 0;
+  PublicationHeaderProps book;
+  book.title = "Title";
+  book.coverSize = Size{0, 0};
+  book.padding = Insets{11, 12, 13, 14};
+  book.radius = 6;
+  book.styles = outlinedButtonStyles();
+  publicationHeader(frame, Rect{10, 20, 300, 100}, book);
+  CHECK_EQ(draw.ops[0].radius, 6);
+  CHECK_EQ(draw.ops[2].kind, FakeDrawTarget::Op::Text);
+  CHECK_EQ(draw.ops[2].rect.x, 24);
+  CHECK_EQ(draw.ops[2].rect.y, 31);
+}
+
+struct CatalogTestSource {
+  uint16_t calls = 0;
+  uint16_t first = 0;
+  uint16_t last = 0;
+};
+CatalogItem catalogTestItem(uint16_t index, void* user) {
+  auto& source = *static_cast<CatalogTestSource*>(user);
+  if (source.calls == 0) source.first = index;
+  ++source.calls;
+  source.last = index;
+  CatalogItem item;
+  item.title = "Book title";
+  item.author = "Author";
+  item.value = static_cast<int16_t>(1000 + index);
+  return item;
+}
+
+void testCatalogShelves() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  device.width = 480;
+  device.height = 800;
+  device.hasTouch = false;
+  InputSnapshot input;
+  InteractionBuffer<32> hits;
+  Frame<32> frame(draw, device, input, hits);
+  CatalogTestSource source;
+  CatalogWindow horizontal[3];
+  CoverShelfProps shelves[3];
+  for (int i = 0; i < 3; ++i) {
+    shelves[i].title = "Popular books";
+    shelves[i].count = 100;
+    shelves[i].itemProvider = catalogTestItem;
+    shelves[i].itemProviderUserData = &source;
+    shelves[i].window = &horizontal[i];
+    shelves[i].card.action = 101;
+    shelves[i].next.label = ">";
+    shelves[i].next.action = 102;
+    shelves[i].next.value = i;
+    shelves[i].previous.label = "<";
+    shelves[i].previous.action = 103;
+    shelves[i].previous.value = i;
+    shelves[i].seeAll.label = "See all";
+    shelves[i].seeAll.action = 104;
+    shelves[i].seeAll.value = i;
+  }
+  CatalogWindow vertical;
+  CatalogPageProps page;
+  page.shelves = shelves;
+  page.count = 3;
+  page.window = &vertical;
+  page.next.label = "More groups";
+  page.next.action = 105;
+  page.previous.label = "Previous groups";
+  page.previous.action = 106;
+  page.activeShelf = 1;
+  catalogPage(frame, device.screen(), page);
+  CHECK_EQ(vertical.visibleCount, 2);
+  CHECK_EQ(horizontal[0].visibleCount, 3);
+  CHECK_EQ(horizontal[1].visibleCount, 3);
+  CHECK_EQ(source.calls, 6);  // only visible cards, no expanded group list
+  CHECK(!hits.overflowed());
+  InputSnapshot swipe;
+  swipe.swipeLeft = true;
+  CHECK_EQ(hits.route(swipe).action, 102);
+  CHECK_EQ(hits.route(swipe).value, 1); // only the active group claims the gesture
+
+  // Next/Previous/Confirm alone reaches paging, see-all, and every visible book.
+  InputSnapshot next, previous, confirm;
+  next.focusNext = true;
+  previous.focusPrev = true;
+  confirm.confirm = true;
+  hits.setFocusedIndex(-1);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 102);
+  CHECK_EQ(hits.route(confirm).value, 0);
+  horizontal[0].next();
+  CHECK_EQ(horizontal[0].firstIndex, 3);
+  CHECK_EQ(horizontal[1].firstIndex, 0);
+  hits.clear();
+  draw.opCount = 0;
+  source = {};
+  catalogPage(frame, device.screen(), page);
+  CHECK_EQ(source.first, 3);
+  CHECK_EQ(source.calls, 6);
+  bool sawBook = false, sawAll = false, sawMoreGroups = false;
+  for (size_t i = 0; i < hits.count() + 1; ++i) {
+    hits.route(next);
+    const ActionEvent event = hits.route(confirm);
+    sawBook |= event.action == 101 && event.value == 1003;
+    sawAll |= event.action == 104;
+    sawMoreGroups |= event.action == 105;
+  }
+  CHECK(sawBook && sawAll && sawMoreGroups);
+  hits.route(previous);
+  CHECK(hits.route(confirm).action != NO_ACTION);
+  horizontal[0].previous();
+  CHECK_EQ(horizontal[0].firstIndex, 0);
+  vertical.next();
+  CHECK_EQ(vertical.firstIndex, 1);
+  hits.clear();
+  catalogPage(frame, device.screen(), page);
+  CHECK_EQ(vertical.firstIndex, 1);
+  CHECK(!vertical.canNext());
+  CHECK(vertical.canPrevious());
+
+  // Stable item IDs also route from taps after horizontal paging.
+  hits.clear();
+  horizontal[0].firstIndex = 97;
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK(!horizontal[0].canNext());
+  bool tapped = false;
+  for (size_t i = 0; i < hits.count(); ++i) {
+    const auto& hit = hits.data()[i];
+    if (hit.action != 101) continue;
+    InputSnapshot tap;
+    tap.touchReleased = true;
+    tap.touchX = hit.rect.x + hit.rect.width / 2;
+    tap.touchY = hit.rect.y + hit.rect.height / 2;
+    CHECK_EQ(hits.route(tap).value, hit.value);
+    tapped = true;
+  }
+  CHECK(tapped);
+  shelves[0].count = 1;
+  hits.clear();
+  source = {};
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK_EQ(horizontal[0].firstIndex, 0);
+  CHECK_EQ(source.calls, 1);
+  shelves[0].enabled = false;
+  hits.clear();
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK_EQ(hits.count(), 0u);
+  shelves[0].count = 0;
+  source = {};
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK_EQ(source.calls, 0);
+  CHECK(!horizontal[0].canNext() && !horizontal[0].canPrevious());
+
+  // Narrow surfaces still render bounded geometry and skip hidden providers.
+  for (Size size : {Size{240, 480}, Size{120, 160}, Size{0, 0}}) {
+    hits.clear();
+    draw.opCount = 0;
+    source = {};
+    catalogPage(frame, Rect{0, 0, size.width, size.height}, page);
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const Rect r = draw.ops[i].rect;
+      CHECK(r.width > 0 && r.height > 0);
+      CHECK(r.x >= 0 && r.y >= 0 && r.right() <= size.width && r.bottom() <= size.height);
+    }
+  }
+}
+
+void testPublicationPage() {
+  for (const Size size : {Size{480, 800}, Size{240, 480}, Size{800, 480}, Size{120, 160}}) {
+    FakeDrawTarget draw;
+    DeviceContext device;
+    device.width = size.width;
+    device.height = size.height;
+    InputSnapshot input;
+    InteractionBuffer<16> hits;
+    Frame<16> frame(draw, device, input, hits);
+    PublicationPageProps props;
+    props.book.title = "A very long publication title that wraps across multiple lines";
+    props.book.author = "Author name";
+    props.availability.status = "Unavailable";
+    props.availability.holds = "You are #3 in line";
+    props.description = "A long description should never cover an acquisition control.";
+    props.primary.label = "Place hold";
+    props.primary.action = 91;
+    props.secondary.label = "Read sample";
+    props.secondary.action = 92;
+    publicationPage(frame, device.screen(), props);
+    CHECK(hits.count() >= 1);
+    CHECK_EQ(hits.data()[0].action, 91);
+    InputSnapshot tap;
+    tap.touchReleased = true;
+    tap.touchX = hits.data()[0].rect.x + 4;
+    tap.touchY = hits.data()[0].rect.y + 4;
+    CHECK_EQ(hits.route(tap).action, 91);
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const Rect r = draw.ops[i].rect;
+      CHECK(r.width > 0 && r.height > 0);
+      CHECK(r.x >= 0 && r.y >= 0 && r.right() <= size.width && r.bottom() <= size.height);
+    }
+    for (size_t i = 1; i < hits.count(); ++i) {
+      CHECK(hits.data()[i].rect.bottom() <= hits.data()[i - 1].rect.y);
+    }
+    hits.clear();
+    props.primary.enabled = false;
+    props.secondary.label = nullptr;
+    publicationPage(frame, device.screen(), props);
+    CHECK_EQ(hits.count(), 0u);
+    hits.clear();
+    publicationPage(frame, Rect{0, 0, 0, 0}, props);
+    CHECK_EQ(hits.count(), 0u);
+  }
+}
+
 int main() {
   testRect();
   testDisplayTarget();
@@ -4905,6 +5395,9 @@ int main() {
   testScreenContentMarginCoordinateSpaces();
   testEReaderChromeMenusAndPanels();
   testEReaderBookSurfaces();
+  testSpaceBetweenLayouts();
+  testCoverGridLabelAlignment();
+  testBookCardCenteredTextAndProgressLabel();
   testHeaderBorderEdges();
   testPopupAutoSizeAndAlignment();
   testScreenAnchoredLayout();
@@ -4914,6 +5407,9 @@ int main() {
   testTextArea();
   testCapsuleSlider();
   testSliderRow();
+  testPublicationPage();
+  testCatalogShelves();
+  testPublicationStylingAndButtons();
   testTileGrid();
   testSheet();
   testScreenControlCenterWrappers();

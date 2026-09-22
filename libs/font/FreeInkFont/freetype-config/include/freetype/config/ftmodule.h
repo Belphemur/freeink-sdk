@@ -5,8 +5,14 @@
  * consumers render grayscale-AA only and never need FT_LOAD_FORCE_AUTOHINT.
  * No Type1/BDF/etc. CFF is required so .otf (OTTO/CFF outline) faces load —
  * the stb backend renders them today, so dropping them in the FreeType
- * backend would be a regression. */
+ * backend would be a regression. psnames is opt-in
+ * (FREEINK_FONT_ENABLE_PSNAMES): it serves glyph-NAME lookups
+ * (FT_Get_Glyph_Name / AGL Unicode synthesis), which a codepoint-driven cmap
+ * renderer never performs — at ~64KB of text it is the largest module in
+ * this build. */
+#if FREEINK_FONT_ENABLE_PSNAMES
 FT_USE_MODULE( FT_Module_Class, psnames_module_class )
+#endif
 FT_USE_MODULE( FT_Module_Class, psaux_module_class )
 FT_USE_MODULE( FT_Module_Class, sfnt_module_class )
 FT_USE_MODULE( FT_Driver_ClassRec, tt_driver_class )

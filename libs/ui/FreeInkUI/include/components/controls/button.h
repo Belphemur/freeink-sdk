@@ -31,6 +31,7 @@ struct ButtonProps {
   bool enabled = true;
   // Highlight insets affect paint only, preserving text and hit geometry.
   Insets highlightInsets{};
+  Insets padding{2, 4, 2, 4};
 };
 
 template <size_t MaxInteractions>
@@ -59,7 +60,8 @@ void button(Frame<MaxInteractions>& frame, Rect rect, const ButtonProps& props) 
                     props.borderEdges);
   }
 
-  Rect content = rect.inset(Insets{2, 4, 2, 4});
+  Rect content = rect.inset(props.padding);
+  if (content.empty()) return;
   BitmapRef icon = props.icon ? props.icon : resolveBitmap(frame.assets(), props.iconAsset);
   // iconSize > 0 scales the icon (nearest-neighbor Contain) instead of
   // drawing at its native pixel size.

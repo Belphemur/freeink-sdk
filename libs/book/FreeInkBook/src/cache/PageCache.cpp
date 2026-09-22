@@ -74,7 +74,10 @@ constexpr uint32_t kRuleRecSize = 7;
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 13;  // 13: FtFont::ligature() resolves ff/fi/fl/ffi/ffl via GSUB
+constexpr uint32_t kLayoutRevision = 14;  // 14: FtFont kerning adds GPOS pair-adjustment
+                                          //  fallback (fonts kerned only via GPOS now
+                                          //  kern; pagination changes for them)
+                                          //  13: FtFont::ligature() resolves ff/fi/fl/ffi/ffl via GSUB
                                           //  (12: ruby lines drop ascender/2, annotations render,
                                           //   11: CSS padding folds into block geometry,
                                           //   10: <hr> lays out as a drawn rule,

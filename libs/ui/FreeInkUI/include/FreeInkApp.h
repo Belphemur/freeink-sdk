@@ -520,6 +520,34 @@ public:
                  props);
   }
 
+  void coverShelf(const CoverShelfProps &props, int16_t height = 252,
+                  LayoutAnchor anchor = LayoutAnchor::Top) {
+    CoverShelfProps themed = props;
+    if (textStyleUnset(themed.headingText)) themed.headingText = theme_.titleText;
+    if (textStyleUnset(themed.card.titleText)) themed.card.titleText = theme_.bodyText;
+    if (textStyleUnset(themed.card.authorText)) themed.card.authorText = theme_.bodyText;
+    ui::coverShelf(frame_, take(anchor, height), themed);
+  }
+
+  void catalogPage(const CatalogPageProps &props) {
+    ui::catalogPage(frame_, content_, props);
+  }
+
+  // Publication detail fills the body left by the app's header and footer.
+  void publicationPage(const PublicationPageProps &props) {
+    PublicationPageProps themed = props;
+    if (textStyleUnset(themed.book.titleText)) themed.book.titleText = theme_.titleText;
+    if (textStyleUnset(themed.book.detailText)) themed.book.detailText = theme_.bodyText;
+    if (textStyleUnset(themed.availability.headingText)) themed.availability.headingText = theme_.bodyText;
+    if (textStyleUnset(themed.availability.detailText)) themed.availability.detailText = theme_.bodyText;
+    if (textStyleUnset(themed.headingText)) themed.headingText = theme_.bodyText;
+    if (textStyleUnset(themed.bodyText)) themed.bodyText = theme_.bodyText;
+    if (textStyleUnset(themed.primary.text)) themed.primary.text = theme_.bodyText;
+    if (textStyleUnset(themed.secondary.text)) themed.secondary.text = theme_.bodyText;
+    if (textStyleUnset(themed.more.text)) themed.more.text = theme_.bodyText;
+    ui::publicationPage(frame_, content_, themed);
+  }
+
   // Multi-line writing canvas. Fills the remaining body by default; pass a
   // height to reserve a band. Text defaults to the theme body style.
   void textArea(const TextAreaProps &props, int16_t height = 0,

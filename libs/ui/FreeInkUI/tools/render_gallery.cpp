@@ -22,6 +22,7 @@ struct Canvas {
   int16_t widthBytes;
   std::vector<uint8_t> fb;
   DisplayTarget target;
+  DeviceContext device;
 
   // Render at native landscape orientation (no rotation). The 4-arg DisplayTarget
   // ctor now auto-rotates a landscape panel (width > height) to Portrait for
@@ -81,6 +82,9 @@ void writeManifest(const char* path) {
       "  \"schema\": 1,\n"
       "  \"generatedBy\": \"libs/ui/FreeInkUI/tools/render_gallery.cpp\",\n"
       "  \"images\": [\n"
+      "    {\"file\": \"freeinkui-catalog.svg\", \"category\": \"catalog\", \"title\": \"Horizontal catalog shelves\", \"components\": [\"catalogCover\", \"coverShelf\", \"catalogPage\"]},\n"
+      "    {\"file\": \"freeinkui-publication.svg\", \"category\": \"publication\", \"title\": \"Borrow a publication\", \"components\": [\"publicationHeader\", \"publicationAvailability\", \"publicationPage\"]},\n"
+      "    {\"file\": \"freeinkui-publication-hold.svg\", \"category\": \"publication\", \"title\": \"Publication on hold\", \"components\": [\"publicationPage\"]},\n"
       "    {\n"
       "      \"file\": \"freeinkui-settings.svg\",\n"
       "      \"category\": \"settings\",\n"
@@ -164,7 +168,8 @@ DeviceContext deviceFor(const Canvas& c) {
 template <size_t N>
 Frame<N> makeFrame(Canvas& c, InteractionBuffer<N>& interactions) {
   static InputSnapshot input;
-  return Frame<N>(c.target, deviceFor(c), input, interactions);
+  c.device = deviceFor(c);
+  return Frame<N>(c.target, c.device, input, interactions);
 }
 
 TextStyle text(FontId font = 0, TextAlign align = TextAlign::Left, uint8_t maxLines = 1) {
@@ -832,6 +837,110 @@ void renderLibrary(const char* path) {
   writeSvg(c, path);
 }
 
+bool paintCatalogCover(DrawTarget& target, Rect rect, const CatalogItem& item, void*) {
+  const bool dark = item.value % 2 == 0;
+  target.fill(rect, Paint::solid(dark ? Color::Black : Color::White));
+  target.stroke(rect, Paint::solid(Color::Black), 1);
+  const Paint ink = Paint::solid(dark ? Color::White : Color::Black);
+  const int16_t center = static_cast<int16_t>(rect.x + rect.width / 2);
+  for (int i = 0; i < 5; ++i) {
+    const int16_t y = static_cast<int16_t>(rect.y + 16 + i * 16);
+    target.line(Point{static_cast<int16_t>(rect.x + 12), y},
+                Point{static_cast<int16_t>(rect.right() - 12), y}, 1, ink);
+  }
+  target.line(Point{center, static_cast<int16_t>(rect.y + 12)},
+              Point{center, static_cast<int16_t>(rect.y + 100)}, 3, ink);
+  return true;
+}
+
+void renderCatalog(const char* path) {
+  Canvas c(480, 800);
+  InteractionBuffer<32> interactions;
+  auto frame = makeFrame(c, interactions);
+  title(c.target, Rect{20, 16, 440, 32}, "Library                         Browse catalog");
+  CatalogItem books[9];
+  const char* names[] = {"The Secret Garden", "A Room of One's Own", "The Time Machine",
+                        "Little Women", "The Odyssey", "Pride and Prejudice",
+                        "The War of the Worlds", "Jane Eyre", "The Blue Castle"};
+  const char* authors[] = {"F. H. Burnett", "Virginia Woolf", "H. G. Wells",
+                          "L. M. Alcott", "Homer", "Jane Austen",
+                          "H. G. Wells", "Charlotte Bronte", "L. M. Montgomery"};
+  for (int i = 0; i < 9; ++i) { books[i].title = names[i]; books[i].author = authors[i]; books[i].value = i; }
+  CatalogWindow windows[3];
+  CoverShelfProps shelves[3];
+  const char* headings[] = {"Popular this week", "Rediscover the classics", "New in the catalog"};
+  for (int i = 0; i < 3; ++i) {
+    shelves[i].title = headings[i];
+    shelves[i].items = books + i * 3;
+    shelves[i].count = 6 - i * 2;
+    shelves[i].window = &windows[i];
+    shelves[i].cardWidth = 128;
+    shelves[i].card.action = 70;
+    shelves[i].card.radius = 4;
+    shelves[i].card.coverPainter = paintCatalogCover;
+    shelves[i].next.label = ">";
+    shelves[i].next.action = 71;
+    shelves[i].next.value = i;
+    shelves[i].previous.label = "<";
+    shelves[i].previous.action = 72;
+    shelves[i].previous.value = i;
+    shelves[i].seeAll.label = "See all";
+    shelves[i].seeAll.action = 73;
+    shelves[i].seeAll.value = i;
+    shelves[i].navigationWidth = 44;
+    shelves[i].seeAllWidth = 64;
+    shelves[i].gap = 8;
+  }
+  CatalogWindow window;
+  CatalogPageProps page;
+  page.shelves = shelves;
+  page.count = 3;
+  page.window = &window;
+  page.shelfHeight = 300;
+  page.previous.label = "Previous groups";
+  page.previous.action = 74;
+  page.next.label = "More groups";
+  page.next.action = 75;
+  // Focus the first book to demonstrate button-navigation feedback.
+  catalogPage(frame, Rect{12, 64, 456, 720}, page);
+  interactions.setFocusedIndex(2);
+  interactions.clear();
+  c.clear();
+  title(c.target, Rect{20, 16, 440, 32}, "Library                         Browse catalog");
+  catalogPage(frame, Rect{12, 64, 456, 720}, page);
+  writeSvg(c, path);
+}
+
+void renderPublication(const char* path, bool held) {
+  Canvas c(480, 800);
+  c.target.setFont(FONT_SLOT_TITLE, kNotoSansFont);
+  InteractionBuffer<16> interactions;
+  auto frame = makeFrame(c, interactions);
+  title(c.target, Rect{20, 16, 440, 32}, "< Library                         Book details");
+  PublicationPageProps page;
+  page.book.title = "The Secret Garden";
+  page.book.author = "Frances Hodgson Burnett";
+  page.book.format = "EBOOK / EPUB";
+  page.book.titleText = text(FONT_SLOT_TITLE);
+  page.availability.status = held ? "On hold" : "Available to borrow";
+  page.availability.copies = held ? "0 of 8 copies available" : "3 of 8 copies available";
+  page.availability.holds = held ? "You are #3 in line / 12 holds" : "No waiting list";
+  page.availability.loan = held ? "We'll notify you when it's ready." : "Borrow for 21 days";
+  page.metadata = "Published 1911 / English";
+  page.description = "When Mary Lennox arrives at her uncle's house on the Yorkshire moors, "
+      "she finds a place full of secrets. Beyond a locked door in the garden wall, "
+      "a forgotten world is waiting to come alive.\n\n"
+      "A story of friendship, discovery, and the quiet power of growing things.";
+  page.primary.label = held ? "Manage hold" : "Borrow book";
+  page.primary.action = 60;
+  page.secondary.label = "Read sample";
+  page.secondary.action = 61;
+  page.more.label = "Full description";
+  page.more.action = 62;
+  publicationPage(frame, Rect{4, 64, 472, 732}, page);
+  writeSvg(c, path);
+}
+
 void renderOverlays(const char* path) {
   Canvas c(640, static_cast<int16_t>(286 + keyboardPreferredHeight(440, 4) + 24));
   InteractionBuffer<96> interactions;
@@ -925,6 +1034,9 @@ int main(int argc, char** argv) {
   renderReader((dir + "/freeinkui-reader.svg").c_str());
   renderLibrary((dir + "/freeinkui-library.svg").c_str());
   renderOverlays((dir + "/freeinkui-overlays.svg").c_str());
+  renderPublication((dir + "/freeinkui-publication.svg").c_str(), false);
+  renderPublication((dir + "/freeinkui-publication-hold.svg").c_str(), true);
+  renderCatalog((dir + "/freeinkui-catalog.svg").c_str());
   renderPalette(dir);
   writeManifest((dir + "/freeinkui-gallery.json").c_str());
   return 0;
