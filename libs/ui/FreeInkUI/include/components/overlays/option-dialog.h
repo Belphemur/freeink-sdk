@@ -24,6 +24,9 @@ struct OptionDialogProps {
   const char* message = nullptr;
   const DialogOption* options = nullptr;
   uint8_t optionCount = 0;
+  // Reserved band between the text slots and the buttons for caller-drawn
+  // content (a slider, a preview). optionDialog() returns its rect.
+  int16_t contentHeight = 0;
   TextStyle titleText{};
   TextStyle headlineText{};
   TextStyle messageText{};
@@ -63,6 +66,9 @@ inline int16_t optionDialogHeight(const DrawTarget& target, const OptionDialogPr
   if (props.message) {
     height = static_cast<int16_t>(height + measureWrappedText(target, props.message, props.messageText, contentW).height);
   }
+  if (props.contentHeight > 0) {
+    height = static_cast<int16_t>(height + props.gap + props.contentHeight);
+  }
   if (props.options && props.optionCount > 0) {
     const int16_t buttonsH =
         props.verticalOptions
@@ -73,8 +79,10 @@ inline int16_t optionDialogHeight(const DrawTarget& target, const OptionDialogPr
   return height;
 }
 
+// Returns the reserved content band (empty when contentHeight is 0) so the
+// caller can draw its own control into the dialog.
 template <size_t MaxInteractions>
-void optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogProps& props) {
+Rect optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogProps& props) {
   if (props.dimBackground) {
     frame.target().fill(frame.screen(), Paint::dither(Color::LightGray));
   }
@@ -129,13 +137,21 @@ void optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
                    : props.buttonHeight;
   }
 
+  // Caller-drawn content band, directly above the buttons.
+  Rect contentBand{};
+  int16_t slotsBottom = static_cast<int16_t>(content.bottom() - buttonsH - (buttonsH ? props.gap : 0));
+  if (props.contentHeight > 0) {
+    contentBand = Rect{content.x, static_cast<int16_t>(slotsBottom - props.contentHeight), content.width,
+                       props.contentHeight};
+    slotsBottom = static_cast<int16_t>(contentBand.y - props.gap);
+  }
+
   if (props.message) {
-    Rect messageRect{content.x, cursorY, content.width,
-                     static_cast<int16_t>(content.bottom() - buttonsH - (buttonsH ? props.gap : 0) - cursorY)};
+    Rect messageRect{content.x, cursorY, content.width, static_cast<int16_t>(slotsBottom - cursorY)};
     drawText(frame.target(), messageRect, props.message, props.messageText);
   }
 
-  if (!props.options || props.optionCount == 0) return;
+  if (!props.options || props.optionCount == 0) return contentBand;
   Rect buttons{content.x, static_cast<int16_t>(content.bottom() - buttonsH), content.width, buttonsH};
   for (uint8_t i = 0; i < props.optionCount; ++i) {
     const DialogOption& option = props.options[i];
@@ -160,6 +176,7 @@ void optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
     bp.enabled = option.enabled;
     button(frame, optionRect, bp);
   }
+  return contentBand;
 }
 
 }  // namespace ui

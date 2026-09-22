@@ -129,6 +129,17 @@ class GfxRendererTarget final : public DrawTarget {
   void stroke(const Rect rect, const Paint paint, const uint8_t width, const uint8_t radius = 0,
               const uint8_t corners = CornersAll) override {
     if (rect.empty() || width == 0 || paint.kind == PaintKind::None) return;
+    if (paint.kind == PaintKind::Dither && radius == 0) {
+      // Square dithered border as four edge bands; drawRect() is 1-bit only.
+      const int inner = rect.height > 2 * width ? rect.height - 2 * width : 0;
+      renderer.fillRectDither(rect.x, rect.y, rect.width, width, gfxColor(paint.color));
+      renderer.fillRectDither(rect.x, rect.y + rect.height - width, rect.width, width, gfxColor(paint.color));
+      if (inner > 0) {
+        renderer.fillRectDither(rect.x, rect.y + width, width, inner, gfxColor(paint.color));
+        renderer.fillRectDither(rect.x + rect.width - width, rect.y + width, width, inner, gfxColor(paint.color));
+      }
+      return;
+    }
     const bool black = paint.color != Color::White;
     if (radius > 0) {
       if (corners == CornersAll) {
