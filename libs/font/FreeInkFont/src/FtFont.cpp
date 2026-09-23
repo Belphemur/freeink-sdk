@@ -229,6 +229,42 @@ int32_t fixed16_16To26_6(const long value) {
   const int64_t rounded = wide >= 0 ? (wide + 512) >> 10 : -((-wide + 512) >> 10);
   return int32_t(std::clamp<int64_t>(rounded, INT32_MIN, INT32_MAX));
 }
+
+// Opens faces 0..num_faces-1 until one passes supportedFace (Unicode cmap;
+// this is what "first face with a Unicode cmap" means for a .ttc),
+// describes it, and fills info.numFaces / info.faceIndex. faceIndex >= 0
+// pins the exact face; faceIndex < 0 scans. Returns false when the
+// requested face cannot be opened or no face is supported.
+template <typename OpenFn>
+static bool inspectFaceAt(const OpenFn& openAt, const int faceIndex, FtFont::FaceInfo& info, char* family,
+                          const size_t familyCapacity) {
+  FT_Face face = nullptr;
+  const long pin = faceIndex < 0 ? 0 : faceIndex;
+  if (openAt(pin, face) != 0) return false;
+  const long numFaces = face->num_faces > 0 ? face->num_faces : 1;
+  const long first = faceIndex < 0 ? 0 : faceIndex;
+  const long last = faceIndex < 0 ? numFaces - 1 : faceIndex;
+  for (long i = first; i <= last; ++i) {
+    if (i != pin) {
+      FT_Done_Face(face);
+      face = nullptr;
+      if (openAt(i, face) != 0) continue;
+    }
+    if (!supportedFace(face)) {
+      FT_Done_Face(face);
+      face = nullptr;
+      if (faceIndex >= 0) return false;
+      continue;
+    }
+    describeFace(face, info, family, familyCapacity);
+    info.faceIndex = static_cast<uint16_t>(i);
+    info.numFaces = static_cast<uint16_t>(numFaces);
+    FT_Done_Face(face);
+    return true;
+  }
+  if (face) FT_Done_Face(face);
+  return false;
+}
 }  // namespace
 
 bool FtFont::configureMemory(const MemoryCallbacks* callbacks) {
@@ -243,24 +279,24 @@ bool FtFont::configureMemory(const MemoryCallbacks* callbacks) {
 }
 
 FtFont::InspectResult FtFont::inspectMemory(const uint8_t* data, const uint32_t length, FaceInfo& info, char* family,
-                                            const size_t familyCapacity) {
+                                            const size_t familyCapacity, const int faceIndex) {
   info = FaceInfo{};
   if (familyCapacity && !family) return InspectResult::Unsupported;
   if (familyCapacity) family[0] = '\0';
   if (!data || !length) return InspectResult::Unsupported;
   if (!ensureLib()) return InspectResult::Unavailable;
 
-  FT_Face face = nullptr;
-  const FT_Error error = FT_New_Memory_Face(g_lib, data, static_cast<FT_Long>(length), 0, &face);
-  if (error) return error == FT_Err_Out_Of_Memory ? InspectResult::Unavailable : InspectResult::Unsupported;
-  const bool valid = supportedFace(face);
-  if (valid) describeFace(face, info, family, familyCapacity);
-  FT_Done_Face(face);
-  return valid ? InspectResult::Ok : InspectResult::Unsupported;
+  const auto openAtIndex = [&](const long index, FT_Face& face) {
+    return FT_New_Memory_Face(g_lib, data, static_cast<FT_Long>(length), index, &face);
+  };
+  if (!inspectFaceAt(openAtIndex, faceIndex, info, family, familyCapacity)) {
+    return InspectResult::Unsupported;
+  }
+  return InspectResult::Ok;
 }
 
 FtFont::InspectResult FtFont::inspectStream(const ReadFn read, void* ctx, const unsigned long fileSize, FaceInfo& info,
-                                            char* family, const size_t familyCapacity) {
+                                            char* family, const size_t familyCapacity, const int faceIndex) {
   info = FaceInfo{};
   if (familyCapacity && !family) return InspectResult::Unsupported;
   if (familyCapacity) family[0] = '\0';
@@ -276,15 +312,11 @@ FtFont::InspectResult FtFont::inspectStream(const ReadFn read, void* ctx, const 
   FT_Open_Args args{};
   args.flags = FT_OPEN_STREAM;
   args.stream = &stream;
-  FT_Face face = nullptr;
-  const FT_Error error = FT_Open_Face(g_lib, &args, 0, &face);
-  if (error) {
-    return source.failed || error == FT_Err_Out_Of_Memory ? InspectResult::Unavailable : InspectResult::Unsupported;
+  const auto openAtIndex = [&](const long index, FT_Face& face) { return FT_Open_Face(g_lib, &args, index, &face); };
+  if (!inspectFaceAt(openAtIndex, faceIndex, info, family, familyCapacity)) {
+    return source.failed ? InspectResult::Unavailable : InspectResult::Unsupported;
   }
-  const bool valid = supportedFace(face);
-  if (valid) describeFace(face, info, family, familyCapacity);
-  FT_Done_Face(face);
-  return source.failed ? InspectResult::Unavailable : valid ? InspectResult::Ok : InspectResult::Unsupported;
+  return source.failed ? InspectResult::Unavailable : InspectResult::Ok;
 }
 
 FtFont::~FtFont() { deinit(); }
@@ -443,7 +475,8 @@ void FtFont::releaseKerningTable() {
   gposLoadAttempted_ = true;
 }
 
-bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx, const int weight, const bool italic) {
+bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx, const int weight, const bool italic,
+                  const int faceIndex) {
   // Rebuild from a clean slate every time: this same instance can be
   // init()'d again with completely different bytes without an intervening
   // deinit() call, and glyph IDs (so the cached GSUB table) are face-local —
@@ -453,10 +486,11 @@ bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx
   // without ever calling FT_Done_Face on it.
   deinit();
   if (!ensureLib() || data == nullptr || len == 0) return false;
+  if (faceIndex < 0) return false;  // negative indexes have special FT meaning; callers pass concrete indexes
   fontData_ = data;
   fontDataSize_ = len;
   FT_Face face = nullptr;
-  if (FT_New_Memory_Face(g_lib, data, static_cast<FT_Long>(len), 0, &face) != 0) {
+  if (FT_New_Memory_Face(g_lib, data, static_cast<FT_Long>(len), faceIndex, &face) != 0) {
     fontData_ = nullptr;
     fontDataSize_ = 0;
     return false;
@@ -466,9 +500,10 @@ bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx
 }
 
 bool FtFont::initStream(const ReadFn read, void* ctx, const unsigned long fileSize, const uint16_t sizePx,
-                        const int weight, const bool italic) {
+                        const int weight, const bool italic, const int faceIndex) {
   deinit();  // see the comment in init() — same reasoning applies here
   if (!ensureLib() || read == nullptr || fileSize == 0) return false;
+  if (faceIndex < 0) return false;
 
   // These wrappers must outlive the face, so they use the configured font
   // allocator rather than a small task stack frame. Both allocations are
@@ -494,7 +529,7 @@ bool FtFont::initStream(const ReadFn read, void* ctx, const unsigned long fileSi
   args.flags = FT_OPEN_STREAM;
   args.stream = stream;
   FT_Face face = nullptr;
-  if (FT_Open_Face(g_lib, &args, 0, &face) != 0) {
+  if (FT_Open_Face(g_lib, &args, faceIndex, &face) != 0) {
     fontFree(stream);
     fontFree(sc);
     stream_ = nullptr;
