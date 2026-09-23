@@ -35,7 +35,11 @@ class GfxRendererTarget final : public DrawTarget {
   static constexpr FontId FONT_SMALL = 0;
   static constexpr FontId FONT_BODY = 1;
   static constexpr FontId FONT_TITLE = 2;
-  static constexpr size_t FONT_SLOTS = 3;
+  // Status/label chrome (header battery percent, clock). Follows FONT_SMALL
+  // unless bound explicitly, so apps whose FONT_SMALL scales with the UI can
+  // pin chrome to a fixed size without touching list subtitles.
+  static constexpr FontId FONT_LABEL = 3;
+  static constexpr size_t FONT_SLOTS = 4;
 
   explicit GfxRendererTarget(const GfxRenderer& renderer, const bool hasTouch = false)
       : renderer(renderer), hasTouch_(hasTouch) {
@@ -323,7 +327,11 @@ class GfxRendererTarget final : public DrawTarget {
   bool hasTouch_ = false;
   int fonts[FONT_SLOTS];
 
-  int gfxFont(const FontId slot) const { return slot < FONT_SLOTS ? fonts[slot] : fonts[FONT_BODY]; }
+  int gfxFont(const FontId slot) const {
+    // FONT_LABEL follows FONT_SMALL until an app binds it explicitly.
+    if (slot == FONT_LABEL && fonts[FONT_LABEL] == 0) return fonts[FONT_SMALL];
+    return slot < FONT_SLOTS ? fonts[slot] : fonts[FONT_BODY];
+  }
 
   // FreeInkUI colors map onto GfxRenderer's Bayer dither levels.
   static ::Color gfxColor(const Color color) {
@@ -359,6 +367,7 @@ class GfxRendererFrame {
     target.setFont(GfxRendererTarget::FONT_SMALL, smallFontId);
     target.setFont(GfxRendererTarget::FONT_BODY, bodyFontId);
     target.setFont(GfxRendererTarget::FONT_TITLE, titleFontId);
+    target.setFont(GfxRendererTarget::FONT_LABEL, smallFontId);
   }
 
   GfxRendererTarget target;
