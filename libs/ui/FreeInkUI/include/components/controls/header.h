@@ -108,6 +108,11 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
   }
   if (props.rightReserve > 0) content.width = static_cast<int16_t>(content.width - props.rightReserve);
 
+  // A title centered by its text style must keep the full band like the
+  // navHeader `centered` flag, or the leading/trailing insets below would
+  // shift its centering off the band's middle.
+  const bool centeredTitle = props.centered || props.titleText.align == TextAlign::Center;
+
   // Status chrome measurements first: on shared-line layouts the battery and
   // clock reserve title space on their respective sides. (+2: the battery
   // glyph's terminal nub extends past glyphWidth.)
@@ -142,7 +147,7 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
       content.width = static_cast<int16_t>(content.width - reserve);
     }
   }
-  if (clockWidth > 0 && status.clockCentered && !props.centered && titleSharesStrip) {
+  if (clockWidth > 0 && status.clockCentered && !centeredTitle && titleSharesStrip) {
     // A left-anchored title on the strip line stops short of the centered
     // clock; a title below the strip keeps its width.
     const int16_t clockStart = static_cast<int16_t>(rect.x + (rect.width - clockWidth) / 2);
@@ -170,7 +175,7 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     // (usually invisible) button box would leave (btn - icon)/2 of dead
     // space. A centered title keeps the full band so it lines up across
     // screens with and without a back button.
-    if (!props.centered) {
+    if (!centeredTitle) {
       const int16_t iconEnd = static_cast<int16_t>(4 + (btn + leading.width) / 2);
       const int16_t inset = static_cast<int16_t>(iconEnd + 6 - sidePad);
       if (inset > 0) {
@@ -216,7 +221,7 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
       adjacent.minTouchSize = props.minTouchSize;
       button(frame, Rect{static_cast<int16_t>(trailingAnchor - 4 - btnW - btnH), trailingY, btnH, btnH}, adjacent);
     }
-    if (!props.centered) {
+    if (!centeredTitle) {
       content.width = static_cast<int16_t>(content.width - btnW - (hasAdjacentTrailing ? btnH + 4 : 0) - 8);
     }
   }
@@ -243,7 +248,7 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
       // band; a left-aligned one only loses the right slice.
       const int16_t used = static_cast<int16_t>(rightSize.width + 6);
       titleRect.width = static_cast<int16_t>(titleRect.width - used);
-      if (props.centered) {
+      if (centeredTitle) {
         titleRect.x = static_cast<int16_t>(titleRect.x + used);
         titleRect.width = static_cast<int16_t>(titleRect.width - used);
       }
