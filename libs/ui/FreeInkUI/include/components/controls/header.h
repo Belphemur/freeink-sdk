@@ -19,9 +19,6 @@ struct HeaderStatusProps {
   int16_t stripHeight = 0;  // status strip height; set it when status is shown
   int16_t edgeInset = -1;   // -1 = the resolved sidePadding
   const char* clockText = nullptr;
-  // Shift a left-anchored clock's pen left by the first digit's side bearing
-  // so the visible ink edge sits exactly on the inset.
-  int16_t clockBearing = 0;
   // Center the clock on the band (both axes) instead of anchoring it to the
   // corner opposite the battery. A non-centered title truncates before it.
   bool clockCentered = false;
@@ -278,7 +275,7 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
                                ? static_cast<int16_t>(rect.x + (rect.width - clockWidth) / 2)
                            : status.batteryLeft
                                ? static_cast<int16_t>(rect.right() - statusInset - clockWidth)
-                               : static_cast<int16_t>(rect.x + statusInset - status.clockBearing);
+                               : static_cast<int16_t>(rect.x + statusInset);
     frame.target().text(Rect{clockX, rect.y, clockWidth, clockH}, status.clockText, status.battery.text);
   }
 }
