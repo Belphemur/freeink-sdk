@@ -230,11 +230,15 @@ static const KeyboardKey DE_ROW3[] = {K("y", "y", 'y'),
                                       K("n", "n", 'n'), K("m", "m", 'm'), K("ß", "ß", 1102),
                                       KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
 
-static const KeyboardKey ES_ROW1[] = {K("q", "q", 'q'), K("w", "w", 'w'), K("e", "e", 'e'), K("r", "r", 'r'),
-                                      K("t", "t", 't'), K("y", "y", 'y'), K("u", "u", 'u'), K("i", "i", 'i'),
-                                      K("o", "o", 'o'), K("p", "p", 'p')};
-static const KeyboardKey ES_ROW2[] = {K("a", "a", 'a'), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
-                                      K("g", "g", 'g'), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
+// Vowel alts are the acute accent (á é í ó ú), the common case. ü has no key
+// of its own -- it only ever follows g (güe/güi/güito), so it rides g's alt
+// the same way ё rides е in the Cyrillic layouts (see RU_ROW1): no natural
+// key, but worth showing rather than leaving unreachable.
+static const KeyboardKey ES_ROW1[] = {K("q", "q", 'q'), K("w", "w", 'w'), KA("e", "e", 'e', "é"), K("r", "r", 'r'),
+                                      K("t", "t", 't'), K("y", "y", 'y'), KA("u", "u", 'u', "ú"), KA("i", "i", 'i', "í"),
+                                      KA("o", "o", 'o', "ó"), K("p", "p", 'p')};
+static const KeyboardKey ES_ROW2[] = {KA("a", "a", 'a', "á"), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
+                                      KA("g", "g", 'g', "ü"), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
                                       K("l", "l", 'l'), K("ñ", "ñ", 1201)};
 static const KeyboardKey ES_ROW3[] = {K("z", "z", 'z'),
                                       K("x", "x", 'x'), K("c", "c", 'c'), K("v", "v", 'v'), K("b", "b", 'b'),
@@ -328,11 +332,11 @@ static const KeyboardKey DE_SHIFT_ROW3[] = {K("Y", "Y", 'Y'),
                                             K("N", "N", 'N'), K("M", "M", 'M'), K("ß", "ß", 1102),
                                             KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
 
-static const KeyboardKey ES_SHIFT_ROW1[] = {K("Q", "Q", 'Q'), K("W", "W", 'W'), K("E", "E", 'E'), K("R", "R", 'R'),
-                                            K("T", "T", 'T'), K("Y", "Y", 'Y'), K("U", "U", 'U'), K("I", "I", 'I'),
-                                            K("O", "O", 'O'), K("P", "P", 'P')};
-static const KeyboardKey ES_SHIFT_ROW2[] = {K("A", "A", 'A'), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
-                                            K("G", "G", 'G'), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
+static const KeyboardKey ES_SHIFT_ROW1[] = {K("Q", "Q", 'Q'), K("W", "W", 'W'), KA("E", "E", 'E', "É"), K("R", "R", 'R'),
+                                            K("T", "T", 'T'), K("Y", "Y", 'Y'), KA("U", "U", 'U', "Ú"), KA("I", "I", 'I', "Í"),
+                                            KA("O", "O", 'O', "Ó"), K("P", "P", 'P')};
+static const KeyboardKey ES_SHIFT_ROW2[] = {KA("A", "A", 'A', "Á"), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
+                                            KA("G", "G", 'G', "Ü"), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
                                             K("L", "L", 'L'), K("Ñ", "Ñ", 1251)};
 static const KeyboardKey ES_SHIFT_ROW3[] = {K("Z", "Z", 'Z'),
                                             K("X", "X", 'X'), K("C", "C", 'C'), K("V", "V", 'V'), K("B", "B", 'B'),
