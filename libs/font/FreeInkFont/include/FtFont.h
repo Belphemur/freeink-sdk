@@ -362,6 +362,9 @@ class FtFont : public RasterFont {
   static constexpr size_t kMaxGsubBytes = 1024 * 1024;
   const uint8_t* fontData_ = nullptr;
   size_t fontDataSize_ = 0;
+  // Collection member actually opened by the last init()/initStream(); the
+  // memory-backed sfnt lookups read that member's table directory.
+  int activeFaceIndex_ = 0;
   const uint8_t* gsubTable_ = nullptr;
   size_t gsubTableSize_ = 0;
   bool gsubTableOwned_ = false;

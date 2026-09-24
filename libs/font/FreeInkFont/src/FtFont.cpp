@@ -71,12 +71,22 @@ uint32_t readBe32(const uint8_t* data) {
   return (uint32_t(data[0]) << 24) | (uint32_t(data[1]) << 16) | (uint32_t(data[2]) << 8) | data[3];
 }
 
-bool findSfntTable(const uint8_t* data, size_t size, uint32_t tag, const uint8_t** table, size_t* tableSize) {
+// For a .ttc, ttcFaceIndex selects which member directory to walk; for a
+// plain SFNT file it is ignored. The caller passes the FT face index it
+// actually opened — each collection face carries its own shaping tables.
+bool findSfntTable(const uint8_t* data, size_t size, uint32_t tag, const uint8_t** table, size_t* tableSize,
+                   const long ttcFaceIndex) {
   if (data == nullptr || table == nullptr || tableSize == nullptr || size < 12) return false;
   size_t directory = 0;
   if (readBe32(data) == kTagTtcf) {
-    if (size < 16 || readBe32(data + 8) == 0 || readBe32(data + 8) > (size - 12) / 4) return false;
-    directory = readBe32(data + 12);
+    if (size < 16) return false;
+    const uint32_t faceCount = readBe32(data + 8);
+    if (faceCount == 0 || faceCount > (size - 12) / 4) return false;
+    // Face 0 lives at offsets[0]; face N at offsets[N]. A face index beyond
+    // the directory count cannot have a table here (and would read outside
+    // the offsets array), so treat it as table-missing.
+    if (ttcFaceIndex < 0 || uint32_t(ttcFaceIndex) >= faceCount) return false;
+    directory = readBe32(data + 12 + size_t(ttcFaceIndex) * 4);
   }
   if (directory > size || size - directory < 12) return false;
   const size_t records = directory + 12;
@@ -234,27 +244,66 @@ int32_t fixed16_16To26_6(const long value) {
 // this is what "first face with a Unicode cmap" means for a .ttc),
 // describes it, and fills info.numFaces / info.faceIndex. faceIndex >= 0
 // pins the exact face; faceIndex < 0 scans. Returns false when the
-// requested face cannot be opened or no face is supported.
+// requested face cannot be opened or no face is supported. *openErr
+// (optional) carries the terminal FT error — FT_Err_Out_Of_Memory in
+// particular, so callers can map OOM to InspectResult::Unavailable instead
+// of misreporting a resource failure as bad font data.
 template <typename OpenFn>
 static bool inspectFaceAt(const OpenFn& openAt, const int faceIndex, FtFont::FaceInfo& info, char* family,
-                          const size_t familyCapacity) {
+                          const size_t familyCapacity, FT_Error* openErr = nullptr) {
   FT_Face face = nullptr;
   const long pin = faceIndex < 0 ? 0 : faceIndex;
-  if (openAt(pin, face) != 0) return false;
-  const long numFaces = face->num_faces > 0 ? face->num_faces : 1;
-  const long first = faceIndex < 0 ? 0 : faceIndex;
-  const long last = faceIndex < 0 ? numFaces - 1 : faceIndex;
-  for (long i = first; i <= last; ++i) {
+  const FT_Error pinErr = openAt(pin, face);
+  if (openErr) *openErr = pinErr;
+  // Exact mode: a failed open is the answer. Scan mode: an unparseable face
+  // 0 is not terminal (later members may be valid) — only OOM stops the
+  // scan, and an out-of-range index means the container's member list is
+  // exhausted (the loop starts past the already-failed pin).
+  if (pinErr != 0 && (faceIndex >= 0 || pinErr == FT_Err_Out_Of_Memory)) return false;
+  long last = UINT16_MAX;
+  if (face) {
+    const long numFaces = face->num_faces > 0 ? face->num_faces : 1;
+    // The scan only reports 16-bit face indexes, so cap it there: a crafted
+    // .ttc with hundreds of thousands of member faces would otherwise make
+    // this loop O(N²) in streamed open cost for nothing but a wrapped index.
+    last = faceIndex < 0 ? std::min<long>(numFaces - 1, UINT16_MAX) : faceIndex;
+  }
+  for (long i = pinErr == 0 ? pin : pin + 1; i <= last; ++i) {
     if (i != pin) {
-      FT_Done_Face(face);
+      if (face) FT_Done_Face(face);
       face = nullptr;
-      if (openAt(i, face) != 0) continue;
+      // An unparseable member face is not terminal (later members may be
+      // valid); stop early only when FreeType ran out of memory or the
+      // index left the container's member range.
+      const FT_Error nextErr = openAt(i, face);
+      if (openErr) *openErr = nextErr;
+      if (nextErr != 0) {
+        if (nextErr == FT_Err_Out_Of_Memory || nextErr == FT_Err_Invalid_Argument) return false;
+        continue;
+      }
+      if (last == UINT16_MAX) {
+        // First successful open on the retry path: num_faces is finally
+        // known, so the scan can be bounded by this container's real count.
+        const long numFaces = face->num_faces > 0 ? face->num_faces : 1;
+        last = std::min<long>(numFaces - 1, UINT16_MAX);
+        if (i > last) {
+          FT_Done_Face(face);
+          return false;
+        }
+      }
     }
+    const long numFaces = face->num_faces > 0 ? face->num_faces : 1;
     if (!supportedFace(face)) {
       FT_Done_Face(face);
       face = nullptr;
       if (faceIndex >= 0) return false;
       continue;
+    }
+    // 16-bit FaceInfo fields: values that cannot be represented must fail
+    // closed rather than wrap (face 65536 would report as face 0).
+    if (i > UINT16_MAX || numFaces - 1 > UINT16_MAX) {
+      FT_Done_Face(face);
+      return false;
     }
     describeFace(face, info, family, familyCapacity);
     info.faceIndex = static_cast<uint16_t>(i);
@@ -289,8 +338,9 @@ FtFont::InspectResult FtFont::inspectMemory(const uint8_t* data, const uint32_t 
   const auto openAtIndex = [&](const long index, FT_Face& face) {
     return FT_New_Memory_Face(g_lib, data, static_cast<FT_Long>(length), index, &face);
   };
-  if (!inspectFaceAt(openAtIndex, faceIndex, info, family, familyCapacity)) {
-    return InspectResult::Unsupported;
+  FT_Error openErr = FT_Err_Ok;
+  if (!inspectFaceAt(openAtIndex, faceIndex, info, family, familyCapacity, &openErr)) {
+    return openErr == FT_Err_Out_Of_Memory ? InspectResult::Unavailable : InspectResult::Unsupported;
   }
   return InspectResult::Ok;
 }
@@ -313,8 +363,9 @@ FtFont::InspectResult FtFont::inspectStream(const ReadFn read, void* ctx, const 
   args.flags = FT_OPEN_STREAM;
   args.stream = &stream;
   const auto openAtIndex = [&](const long index, FT_Face& face) { return FT_Open_Face(g_lib, &args, index, &face); };
-  if (!inspectFaceAt(openAtIndex, faceIndex, info, family, familyCapacity)) {
-    return source.failed ? InspectResult::Unavailable : InspectResult::Unsupported;
+  FT_Error openErr = FT_Err_Ok;
+  if (!inspectFaceAt(openAtIndex, faceIndex, info, family, familyCapacity, &openErr)) {
+    return source.failed || openErr == FT_Err_Out_Of_Memory ? InspectResult::Unavailable : InspectResult::Unsupported;
   }
   return source.failed ? InspectResult::Unavailable : InspectResult::Ok;
 }
@@ -487,6 +538,7 @@ bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx
   deinit();
   if (!ensureLib() || data == nullptr || len == 0) return false;
   if (faceIndex < 0) return false;  // negative indexes have special FT meaning; callers pass concrete indexes
+  activeFaceIndex_ = faceIndex;
   fontData_ = data;
   fontDataSize_ = len;
   FT_Face face = nullptr;
@@ -504,6 +556,7 @@ bool FtFont::initStream(const ReadFn read, void* ctx, const unsigned long fileSi
   deinit();  // see the comment in init() — same reasoning applies here
   if (!ensureLib() || read == nullptr || fileSize == 0) return false;
   if (faceIndex < 0) return false;
+  activeFaceIndex_ = faceIndex;
 
   // These wrappers must outlive the face, so they use the configured font
   // allocator rather than a small task stack frame. Both allocations are
@@ -905,7 +958,10 @@ void FtFont::ensureGsubLoaded() {
   if (fontData_ != nullptr) {
     const uint8_t* table = nullptr;
     size_t tableSize = 0;
-    if (findSfntTable(fontData_, fontDataSize_, kTagGsub, &table, &tableSize) && tableSize <= kMaxGsubBytes) {
+    // The face actually opened is collection member `activeFaceIndex_`;
+    // the GSUB directory to read is that member's, not offsets[0].
+    if (findSfntTable(fontData_, fontDataSize_, kTagGsub, &table, &tableSize, activeFaceIndex_) &&
+        tableSize <= kMaxGsubBytes) {
       gsubTable_ = table;
       gsubTableSize_ = tableSize;
     }
@@ -941,7 +997,8 @@ void FtFont::ensureGposLoaded() {
   if (fontData_ != nullptr) {
     const uint8_t* table = nullptr;
     size_t tableSize = 0;
-    if (findSfntTable(fontData_, fontDataSize_, kTagGpos, &table, &tableSize) && tableSize <= kMaxGsubBytes) {
+    if (findSfntTable(fontData_, fontDataSize_, kTagGpos, &table, &tableSize, activeFaceIndex_) &&
+        tableSize <= kMaxGsubBytes) {
       gposTable_ = table;
       gposTableSize_ = tableSize;
     }

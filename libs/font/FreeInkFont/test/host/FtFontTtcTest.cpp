@@ -56,13 +56,37 @@ void wr32(uint8_t* p, uint32_t v) {
   p[3] = static_cast<uint8_t>(v);
 }
 
-// Wraps one sfnt into a 2-face TTC: header + two offsets pointing at the
-// same embedded face whose table offsets are patched to be container-
-// absolute (what the TTC format requires).
-std::vector<uint8_t> makeTwoFaceTtc(const std::vector<uint8_t>& ttf) {
-  // 12-byte TTC header + 2 offsets, face body aligned to 4.
-  const uint32_t faceBase = 20;
-  std::vector<uint8_t> out(faceBase + ttf.size(), 0);
+// Pass-through allocator with a one-shot failure injector, so the OOM→
+// Unavailable mapping can be exercised against the real FreeType open path.
+struct AllocCtx {
+  int failRemaining = 0;  // when >0, the Nth allocation fails, then passes through
+};
+void* testAlloc(void* ctx, size_t size) {
+  auto* a = static_cast<AllocCtx*>(ctx);
+  if (a->failRemaining > 0) {
+    --a->failRemaining;
+    if (a->failRemaining == 0) return nullptr;
+  }
+  return std::malloc(size);
+}
+void testFree(void*, void* block) { std::free(block); }
+void* testRealloc(void* ctx, void* block, size_t, size_t newSize) {
+  auto* a = static_cast<AllocCtx*>(ctx);
+  if (a->failRemaining > 0) {
+    --a->failRemaining;
+    if (a->failRemaining == 0) return nullptr;
+  }
+  return std::realloc(block, newSize);
+}
+
+// Same, but the two offsets may point at DIFFERENT faces (each body's table
+// offsets are patched to container-absolute values independently).
+void patchTableOffsets(const std::vector<uint8_t>& face, uint32_t base, uint8_t* out);
+std::vector<uint8_t> makeTwoFaceTtc(const std::vector<uint8_t>& face0, const std::vector<uint8_t>& face1) {
+  // 12-byte TTC header + 2 offsets, face bodies aligned to 4.
+  const uint32_t base0 = 20;
+  const uint32_t base1 = base0 + static_cast<uint32_t>((face0.size() + 3u) & ~3u);
+  std::vector<uint8_t> out(base1 + face1.size(), 0);
   std::memcpy(out.data(), "ttcf", 4);
   out[4] = 0;
   out[5] = 1;  // version 1.0
@@ -72,19 +96,42 @@ std::vector<uint8_t> makeTwoFaceTtc(const std::vector<uint8_t>& ttf) {
   out[9] = 0;
   out[10] = 0;
   out[11] = 2;  // numFonts = 2
-  wr32(out.data() + 12, faceBase);
-  wr32(out.data() + 16, faceBase);
-
-  // Patch the face's table directory: every table offset += faceBase.
-  const uint16_t numTables = static_cast<uint16_t>((ttf[4] << 8) | ttf[5]);
-  std::vector<uint8_t> face = ttf;
-  for (size_t i = 0; i < numTables && 12 + 16 * (i + 1) <= face.size(); ++i) {
-    const size_t offField = 12 + 16 * i + 8;
-    wr32(face.data() + offField, rd32(face.data() + offField) + faceBase);
-  }
-  std::memcpy(out.data() + faceBase, face.data(), face.size());
+  wr32(out.data() + 12, base0);
+  wr32(out.data() + 16, base1);
+  patchTableOffsets(face0, base0, out.data() + base0);
+  patchTableOffsets(face1, base1, out.data() + base1);
   return out;
 }
+
+// Copies `face` into `out` while adding `base` to every table-directory
+// offset (TTC members must use container-absolute offsets).
+void patchTableOffsets(const std::vector<uint8_t>& face, uint32_t base, uint8_t* out) {
+  std::memcpy(out, face.data(), face.size());
+  const uint16_t numTables = static_cast<uint16_t>((face[4] << 8) | face[5]);
+  for (size_t i = 0; i < numTables && 12 + 16 * (i + 1) <= face.size(); ++i) {
+    const size_t offField = 12 + 16 * i + 8;
+    wr32(out + offField, rd32(out + offField) + base);
+  }
+}
+
+// Renames a directory record's tag (e.g. 'GSUB' -> 'GSUx') so lookups for
+// the original tag miss for this face only.
+std::vector<uint8_t> renameTableTag(const std::vector<uint8_t>& face, const char tag[4], const char replacement[4]) {
+  std::vector<uint8_t> out = face;
+  const uint16_t numTables = static_cast<uint16_t>((out[4] << 8) | out[5]);
+  for (size_t i = 0; i < numTables && 12 + 16 * (i + 1) <= out.size(); ++i) {
+    uint8_t* record = out.data() + 12 + 16 * i;
+    if (std::memcmp(record, tag, 4) == 0) {
+      std::memcpy(record, replacement, 4);
+      return out;
+    }
+  }
+  fprintf(stderr, "test setup error: table %.4s not found\n", tag);
+  exit(1);
+}
+
+// Two offsets pointing at the same embedded face.
+std::vector<uint8_t> makeTwoFaceTtc(const std::vector<uint8_t>& ttf) { return makeTwoFaceTtc(ttf, ttf); }
 
 // Absolute-offset ReadFn over an in-memory vector (count 0 = seek probe).
 unsigned long readVec(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count) {
@@ -102,6 +149,15 @@ int main(int argc, char** argv) {
     fprintf(stderr, "usage: %s <font.ttf>\n", argv[0]);
     return 2;
   }
+  // Bounded-allocator hooks must be configured before the first font use.
+  AllocCtx allocCtx;
+  FtFont::MemoryCallbacks callbacks{};
+  callbacks.context = &allocCtx;
+  callbacks.allocate = &testAlloc;
+  callbacks.deallocate = &testFree;
+  callbacks.reallocate = &testRealloc;
+  expect(FtFont::configureMemory(&callbacks), "configureMemory before first use");
+
   const std::vector<uint8_t> ttf = readFile(argv[1]);
   const std::vector<uint8_t> ttc = makeTwoFaceTtc(ttf);
   void* ttcCtx = const_cast<std::vector<uint8_t>*>(&ttc);  // readVec treats it read-only
@@ -168,6 +224,48 @@ int main(int argc, char** argv) {
   expect(plainFace.init(ttf.data(), static_cast<uint32_t>(ttf.size()), 16, 400, false, 0), "plain ttf init");
   expect(!plainFace.init(ttf.data(), static_cast<uint32_t>(ttf.size()), 16, 400, false, 1),
          "plain ttf face 1 rejected");
+
+  // Shaping tables are per-face: face 1's directory has its GSUB stripped, so
+  // ligatures must vanish there while face 0 keeps them (guards the bug where
+  // the memory-backed table lookup always walked face 0's directory).
+  const std::vector<uint8_t> noGsub = renameTableTag(ttf, "GSUB", "GSUx");
+  const std::vector<uint8_t> ttcDiff = makeTwoFaceTtc(ttf, noGsub);
+  FtFont styled0;
+  expect(styled0.init(ttcDiff.data(), static_cast<uint32_t>(ttcDiff.size()), 16, 400, false, 0),
+         "shaping ttc init face 0");
+  expect(styled0.ligature('f', 'i', 0) == 0xFB01, "face 0 keeps its GSUB ligature");
+  FtFont styled1;
+  expect(styled1.init(ttcDiff.data(), static_cast<uint32_t>(ttcDiff.size()), 16, 400, false, 1),
+         "shaping ttc init face 1");
+  expect(styled1.ligature('f', 'i', 0) == 0, "face 1 does not see face 0's GSUB");
+  FtFont::FaceInfo diffInfo;
+  expect(FtFont::inspectMemory(ttcDiff.data(), static_cast<uint32_t>(ttcDiff.size()), diffInfo, nullptr, 0, 1) ==
+             FtFont::InspectResult::Ok,
+         "shaping ttc exact face 1 inspects");
+  expect(diffInfo.weight >= 100 && diffInfo.weight <= 1000, "shaping ttc face 1 still describes OS/2");
+
+  // Scan retry: face 0 is garbage, face 1 is valid — the scan must skip past
+  // the unparseable member instead of giving up.
+  const std::vector<uint8_t> garbage(64, 0xFF);
+  const std::vector<uint8_t> ttcRetry = makeTwoFaceTtc(garbage, ttf);
+  FtFont::FaceInfo retryInfo;
+  expect(FtFont::inspectMemory(ttcRetry.data(), static_cast<uint32_t>(ttcRetry.size()), retryInfo, nullptr, 0, -1) ==
+             FtFont::InspectResult::Ok,
+         "scan retries past an unparseable face 0");
+  expect(retryInfo.faceIndex == 1 && retryInfo.numFaces == 2, "scan retry lands on face 1");
+
+  // OOM during face open must surface as Unavailable, never as Unsupported
+  // (memory and streamed paths share the mapping).
+  FtFont::FaceInfo oomInfo;
+  allocCtx.failRemaining = 1;
+  expect(FtFont::inspectMemory(ttc.data(), static_cast<uint32_t>(ttc.size()), oomInfo) ==
+             FtFont::InspectResult::Unavailable,
+         "inspectMemory maps OOM to Unavailable");
+  allocCtx.failRemaining = 1;
+  expect(FtFont::inspectStream(&readVec, ttcCtx, static_cast<unsigned long>(ttc.size()), oomInfo, nullptr, 0, -1) ==
+             FtFont::InspectResult::Unavailable,
+         "inspectStream maps OOM to Unavailable");
+  allocCtx.failRemaining = 0;
 
   printf("\n%d checks, %d failures\n", checks, failures);
   return failures == 0 ? 0 : 1;
