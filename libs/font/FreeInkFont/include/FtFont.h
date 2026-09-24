@@ -100,6 +100,15 @@ class FtFont : public RasterFont {
 
   bool ready() const { return ready_; }
 
+  // The last failed glyph operation's stage and raw FreeType error code.
+  // A zero error means the failure came from validation outside FreeType.
+  enum class GlyphFailure : uint8_t { None, MissingGlyph, Size, Load, Embolden, Render, Bounds, BitmapBuffer };
+  GlyphFailure lastGlyphFailure() const { return lastGlyphFailure_; }
+  int lastGlyphError() const { return lastGlyphError_; }
+  enum class InitFailure : uint8_t { None, Library, Source, Allocation, OpenFace, SetSize };
+  InitFailure lastInitFailure() const { return lastInitFailure_; }
+  int lastInitError() const { return lastInitError_; }
+
   // Read face metadata without retaining a face. The family buffer is
   // optional and always NUL-terminated when familyCapacity is nonzero.
   static InspectResult inspectMemory(const uint8_t* data, uint32_t length, FaceInfo& info, char* family = nullptr,
@@ -236,6 +245,10 @@ class FtFont : public RasterFont {
   bool emboldenBold_ = false;  // faux bold (static or no wght axis); per-glyph outline embolden
   uint32_t size26_6_ = 0;
   RenderOptions options_{};
+  GlyphFailure lastGlyphFailure_ = GlyphFailure::None;
+  int lastGlyphError_ = 0;
+  InitFailure lastInitFailure_ = InitFailure::None;
+  int lastInitError_ = 0;
   GlyphBitmap glyph_{};  // last rasterized glyph (points into the FT slot buffer, or monoBuf_)
   uint8_t* monoBuf_ = nullptr;
   size_t monoBufCap_ = 0;

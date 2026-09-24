@@ -1,10 +1,13 @@
 // Host smoke test for FtFont::RenderOptions. Run via test/host/run.sh, which
 // links this against the real vendored FreeType (all three
 // FREEINK_FONT_ENABLE_* modules on) under ASan/UBSan against a real font.
+#include <ft2build.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include FT_FREETYPE_H
 
 #include "FtFont.h"
 
@@ -55,6 +58,8 @@ void* testReallocate(void* context, void* block, size_t, size_t newSize) {
   ++static_cast<AllocationStats*>(context)->allocations;
   return realloc(block, newSize);
 }
+void* failAllocate(void*, size_t) { return nullptr; }
+void* failReallocate(void*, void*, size_t, size_t) { return nullptr; }
 
 struct MemorySource {
   const std::vector<uint8_t>* bytes;
@@ -75,6 +80,19 @@ int main(int argc, char** argv) {
     return 1;
   }
   const std::vector<uint8_t> bytes = readFile(argv[1]);
+  MemorySource source{&bytes};
+
+  FtFont::MemoryCallbacks unavailable{nullptr, failAllocate, testDeallocate, failReallocate};
+  expect(FtFont::configureMemory(&unavailable), "failed allocator can be configured before first use");
+  FtFont unavailableFont;
+  expect(!unavailableFont.init(bytes.data(), static_cast<uint32_t>(bytes.size()), 16) &&
+             unavailableFont.lastInitFailure() == FtFont::InitFailure::Library &&
+             unavailableFont.lastInitError() == FT_Err_Out_Of_Memory,
+         "init() reports FreeType's library allocation error");
+  expect(!unavailableFont.initStream(readMemory, &source, bytes.size(), 16) &&
+             unavailableFont.lastInitFailure() == FtFont::InitFailure::Library &&
+             unavailableFont.lastInitError() == FT_Err_Out_Of_Memory,
+         "initStream() reports FreeType's library allocation error");
 
   AllocationStats allocationStats;
   FtFont::MemoryCallbacks memory{&allocationStats, testAllocate, testDeallocate, testReallocate};
@@ -85,7 +103,6 @@ int main(int argc, char** argv) {
   expect(FtFont::inspectMemory(bytes.data(), static_cast<uint32_t>(bytes.size()), memoryInfo, memoryFamily,
                                sizeof(memoryFamily)) == FtFont::InspectResult::Ok,
          "inspectMemory() reads reusable face metadata");
-  MemorySource source{&bytes};
   FtFont::FaceInfo streamInfo;
   char streamFamily[128];
   expect(FtFont::inspectStream(readMemory, &source, bytes.size(), streamInfo, streamFamily, sizeof(streamFamily)) ==
