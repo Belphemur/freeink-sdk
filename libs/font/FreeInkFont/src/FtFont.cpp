@@ -324,7 +324,7 @@ static bool inspectFaceAt(const OpenFn& openAt, const int faceIndex, const long 
     }
     // 16-bit FaceInfo fields: values that cannot be represented must fail
     // closed rather than wrap (face 65536 would report as face 0).
-    if (i > UINT16_MAX || numFaces - 1 > UINT16_MAX) {
+    if (i > UINT16_MAX || numFaces > UINT16_MAX) {
       FT_Done_Face(face);
       return false;
     }
