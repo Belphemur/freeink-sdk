@@ -721,6 +721,60 @@ void testListVirtualization() {
   CHECK(sawThumb);
 }
 
+void testListRevealActionTargetsOneRow() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> hits;
+  Frame<8> frame(draw, device, input, hits);
+  ListItem items[3]{};
+  for (int i = 0; i < 3; ++i) {
+    items[i].label = "Book";
+    items[i].actionValue = static_cast<int16_t>(i);
+  }
+  static const uint8_t iconBits[72]{};
+  items[1].icon = BitmapRef{iconBits, 24, 24};
+  ListRevealAction reveal;
+  reveal.index = 1;
+  reveal.action = 9;
+  reveal.icon = items[1].icon;
+  reveal.width = 80;
+  ListProps props;
+  props.items = items;
+  props.count = 3;
+  props.action = 5;
+  props.inputMask = InputTouch;
+  props.rowHeight = 40;
+  props.rowRadius = 6;
+  props.scrollIndicator = false;
+  props.reveal = &reveal;
+  list(frame, Rect{0, 0, 160, 120}, props);
+
+  bool rowIconVisible = false;
+  bool roundedButton = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.rect.y < 40 || op.rect.y >= 80) continue;
+    if (op.kind == FakeDrawTarget::Op::Bitmap && op.rect.x >= 0 && op.rect.x < 80) rowIconVisible = true;
+    if (op.kind == FakeDrawTarget::Op::Fill && op.rect.x >= 80 && op.radius == props.rowRadius) roundedButton = true;
+  }
+  CHECK(rowIconVisible);
+  CHECK(roundedButton);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 3u);
+  CHECK_EQ(hits.count(), 4u);
+  Interaction hit;
+  CHECK(hits.hitPublished(120, 60, 9, hit));
+  CHECK_EQ(hit.value, 1);
+  CHECK(!hits.hitPublished(120, 20, 9, hit));
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 120;
+  tap.touchY = 60;
+  CHECK_EQ(hits.route(tap).action, 9);
+  tap.touchX = 20;
+  CHECK_EQ(hits.route(tap).action, 5);
+}
+
 void testListClampsBadTopIndex() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -5322,6 +5376,7 @@ int main() {
   testPublishCycleIsolatesReaders();
   testListHelpers();
   testListVirtualization();
+  testListRevealActionTargetsOneRow();
   testListClampsBadTopIndex();
   testListItemsWindow();
   testListRowProvider();

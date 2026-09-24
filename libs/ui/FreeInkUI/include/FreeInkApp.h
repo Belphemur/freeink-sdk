@@ -949,6 +949,11 @@ public:
   // it active and it renders with its StateActive style).
   bool touchActive() const { return interactions_.activeIndex() >= 0; }
 
+  bool hitPublished(int16_t x, int16_t y, ActionId action,
+                    Interaction &out) const {
+    return interactions_.hitPublished(x, y, action, out);
+  }
+
   // Drop a pending tap flash. Call from handlers that navigate to a different
   // screen: the tapped element no longer exists there, and an element on the
   // NEW screen with the same action/value would inherit the gray instead

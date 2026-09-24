@@ -3,6 +3,9 @@
 #include "../../FreeInkUICore.h"
 
 #include <atomic>
+#if __has_include(<BoardConfig.h>)
+#include <BoardConfig.h>
+#endif
 
 namespace freeink {
 namespace ui {
@@ -30,6 +33,13 @@ struct ListItem {
 };
 
 struct ListNav;
+
+struct ListRevealAction {
+  int16_t index = -1;
+  ActionId action = NO_ACTION;
+  BitmapRef icon{};
+  int16_t width = 0;
+};
 
 enum class SelectionMarker : uint8_t {
   None,      // selection shown by the row's selected BoxStyle
@@ -78,6 +88,8 @@ struct ListProps {
   int16_t selectedIndex = -1;
   ActionId action = NO_ACTION;
   uint16_t inputMask = InputDefault | InputPrev | InputNext;
+  // Optional trailing action exposed for one row after a completed swipe.
+  const ListRevealAction *reveal = nullptr;
   TextStyle labelText{};
   TextStyle subtitleText{};
   TextStyle valueText{};
@@ -659,6 +671,20 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       if (hugW < row.width)
         row.width = hugW;
     }
+    const ListRevealAction *reveal = props.reveal;
+#if defined(FREEINK_CAP_TOUCH) && !FREEINK_CAP_TOUCH
+    constexpr bool revealed = false;
+#else
+    const bool revealed = !partial && reveal && reveal->index == i;
+#endif
+    Rect actionRect{};
+    if (revealed) {
+      const int16_t actionW = reveal->width < row.width / 2
+                                  ? reveal->width
+                                  : static_cast<int16_t>(row.width / 2);
+      actionRect = Rect{static_cast<int16_t>(row.right() - actionW), row.y,
+                        actionW, row.height};
+    }
     State state = partial ? static_cast<State>(item.state & ~(StateSelected | StateFocused | StateActive))
                           : item.state;
     if (!partial && props.selectedIndex == static_cast<int16_t>(i))
@@ -691,6 +717,9 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
         hit.height = row.height;
       }
       frame.hit(hit, props.action, item.actionValue, props.inputMask, hitState);
+      if (revealed)
+        frame.hit(actionRect, reveal->action, item.actionValue,
+                  InputTouch, StateNormal);
     }
     if (!partial)
       state = frame.stateFor(props.action, item.actionValue, state);
@@ -877,6 +906,16 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
                                 Point{static_cast<int16_t>(tx + 12), cy},
                                 props.markerPaint);
       }
+    }
+    if (revealed) {
+      const int16_t inset = sidePad / 2;
+      const Rect button = actionRect.inset(Insets{inset, inset, inset, inset});
+      frame.target().fill(button, Paint::solid(Color::White), props.rowRadius);
+      frame.target().stroke(button, Paint::solid(Color::Black), 1, props.rowRadius);
+      if (reveal->icon)
+        frame.target().bitmap(centeredRect(button, Size{static_cast<int16_t>(reveal->icon.width),
+                                                       static_cast<int16_t>(reveal->icon.height)}),
+                              reveal->icon, BitmapMode::Contain, Paint::solid(Color::Black));
     }
     // A preview uses the same row geometry and paint path, clipped at the fold.
     if (partial) {
