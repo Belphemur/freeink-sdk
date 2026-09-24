@@ -49,13 +49,18 @@ void* ftRealloc(FT_Memory, long currentSize, long newSize, void* block) {
 // One shared FreeType library for all faces; the library object itself is tiny.
 FT_Library g_lib = nullptr;
 FT_MemoryRec_ g_ftMemory{};
-bool ensureLib() {
-  if (g_lib) return true;
+bool ensureLib(FT_Error* error = nullptr) {
+  if (g_lib) {
+    if (error) *error = 0;
+    return true;
+  }
   g_ftMemory.user = nullptr;
   g_ftMemory.alloc = &ftAlloc;
   g_ftMemory.free = &ftFree;
   g_ftMemory.realloc = &ftRealloc;
-  if (FT_New_Library(&g_ftMemory, &g_lib) != 0) return false;
+  const FT_Error initError = FT_New_Library(&g_ftMemory, &g_lib);
+  if (error) *error = initError;
+  if (initError != 0) return false;
   FT_Add_Default_Modules(g_lib);  // register the sfnt/truetype/smooth/... modules
   return true;
 }
@@ -419,6 +424,10 @@ void FtFont::deinit() {
   fontFree(streamCtx_);
   streamCtx_ = nullptr;
   ready_ = false;
+  lastGlyphFailure_ = GlyphFailure::None;
+  lastGlyphError_ = 0;
+  lastInitFailure_ = InitFailure::None;
+  lastInitError_ = 0;
   size26_6_ = 0;
   obliqueShear_ = false;
   options_ = RenderOptions{};
@@ -573,13 +582,25 @@ bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx
   // second init() without deinit() previously dropped the old FT_Face
   // without ever calling FT_Done_Face on it.
   deinit();
-  if (!ensureLib() || data == nullptr || len == 0) return false;
+  FT_Error libraryError = 0;
+  if (!ensureLib(&libraryError)) {
+    lastInitFailure_ = InitFailure::Library;
+    lastInitError_ = libraryError;
+    return false;
+  }
+  if (data == nullptr || len == 0) {
+    lastInitFailure_ = InitFailure::Source;
+    return false;
+  }
   if (faceIndex < 0) return false;  // negative indexes have special FT meaning; callers pass concrete indexes
   activeFaceIndex_ = faceIndex;
   fontData_ = data;
   fontDataSize_ = len;
   FT_Face face = nullptr;
-  if (FT_New_Memory_Face(g_lib, data, static_cast<FT_Long>(len), faceIndex, &face) != 0) {
+  const FT_Error error = FT_New_Memory_Face(g_lib, data, static_cast<FT_Long>(len), faceIndex, &face);
+  if (error != 0) {
+    lastInitFailure_ = InitFailure::OpenFace;
+    lastInitError_ = error;
     fontData_ = nullptr;
     fontDataSize_ = 0;
     return false;
@@ -591,7 +612,16 @@ bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx
 bool FtFont::initStream(const ReadFn read, void* ctx, const unsigned long fileSize, const uint16_t sizePx,
                         const int weight, const bool italic, const int faceIndex) {
   deinit();  // see the comment in init() — same reasoning applies here
-  if (!ensureLib() || read == nullptr || fileSize == 0) return false;
+  FT_Error libraryError = 0;
+  if (!ensureLib(&libraryError)) {
+    lastInitFailure_ = InitFailure::Library;
+    lastInitError_ = libraryError;
+    return false;
+  }
+  if (read == nullptr || fileSize == 0) {
+    lastInitFailure_ = InitFailure::Source;
+    return false;
+  }
   if (faceIndex < 0) return false;
   activeFaceIndex_ = faceIndex;
 
@@ -601,6 +631,7 @@ bool FtFont::initStream(const ReadFn read, void* ctx, const unsigned long fileSi
   auto* sc = static_cast<StreamCtx*>(fontAlloc(sizeof(StreamCtx)));
   auto* stream = static_cast<FT_StreamRec*>(fontAlloc(sizeof(FT_StreamRec)));
   if (!sc || !stream) {
+    lastInitFailure_ = InitFailure::Allocation;
     fontFree(stream);
     fontFree(sc);
     return false;
@@ -619,7 +650,10 @@ bool FtFont::initStream(const ReadFn read, void* ctx, const unsigned long fileSi
   args.flags = FT_OPEN_STREAM;
   args.stream = stream;
   FT_Face face = nullptr;
-  if (FT_Open_Face(g_lib, &args, faceIndex, &face) != 0) {
+  const FT_Error error = FT_Open_Face(g_lib, &args, faceIndex, &face);
+  if (error != 0) {
+    lastInitFailure_ = InitFailure::OpenFace;
+    lastInitError_ = error;
     fontFree(stream);
     fontFree(sc);
     stream_ = nullptr;
@@ -635,6 +669,8 @@ bool FtFont::finishInit(const uint16_t sizePx, const int weight, const bool ital
   applyVariation(weight, italic);
   size26_6_ = 0;
   if (!ensureSize26_6(uint32_t(sizePx) * 64u)) {
+    lastInitFailure_ = InitFailure::SetSize;
+    lastInitError_ = lastGlyphError_;
     FT_Done_Face(face);
     face_ = nullptr;
     return false;
@@ -779,7 +815,11 @@ const uint8_t* FtFont::expandMonoCoverage(const void* ftBitmapPtr) {
 bool FtFont::ensureSize26_6(const uint32_t pixelSize26_6) {
   if (!face_ || pixelSize26_6 < 64 || pixelSize26_6 > 0xFFFFFFu) return false;
   if (pixelSize26_6 == size26_6_) return true;
-  if (FT_Set_Char_Size(static_cast<FT_Face>(face_), pixelSize26_6, pixelSize26_6, 72, 72) != 0) return false;
+  const FT_Error error = FT_Set_Char_Size(static_cast<FT_Face>(face_), pixelSize26_6, pixelSize26_6, 72, 72);
+  if (error != 0) {
+    lastGlyphError_ = error;
+    return false;
+  }
   size26_6_ = pixelSize26_6;
   // No cache flush here: (glyphId, pixelSize26_6) is the cache key, so
   // entries from other sizes can never be served for this size, and the
@@ -800,14 +840,40 @@ bool FtFont::prepareLoad() {
 }
 
 bool FtFont::loadGlyph(const GlyphId glyph, const uint32_t pixelSize26_6) {
-  if (!glyph || !ensureSize26_6(pixelSize26_6) || !prepareLoad()) return false;
+  lastGlyphFailure_ = GlyphFailure::None;
+  lastGlyphError_ = 0;
+  if (!glyph) {
+    lastGlyphFailure_ = GlyphFailure::MissingGlyph;
+    return false;
+  }
+  if (!ensureSize26_6(pixelSize26_6)) {
+    lastGlyphFailure_ = GlyphFailure::Size;
+    return false;
+  }
+  if (!prepareLoad()) {
+    lastGlyphFailure_ = GlyphFailure::Load;
+    return false;
+  }
   auto face = static_cast<FT_Face>(face_);
-  if (FT_Load_Glyph(face, glyph, loadFlagsFor(options_)) != 0) return false;
+  const FT_Error loadError = FT_Load_Glyph(face, glyph, loadFlagsFor(options_));
+  if (loadError != 0) {
+    lastGlyphFailure_ = GlyphFailure::Load;
+    lastGlyphError_ = loadError;
+    return false;
+  }
   FT_GlyphSlot slot = face->glyph;
   const int64_t syntheticBold = emboldenBold_ ? int64_t(pixelSize26_6) / 26 : 0;
   const FT_Pos strength =
       static_cast<FT_Pos>(std::clamp<int64_t>(syntheticBold + options_.embolden26_6, INT32_MIN, INT32_MAX));
-  return !strength || slot->format != FT_GLYPH_FORMAT_OUTLINE || FT_Outline_Embolden(&slot->outline, strength) == 0;
+  if (strength && slot->format == FT_GLYPH_FORMAT_OUTLINE) {
+    const FT_Error error = FT_Outline_Embolden(&slot->outline, strength);
+    if (error != 0) {
+      lastGlyphFailure_ = GlyphFailure::Embolden;
+      lastGlyphError_ = error;
+      return false;
+    }
+  }
+  return true;
 }
 
 bool FtFont::hasGlyph(const uint32_t codepoint) const { return glyphId(codepoint) != 0; }
@@ -896,7 +962,14 @@ bool FtFont::metricsGlyph26_6(const GlyphId glyph, const uint32_t pixelSize26_6,
   long bottom = 0;
   long top = 0;
   if (options_.monochrome || slot->format != FT_GLYPH_FORMAT_OUTLINE) {
-    if (slot->format != FT_GLYPH_FORMAT_BITMAP && FT_Render_Glyph(slot, renderModeFor(options_)) != 0) return false;
+    if (slot->format != FT_GLYPH_FORMAT_BITMAP) {
+      const FT_Error error = FT_Render_Glyph(slot, renderModeFor(options_));
+      if (error != 0) {
+        lastGlyphFailure_ = GlyphFailure::Render;
+        lastGlyphError_ = error;
+        return false;
+      }
+    }
     left = slot->bitmap_left;
     right = left + slot->bitmap.width;
     top = slot->bitmap_top;
@@ -910,8 +983,10 @@ bool FtFont::metricsGlyph26_6(const GlyphId glyph, const uint32_t pixelSize26_6,
     top = (box.yMax + 63) >> 6;
   }
   if (right < left || top < bottom || right - left > UINT16_MAX || top - bottom > UINT16_MAX || left < INT16_MIN ||
-      left > INT16_MAX || top < INT16_MIN || top > INT16_MAX)
+      left > INT16_MAX || top < INT16_MIN || top > INT16_MAX) {
+    lastGlyphFailure_ = GlyphFailure::Bounds;
     return false;
+  }
   out = {fixed16_16To26_6(slot->linearHoriAdvance), int16_t(left), int16_t(top), uint16_t(right - left),
          uint16_t(top - bottom)};
   return true;
@@ -1144,16 +1219,28 @@ const GlyphBitmap* FtFont::rasterizeGlyph26_6(const GlyphId glyph, const uint32_
   }
   if (!loadGlyph(glyph, pixelSize26_6)) return nullptr;
   FT_GlyphSlot s = static_cast<FT_Face>(face_)->glyph;
-  if (s->format != FT_GLYPH_FORMAT_BITMAP && FT_Render_Glyph(s, renderModeFor(options_)) != 0) return nullptr;
+  if (s->format != FT_GLYPH_FORMAT_BITMAP) {
+    const FT_Error error = FT_Render_Glyph(s, renderModeFor(options_));
+    if (error != 0) {
+      lastGlyphFailure_ = GlyphFailure::Render;
+      lastGlyphError_ = error;
+      return nullptr;
+    }
+  }
   if (s->bitmap.width > UINT16_MAX || s->bitmap.rows > UINT16_MAX || s->bitmap_left < INT16_MIN ||
       s->bitmap_left > INT16_MAX || s->bitmap_top < INT16_MIN || s->bitmap_top > INT16_MAX ||
-      (s->advance.x >> 6) < INT16_MIN || (s->advance.x >> 6) > INT16_MAX)
+      (s->advance.x >> 6) < INT16_MIN || (s->advance.x >> 6) > INT16_MAX) {
+    lastGlyphFailure_ = GlyphFailure::Bounds;
     return nullptr;
+  }
   // GlyphBitmap's contract is 8-bit coverage (see Font.h); FT_PIXEL_MODE_MONO
   // is 1-bpp packed and must be expanded, not published as-is.
   if (s->bitmap.pixel_mode == FT_PIXEL_MODE_MONO) {
     const uint8_t* expanded = expandMonoCoverage(&s->bitmap);
-    if (!expanded && s->bitmap.width && s->bitmap.rows) return nullptr;  // allocation failure
+    if (!expanded && s->bitmap.width && s->bitmap.rows) {
+      lastGlyphFailure_ = GlyphFailure::BitmapBuffer;
+      return nullptr;
+    }
     glyph_.pixels = expanded;
   } else {
     glyph_.pixels = s->bitmap.buffer;  // 8-bit alpha; valid until next load
