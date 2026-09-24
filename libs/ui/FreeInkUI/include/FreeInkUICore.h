@@ -1115,6 +1115,20 @@ public:
     return routeAgainst(published_.load(std::memory_order_acquire), input);
   }
 
+  bool hitPublished(int16_t x, int16_t y, ActionId action,
+                    Interaction &out) const {
+    const uint8_t slot = published_.load(std::memory_order_acquire);
+    for (int16_t i = static_cast<int16_t>(count_[slot]) - 1; i >= 0; --i) {
+      const Interaction &hit = interactions_[slot][i];
+      if (hit.action == action && !hasState(hit.state, StateDisabled) &&
+          hit.rect.contains(x, y)) {
+        out = hit;
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Opts a render pass into cross-task double buffering: subsequent
   // clear()/addInteraction()/route()/etc. build into whichever generation is
   // NOT currently published, so a concurrent routePublished()/publishedData()
