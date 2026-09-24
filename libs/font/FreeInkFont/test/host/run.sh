@@ -83,6 +83,15 @@ c++ -std=c++17 -O1 -Wall -Wextra -Werror $INCLUDES \
   -o "$BUILD_DIR/ftfont-minimal-test"
 "$BUILD_DIR/ftfont-minimal-test" "$FONT_FIXTURE"
 
+# --- TrueType-collection (.ttc) support ------------------------------------
+compile_ft "" "ttc-"
+# shellcheck disable=SC2086
+c++ -std=c++17 -O1 -Wall -Wextra -Werror $INCLUDES \
+  ../../src/FtFont.cpp $GSUB_SOURCE \
+  FtFontTtcTest.cpp "$BUILD_DIR"/ttc-*.o \
+  -o "$BUILD_DIR/ftfont-ttc-test"
+"$BUILD_DIR/ftfont-ttc-test" "$FONT_FIXTURE"
+
 # The PlatformIO idiom "-D FLAG=0" (explicitly off, distinct from never
 # mentioning the flag) must behave identically to the never-mentioned case
 # above — #ifdef instead of #if for the compiled-capability constants in

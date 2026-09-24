@@ -72,6 +72,12 @@ class FtFont : public RasterFont {
     size_t familyLength = 0;
     uint16_t weight = 400;
     bool italic = false;
+    // TrueType collections: faceIndex is the collection index this FaceInfo
+    // describes (the first face with a Unicode cmap when the caller scanned
+    // with faceIndex -1); numFaces is the container's total face count (1
+    // for plain .ttf/.otf).
+    uint16_t faceIndex = 0;
+    uint16_t numFaces = 1;
   };
   enum class InspectResult : int8_t { Ok = 0, Unsupported = -1, Unavailable = -2 };
 
@@ -99,7 +105,8 @@ class FtFont : public RasterFont {
   // to the axis range); ignored
   // on a static face. `italic`: use a real ital/slnt axis if present, else apply
   // an oblique shear. Returns false if FreeType can't parse the face.
-  bool init(const uint8_t* data, uint32_t len, uint16_t sizePx, int weight = 400, bool italic = false);
+  bool init(const uint8_t* data, uint32_t len, uint16_t sizePx, int weight = 400, bool italic = false,
+            int faceIndex = 0);
 
   // Streamed variant: instead of holding the whole file in RAM, FreeType pulls
   // bytes on demand through `read` (absolute offset). `fileSize` is the total
@@ -111,16 +118,19 @@ class FtFont : public RasterFont {
   // needs it; setGsubByteBudget() can bound that copy.
   using ReadFn = unsigned long (*)(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count);
   bool initStream(ReadFn read, void* ctx, unsigned long fileSize, uint16_t sizePx, int weight = 400,
-                  bool italic = false);
+                  bool italic = false, int faceIndex = 0);
 
   bool ready() const { return ready_; }
 
   // Read face metadata without retaining a face. The family buffer is
   // optional and always NUL-terminated when familyCapacity is nonzero.
+  // For TrueType collections (.ttc): faceIndex >= 0 inspects that exact
+  // face; faceIndex < 0 scans faces 0..num_faces-1 and reports the first
+  // one with a Unicode cmap (info.faceIndex carries the chosen index).
   static InspectResult inspectMemory(const uint8_t* data, uint32_t length, FaceInfo& info, char* family = nullptr,
-                                     size_t familyCapacity = 0);
+                                     size_t familyCapacity = 0, int faceIndex = 0);
   static InspectResult inspectStream(ReadFn read, void* ctx, unsigned long fileSize, FaceInfo& info,
-                                     char* family = nullptr, size_t familyCapacity = 0);
+                                     char* family = nullptr, size_t familyCapacity = 0, int faceIndex = 0);
 
   // Hinting/rasterization tuning, independent of the style axes chosen at
   // init() time. Default blocks auto-hint fallback while retaining FreeType's
@@ -352,6 +362,9 @@ class FtFont : public RasterFont {
   static constexpr size_t kMaxGsubBytes = 1024 * 1024;
   const uint8_t* fontData_ = nullptr;
   size_t fontDataSize_ = 0;
+  // Collection member actually opened by the last init()/initStream(); the
+  // memory-backed sfnt lookups read that member's table directory.
+  int activeFaceIndex_ = 0;
   const uint8_t* gsubTable_ = nullptr;
   size_t gsubTableSize_ = 0;
   bool gsubTableOwned_ = false;
