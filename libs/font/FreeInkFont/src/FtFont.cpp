@@ -71,6 +71,17 @@ uint32_t readBe32(const uint8_t* data) {
   return (uint32_t(data[0]) << 24) | (uint32_t(data[1]) << 16) | (uint32_t(data[2]) << 8) | data[3];
 }
 
+// Number of faces the container header declares; anything that is not a ttcf
+// (including a too-short header) counts as one face. Bounds scan-mode retries
+// so non-font bytes cannot trigger a driver probe per face index.
+long ttcHeaderFaceCount(const uint8_t* header, const size_t size) {
+  if (size >= 12 && readBe32(header) == kTagTtcf) {
+    const long count = static_cast<long>(readBe32(header + 8));
+    return count > 0 ? count : 1;
+  }
+  return 1;
+}
+
 // For a .ttc, ttcFaceIndex selects which member directory to walk; for a
 // plain SFNT file it is ignored. The caller passes the FT face index it
 // actually opened — each collection face carries its own shaping tables.
@@ -209,8 +220,14 @@ struct StreamCtx {
 unsigned long ftStreamIo(FT_Stream stream, unsigned long offset, unsigned char* buffer, unsigned long count) {
   if (count == 0) return 0;
   auto* c = static_cast<StreamCtx*>(stream->descriptor.pointer);
-  const unsigned long actual = c->read(c->ctx, offset, buffer, count);
-  if (actual != count) c->failed = true;
+  // FreeType probes past end-of-file and treats a short read there as
+  // end-of-data (FT_Stream_TryRead), so clamp the expected length to the
+  // container size: only a shortfall inside the file is an I/O error.
+  if (offset >= stream->size) return 0;
+  const unsigned long expected =
+      count > stream->size - offset ? static_cast<unsigned long>(stream->size - offset) : count;
+  const unsigned long actual = c->read(c->ctx, offset, buffer, expected);
+  if (actual != expected) c->failed = true;
   return actual;
 }
 // The source (e.g. an SD file) is owned by the caller, not FreeType.
@@ -243,30 +260,34 @@ int32_t fixed16_16To26_6(const long value) {
 // Opens faces 0..num_faces-1 until one passes supportedFace (Unicode cmap;
 // this is what "first face with a Unicode cmap" means for a .ttc),
 // describes it, and fills info.numFaces / info.faceIndex. faceIndex >= 0
-// pins the exact face; faceIndex < 0 scans. Returns false when the
-// requested face cannot be opened or no face is supported. *openErr
-// (optional) carries the terminal FT error — FT_Err_Out_Of_Memory in
-// particular, so callers can map OOM to InspectResult::Unavailable instead
-// of misreporting a resource failure as bad font data.
+// pins the exact face; faceIndex < 0 scans. containerFaces is the face count
+// declared by the input's container header (ttcHeaderFaceCount). Returns
+// false when the requested face cannot be opened or no face is supported.
+// *openErr (optional) carries the terminal FT error — FT_Err_Out_Of_Memory
+// and FT_Err_Invalid_Stream_Read in particular, so callers can map resource
+// failures to InspectResult::Unavailable instead of bad font data.
 template <typename OpenFn>
-static bool inspectFaceAt(const OpenFn& openAt, const int faceIndex, FtFont::FaceInfo& info, char* family,
-                          const size_t familyCapacity, FT_Error* openErr = nullptr) {
+static bool inspectFaceAt(const OpenFn& openAt, const int faceIndex, const long containerFaces, FtFont::FaceInfo& info,
+                          char* family, const size_t familyCapacity, FT_Error* openErr = nullptr) {
   FT_Face face = nullptr;
   const long pin = faceIndex < 0 ? 0 : faceIndex;
   const FT_Error pinErr = openAt(pin, face);
   if (openErr) *openErr = pinErr;
   // Exact mode: a failed open is the answer. Scan mode: an unparseable face
-  // 0 is not terminal (later members may be valid) — only OOM stops the
-  // scan, and an out-of-range index means the container's member list is
-  // exhausted (the loop starts past the already-failed pin).
-  if (pinErr != 0 && (faceIndex >= 0 || pinErr == FT_Err_Out_Of_Memory)) return false;
-  long last = UINT16_MAX;
+  // 0 is retried only for a real ttcf container (later members may be
+  // valid) — OOM and unreadable-stream errors always stop the scan, and an
+  // out-of-range index means the container's member list is exhausted (the
+  // loop starts past the already-failed pin).
+  if (pinErr != 0 &&
+      (faceIndex >= 0 || pinErr == FT_Err_Out_Of_Memory || pinErr == FT_Err_Invalid_Stream_Read || containerFaces <= 1))
+    return false;
+  // Never scan past what the container header declares, and keep the 16-bit
+  // face-index cap: a crafted .ttc claiming huge counts would otherwise make
+  // this loop O(N²) in streamed open cost for nothing but a wrapped index.
+  long last = std::min<long>(containerFaces - 1, UINT16_MAX);
   if (face) {
     const long numFaces = face->num_faces > 0 ? face->num_faces : 1;
-    // The scan only reports 16-bit face indexes, so cap it there: a crafted
-    // .ttc with hundreds of thousands of member faces would otherwise make
-    // this loop O(N²) in streamed open cost for nothing but a wrapped index.
-    last = faceIndex < 0 ? std::min<long>(numFaces - 1, UINT16_MAX) : faceIndex;
+    last = faceIndex >= 0 ? faceIndex : std::min(last, numFaces - 1);
   }
   for (long i = pinErr == 0 ? pin : pin + 1; i <= last; ++i) {
     if (i != pin) {
@@ -278,7 +299,9 @@ static bool inspectFaceAt(const OpenFn& openAt, const int faceIndex, FtFont::Fac
       const FT_Error nextErr = openAt(i, face);
       if (openErr) *openErr = nextErr;
       if (nextErr != 0) {
-        if (nextErr == FT_Err_Out_Of_Memory || nextErr == FT_Err_Invalid_Argument) return false;
+        if (nextErr == FT_Err_Out_Of_Memory || nextErr == FT_Err_Invalid_Argument ||
+            nextErr == FT_Err_Invalid_Stream_Read)
+          return false;
         continue;
       }
       if (last == UINT16_MAX) {
@@ -339,7 +362,8 @@ FtFont::InspectResult FtFont::inspectMemory(const uint8_t* data, const uint32_t 
     return FT_New_Memory_Face(g_lib, data, static_cast<FT_Long>(length), index, &face);
   };
   FT_Error openErr = FT_Err_Ok;
-  if (!inspectFaceAt(openAtIndex, faceIndex, info, family, familyCapacity, &openErr)) {
+  if (!inspectFaceAt(openAtIndex, faceIndex, ttcHeaderFaceCount(data, length), info, family, familyCapacity,
+                     &openErr)) {
     return openErr == FT_Err_Out_Of_Memory ? InspectResult::Unavailable : InspectResult::Unsupported;
   }
   return InspectResult::Ok;
@@ -362,9 +386,22 @@ FtFont::InspectResult FtFont::inspectStream(const ReadFn read, void* ctx, const 
   FT_Open_Args args{};
   args.flags = FT_OPEN_STREAM;
   args.stream = &stream;
-  const auto openAtIndex = [&](const long index, FT_Face& face) { return FT_Open_Face(g_lib, &args, index, &face); };
+  // Identify the container from the header so scan-mode retries stay bounded
+  // (a non-ttcf stream counts as one face and never scans past 0).
+  uint8_t header[12];
+  long containerFaces = 1;
+  if (read(ctx, 0, header, sizeof(header)) == sizeof(header))
+    containerFaces = ttcHeaderFaceCount(header, sizeof(header));
+
+  const auto openAtIndex = [&](const long index, FT_Face& face) {
+    source.failed = false;
+    const FT_Error err = FT_Open_Face(g_lib, &args, index, &face);
+    // A short read while opening this face is terminal for the attempt:
+    // scanning onward would silently skip a face backed by unreadable data.
+    return err != 0 && source.failed ? FT_Err_Invalid_Stream_Read : err;
+  };
   FT_Error openErr = FT_Err_Ok;
-  if (!inspectFaceAt(openAtIndex, faceIndex, info, family, familyCapacity, &openErr)) {
+  if (!inspectFaceAt(openAtIndex, faceIndex, containerFaces, info, family, familyCapacity, &openErr)) {
     return source.failed || openErr == FT_Err_Out_Of_Memory ? InspectResult::Unavailable : InspectResult::Unsupported;
   }
   return source.failed ? InspectResult::Unavailable : InspectResult::Ok;

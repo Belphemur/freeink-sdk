@@ -142,6 +142,24 @@ unsigned long readVec(void* ctx, unsigned long offset, unsigned char* buffer, un
   return n;
 }
 
+// readVec wrapper that counts how many reads a scan performs.
+struct CountingReadCtx {
+  std::vector<uint8_t>* bytes;
+  int calls;
+};
+unsigned long countingRead(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count) {
+  auto* c = static_cast<CountingReadCtx*>(ctx);
+  ++c->calls;
+  return readVec(c->bytes, offset, buffer, count);
+}
+
+// ReadFn that always returns fewer bytes than requested (degraded stream).
+unsigned long shortRead(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count) {
+  if (count == 0) return 0;
+  const unsigned long got = readVec(ctx, offset, buffer, count);
+  return got > count / 2 ? count / 2 : got;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -253,6 +271,27 @@ int main(int argc, char** argv) {
              FtFont::InspectResult::Ok,
          "scan retries past an unparseable face 0");
   expect(retryInfo.faceIndex == 1 && retryInfo.numFaces == 2, "scan retry lands on face 1");
+
+  // Non-font bytes must not trigger an unbounded scan: the container is
+  // identified from the header, so a scan-mode inspect bails out immediately
+  // instead of probing every face index (65535 stream reads before the fix).
+  const std::vector<uint8_t> junk(96, 0x5A);
+  FtFont::FaceInfo junkInfo;
+  expect(FtFont::inspectMemory(junk.data(), static_cast<uint32_t>(junk.size()), junkInfo, nullptr, 0, -1) ==
+             FtFont::InspectResult::Unsupported,
+         "inspectMemory rejects non-font bytes quickly");
+  CountingReadCtx junkCtx{const_cast<std::vector<uint8_t>*>(&junk), 0};
+  expect(FtFont::inspectStream(&countingRead, &junkCtx, static_cast<unsigned long>(junk.size()), junkInfo, nullptr, 0,
+                               -1) == FtFont::InspectResult::Unsupported,
+         "inspectStream rejects non-font bytes");
+  expect(junkCtx.calls <= 8, "stream scan on non-font bytes performs bounded reads");
+
+  // A short read while opening the face is terminal and maps to Unavailable,
+  // never to Unsupported (unreadable data is not bad font data).
+  FtFont::FaceInfo shortInfo;
+  expect(FtFont::inspectStream(&shortRead, ttcCtx, static_cast<unsigned long>(ttc.size()), shortInfo, nullptr, 0, -1) ==
+             FtFont::InspectResult::Unavailable,
+         "inspectStream maps short reads to Unavailable");
 
   // OOM during face open must surface as Unavailable, never as Unsupported
   // (memory and streamed paths share the mapping).
