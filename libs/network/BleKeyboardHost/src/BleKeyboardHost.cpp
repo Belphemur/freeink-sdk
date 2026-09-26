@@ -64,6 +64,9 @@ bool g_targetTryAltType = false;
 
 uint32_t g_lastReconnectMs = 0;
 uint8_t g_reconnectIdx = 0;
+// Off once the app calls disconnect(), so a link the user closed stays closed.
+// connect() and begin() turn it back on; a link the peer drops leaves it on.
+bool g_autoReconnect = true;
 
 // HID Report Map hints (parsed once per connection in setupHid). Many BLE
 // page-turner remotes are NOT plain boot keyboards: they place their code on the
@@ -206,6 +209,16 @@ bool hasHidService(NimBLEClient* client) {
   return client && client->getService(NimBLEUUID(kHidService)) != nullptr;
 }
 
+// Ends an in-flight connection attempt at whatever stage it has reached.
+// cancelConnect() stops only the GAP connect. Once the link is up the worker
+// waits inside NimBLE for pairing or GATT discovery, and only a disconnect ends
+// that wait. Deleting the worker there leaves NimBLE holding its task handle.
+void cancelPendingConnect() {
+  if (!g_client) return;
+  g_client->cancelConnect();
+  if (g_client->isConnected()) g_client->disconnect();
+}
+
 void doConnect(const char* addrStr, uint8_t type) {
   if (!g_client) {
     self().onConnectFailed("BLE client unavailable");
@@ -331,6 +344,7 @@ ClientCB g_clientCb;
 // --- Lifecycle ---------------------------------------------------------------
 bool BleKeyboardHost::begin(const char* hostName) {
   if (begun_) return true;
+  g_autoReconnect = true;
 
 #if FREEINK_BLE_HID_SCAN_DEBUG
   Serial.printf("[BleHid] begin: host='%s' bonds=%u\n", hostName ? hostName : "FreeInk", bondCount_);
@@ -379,6 +393,10 @@ bool BleKeyboardHost::begin(const char* hostName) {
   // device shows up nameless or not at all. This (plus the windowed interval
   // below and the no-filter onResult) keeps scan response and extended adv data.
   scan->setScanCallbacks(&g_scanCb, true);
+  // onResult() copies what the UI needs into devices_, and nothing reads NimBLE's
+  // own result list. Callback-only mode frees each advertiser once it has been
+  // reported instead of keeping every one heard on the heap until the next scan.
+  scan->setMaxResults(0);
   scan->setActiveScan(true);  // send scan requests -> receive scan responses (names)
   // CONTINUOUS listening (window == interval, 100% duty; values are ms).
   // Extended advertising splits data into an AUX packet on a secondary
@@ -437,9 +455,10 @@ void BleKeyboardHost::end() {
   // worker or deinit NimBLE under it. Let the blocking connect path unwind first;
   // killing it inside NimBLE leaves host/controller state inconsistent and can
   // crash on Bluetooth-off, sleep, or the next begin().
-  if (g_connecting && g_client) g_client->cancelConnect();
+  // Cancel on every pass: the worker can bring the link up after the first try.
   const uint32_t waitStart = millis();
   while (g_connecting && millis() - waitStart < kTeardownConnectWaitMs) {
+    cancelPendingConnect();
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 
@@ -514,7 +533,7 @@ void BleKeyboardHost::poll() {
   }
 
   // Auto-reconnect to a bonded HID peripheral.
-  if (!connected_ && !g_connecting && !scanning_ && bondCount_ > 0) {
+  if (g_autoReconnect && !connected_ && !g_connecting && !scanning_ && bondCount_ > 0) {
     const uint32_t now = millis();
     if (now - g_lastReconnectMs > kReconnectBackoffMs) {
       g_lastReconnectMs = now;
@@ -537,9 +556,9 @@ void BleKeyboardHost::startScan(uint32_t ms) {
 #if FREEINK_BLE_HID_SCAN_DEBUG
     Serial.println("[BleHid] scan start: cancelling pending reconnect");
 #endif
-    g_client->cancelConnect();
     const uint32_t waitStart = millis();
     while (g_connecting && millis() - waitStart < kTeardownConnectWaitMs) {
+      cancelPendingConnect();
       vTaskDelay(pdMS_TO_TICKS(20));
     }
   }
@@ -584,6 +603,7 @@ void BleKeyboardHost::releaseScanResults() {
 // --- Connection --------------------------------------------------------------
 bool BleKeyboardHost::connect(const char* addr) {
   if (!begun_ || !addr || g_connecting) return false;
+  g_autoReconnect = true;
 
   uint8_t type = 0;
   bool knownType = false;
@@ -616,6 +636,7 @@ bool BleKeyboardHost::connect(const char* addr) {
 }
 
 void BleKeyboardHost::disconnect() {
+  g_autoReconnect = false;
   if (g_client && g_client->isConnected()) g_client->disconnect();
 }
 
@@ -718,6 +739,7 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   }
 
   bool emittedKb = false;
+  bool keyHeld = false;  // the key slots still hold a key from an earlier report
   if (keyboardShaped) {
     // Emit a press for every key newly present versus the previous report.
     for (int i = 0; i < 6; ++i) {
@@ -741,6 +763,7 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
     for (int i = 0; i < 6; ++i) {
       if (keys[i] != 0 && keys[i] != 0x01) cur = keys[i];
     }
+    keyHeld = cur != 0;
     portENTER_CRITICAL(&g_mux);
     if (cur == 0) {
       heldUsage_ = 0;
@@ -760,7 +783,10 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   // page or place the code at a non-standard byte. When the keyboard slots produced
   // nothing and the device doesn't look like a pure keyboard, scan the report for a
   // representative code and surface it (edge-detected so one press == one event).
-  const bool tryGeneric = !emittedKb && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
+  // A report whose key slots still hold a key belongs to the keyboard path: a
+  // remote that streams a held key repeats it, and each repeat would read here
+  // as a new press.
+  const bool tryGeneric = !emittedKb && !keyHeld && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
   if (tryGeneric) {
     size_t codeIdx = 0;
     const uint8_t code = extractPrimaryCode(p, n, &codeIdx);
@@ -959,6 +985,10 @@ void BleKeyboardHost::onLinkDown() {
   portENTER_CRITICAL(&g_mux);
   heldUsage_ = 0;
   portEXIT_CRITICAL(&g_mux);
+  // A link that drops while a key is down never delivers its release. Forget the
+  // key, so its first press on the next link reads as a press.
+  memset(prevKeys_, 0, sizeof(prevKeys_));
+  g_lastGenericCode = 0;
 }
 
 void BleKeyboardHost::onConnectFailed(const char* reason) {
