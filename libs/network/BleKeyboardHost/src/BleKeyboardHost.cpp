@@ -735,6 +735,7 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   }
 
   bool emittedKb = false;
+  bool keyHeld = false;  // the key slots still hold a key from an earlier report
   if (keyboardShaped) {
     // Emit a press for every key newly present versus the previous report.
     for (int i = 0; i < 6; ++i) {
@@ -758,6 +759,7 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
     for (int i = 0; i < 6; ++i) {
       if (keys[i] != 0 && keys[i] != 0x01) cur = keys[i];
     }
+    keyHeld = cur != 0;
     portENTER_CRITICAL(&g_mux);
     if (cur == 0) {
       heldUsage_ = 0;
@@ -777,7 +779,10 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   // page or place the code at a non-standard byte. When the keyboard slots produced
   // nothing and the device doesn't look like a pure keyboard, scan the report for a
   // representative code and surface it (edge-detected so one press == one event).
-  const bool tryGeneric = !emittedKb && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
+  // A report whose key slots still hold a key belongs to the keyboard path: a
+  // remote that streams a held key repeats it, and each repeat would read here
+  // as a new press.
+  const bool tryGeneric = !emittedKb && !keyHeld && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
   if (tryGeneric) {
     size_t codeIdx = 0;
     const uint8_t code = extractPrimaryCode(p, n, &codeIdx);

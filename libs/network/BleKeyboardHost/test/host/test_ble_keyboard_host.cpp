@@ -68,6 +68,16 @@ void sendKeys(uint8_t usage) {
   fakeble::notify(g_inputReport, report, sizeof report);
 }
 
+int drainKeys(uint8_t* lastKeycode = nullptr) {
+  int count = 0;
+  freeink::KeyEvent ev;
+  while (host().popKey(ev)) {
+    ++count;
+    if (lastKeycode != nullptr) *lastKeycode = ev.keycode;
+  }
+  return count;
+}
+
 bool waitConnected(uint32_t timeoutMs = 2000) {
   for (uint32_t i = 0; i < timeoutMs; ++i) {
     if (host().isConnected()) return fakeble::waitForWorkerIdle();
@@ -167,6 +177,32 @@ void testDisconnectIsNotUndoneByAutoReconnect() {
   CHECK(waitConnected());
 }
 
+// Remotes that stream a held key send the same keyboard report again while the
+// button is down. On a device whose report map also has a Consumer page, the
+// generic fallback read that repeat as a new press: two page turns per press.
+void testStreamedHeldKeyIsOnePress() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardConsumerMap, sizeof kKeyboardConsumerMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+
+  sendKeys(0x51);  // Down arrow pressed
+  sendKeys(0x51);  // still held
+  sendKeys(0x51);  // still held
+  sendKeys(0);     // released
+  CHECK(drainKeys() == 1);
+
+  // A keyboard-shaped frame with no key in its key slots still reaches the
+  // generic path, as before (here a vendor code in the reserved byte).
+  const uint8_t vendor[8] = {0, 0x05, 0, 0, 0, 0, 0, 0};
+  const uint8_t idle[8] = {0};
+  fakeble::notify(g_inputReport, vendor, sizeof vendor);
+  fakeble::notify(g_inputReport, idle, sizeof idle);
+  uint8_t code = 0;
+  CHECK(drainKeys(&code) == 1);
+  CHECK(code == 0x05);
+}
+
 }  // namespace
 
 int main() {
@@ -175,6 +211,7 @@ int main() {
   testEndDuringPairingDoesNotDeleteTaskInsideNimble(fakeble::Stage::Discovery);
   testScanCancelsReconnectThatIsPairing();
   testDisconnectIsNotUndoneByAutoReconnect();
+  testStreamedHeldKeyIsOnePress();
   fakeble::resetWorld();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
