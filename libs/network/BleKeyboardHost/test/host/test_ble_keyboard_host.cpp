@@ -228,6 +228,21 @@ void testKeyHeldAcrossLinkDropIsPressedAgain() {
   sendKeys(0);
 }
 
+// The host keeps its own 24-entry scan table. NimBLE's result list is not read
+// anywhere, so every advertiser it keeps there is heap the reader cannot use.
+void testScanKeepsNoAdvertiserInNimble() {
+  fakeble::resetWorld();
+  CHECK(fakeble::beginHost());
+  host().startScan(5000);
+  char addr[18];
+  for (int i = 0; i < 10; ++i) {
+    std::snprintf(addr, sizeof addr, "AA:BB:CC:00:00:%02X", i);
+    fakeble::advertise(addr, "Remote");
+  }
+  CHECK(host().deviceCount() == 10);
+  CHECK(fakeble::retainedScanResults() == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -237,6 +252,7 @@ int main() {
   testScanCancelsReconnectThatIsPairing();
   testDisconnectIsNotUndoneByAutoReconnect();
   testStreamedHeldKeyIsOnePress();
+  testScanKeepsNoAdvertiserInNimble();
   testKeyHeldAcrossLinkDropIsPressedAgain();
   fakeble::resetWorld();
 

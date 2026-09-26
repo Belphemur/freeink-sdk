@@ -393,6 +393,10 @@ bool BleKeyboardHost::begin(const char* hostName) {
   // device shows up nameless or not at all. This (plus the windowed interval
   // below and the no-filter onResult) keeps scan response and extended adv data.
   scan->setScanCallbacks(&g_scanCb, true);
+  // onResult() copies what the UI needs into devices_, and nothing reads NimBLE's
+  // own result list. Callback-only mode frees each advertiser once it has been
+  // reported instead of keeping every one heard on the heap until the next scan.
+  scan->setMaxResults(0);
   scan->setActiveScan(true);  // send scan requests -> receive scan responses (names)
   // CONTINUOUS listening (window == interval, 100% duty; values are ms).
   // Extended advertising splits data into an AUX packet on a secondary
