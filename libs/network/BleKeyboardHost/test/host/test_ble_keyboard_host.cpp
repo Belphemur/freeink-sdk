@@ -203,6 +203,31 @@ void testStreamedHeldKeyIsOnePress() {
   CHECK(code == 0x05);
 }
 
+// A link that drops while a key is down (remote asleep, out of range) never
+// sends that key's release. The next session's first press of the same key
+// must still be a press.
+void testKeyHeldAcrossLinkDropIsPressedAgain() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+
+  sendKeys(0x4E);  // Page Down, link drops before the release frame
+  CHECK(drainKeys() == 1);
+  fakeble::peerDisconnect();
+  for (int i = 0; i < 10; ++i) {
+    fakeble::advanceMillis(1000);
+    host().poll();
+  }
+  CHECK(waitConnected());
+
+  sendKeys(0x4E);
+  uint8_t code = 0;
+  CHECK(drainKeys(&code) == 1);
+  CHECK(code == 0x4E);
+  sendKeys(0);
+}
+
 }  // namespace
 
 int main() {
@@ -212,6 +237,7 @@ int main() {
   testScanCancelsReconnectThatIsPairing();
   testDisconnectIsNotUndoneByAutoReconnect();
   testStreamedHeldKeyIsOnePress();
+  testKeyHeldAcrossLinkDropIsPressedAgain();
   fakeble::resetWorld();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);

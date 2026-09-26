@@ -981,6 +981,10 @@ void BleKeyboardHost::onLinkDown() {
   portENTER_CRITICAL(&g_mux);
   heldUsage_ = 0;
   portEXIT_CRITICAL(&g_mux);
+  // A link that drops while a key is down never delivers its release. Forget the
+  // key, so its first press on the next link reads as a press.
+  memset(prevKeys_, 0, sizeof(prevKeys_));
+  g_lastGenericCode = 0;
 }
 
 void BleKeyboardHost::onConnectFailed(const char* reason) {
