@@ -68,6 +68,14 @@ void sendKeys(uint8_t usage) {
   fakeble::notify(g_inputReport, report, sizeof report);
 }
 
+bool waitConnected(uint32_t timeoutMs = 2000) {
+  for (uint32_t i = 0; i < timeoutMs; ++i) {
+    if (host().isConnected()) return fakeble::waitForWorkerIdle();
+    vTaskDelay(0);
+  }
+  return false;
+}
+
 void testKeyboardPressIsOneKeyEvent() {
   fakeble::resetWorld();
   serveRemote(kKeyboardMap, sizeof kKeyboardMap);
@@ -124,6 +132,41 @@ void testScanCancelsReconnectThatIsPairing() {
   CHECK(fakeble::waitForWorkerIdle(200));  // the attempt is over, not still pairing
 }
 
+// disconnect() is what a settings "Disconnect" row calls. Auto-reconnect must
+// not bring the remote straight back 4 s later; an explicit connect(), a new
+// begin(), or a link the peer dropped turn it back on.
+void testDisconnectIsNotUndoneByAutoReconnect() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+  CHECK(host().pairedCount() == 1);
+
+  host().disconnect();
+  CHECK(!host().isConnected());
+  fakeble::advanceMillis(5000);
+  host().poll();
+  CHECK(!host().isConnecting());
+  CHECK(fakeble::connectCalls() == 1);
+
+  // An explicit connect works and re-arms auto-reconnect.
+  CHECK(fakeble::connectTo(kRemote));
+  fakeble::peerDisconnect();
+  fakeble::advanceMillis(5000);
+  host().poll();
+  CHECK(host().isConnecting());
+  CHECK(waitConnected());
+
+  // Bluetooth off and on again also re-arms it.
+  host().disconnect();
+  host().end();
+  CHECK(fakeble::beginHost());
+  fakeble::advanceMillis(5000);
+  host().poll();
+  CHECK(host().isConnecting());
+  CHECK(waitConnected());
+}
+
 }  // namespace
 
 int main() {
@@ -131,6 +174,7 @@ int main() {
   testEndDuringPairingDoesNotDeleteTaskInsideNimble(fakeble::Stage::Security);
   testEndDuringPairingDoesNotDeleteTaskInsideNimble(fakeble::Stage::Discovery);
   testScanCancelsReconnectThatIsPairing();
+  testDisconnectIsNotUndoneByAutoReconnect();
   fakeble::resetWorld();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);

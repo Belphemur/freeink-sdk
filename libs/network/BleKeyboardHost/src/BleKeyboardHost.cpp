@@ -64,6 +64,9 @@ bool g_targetTryAltType = false;
 
 uint32_t g_lastReconnectMs = 0;
 uint8_t g_reconnectIdx = 0;
+// Off once the app calls disconnect(), so a link the user closed stays closed.
+// connect() and begin() turn it back on; a link the peer drops leaves it on.
+bool g_autoReconnect = true;
 
 // HID Report Map hints (parsed once per connection in setupHid). Many BLE
 // page-turner remotes are NOT plain boot keyboards: they place their code on the
@@ -341,6 +344,7 @@ ClientCB g_clientCb;
 // --- Lifecycle ---------------------------------------------------------------
 bool BleKeyboardHost::begin(const char* hostName) {
   if (begun_) return true;
+  g_autoReconnect = true;
 
 #if FREEINK_BLE_HID_SCAN_DEBUG
   Serial.printf("[BleHid] begin: host='%s' bonds=%u\n", hostName ? hostName : "FreeInk", bondCount_);
@@ -525,7 +529,7 @@ void BleKeyboardHost::poll() {
   }
 
   // Auto-reconnect to a bonded HID peripheral.
-  if (!connected_ && !g_connecting && !scanning_ && bondCount_ > 0) {
+  if (g_autoReconnect && !connected_ && !g_connecting && !scanning_ && bondCount_ > 0) {
     const uint32_t now = millis();
     if (now - g_lastReconnectMs > kReconnectBackoffMs) {
       g_lastReconnectMs = now;
@@ -595,6 +599,7 @@ void BleKeyboardHost::releaseScanResults() {
 // --- Connection --------------------------------------------------------------
 bool BleKeyboardHost::connect(const char* addr) {
   if (!begun_ || !addr || g_connecting) return false;
+  g_autoReconnect = true;
 
   uint8_t type = 0;
   bool knownType = false;
@@ -627,6 +632,7 @@ bool BleKeyboardHost::connect(const char* addr) {
 }
 
 void BleKeyboardHost::disconnect() {
+  g_autoReconnect = false;
   if (g_client && g_client->isConnected()) g_client->disconnect();
 }
 
