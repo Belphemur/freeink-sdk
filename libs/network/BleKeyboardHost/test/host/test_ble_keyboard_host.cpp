@@ -83,10 +83,54 @@ void testKeyboardPressIsOneKeyEvent() {
   CHECK(!host().popKey(ev));
 }
 
+// A peer that is pairing or being discovered sits in a NimBLE wait that only a
+// disconnect ends (cancelConnect() covers the GAP connect alone). end() must not
+// delete the connection task inside that wait: NimBLE later completes the wait
+// on a task handle that no longer exists.
+void testEndDuringPairingDoesNotDeleteTaskInsideNimble(fakeble::Stage stage) {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  fakeble::holdAt(stage);
+  CHECK(host().connect(kRemote));
+  CHECK(fakeble::waitUntilHeld(stage));
+
+  const unsigned long start = fakeble::clockMs();
+  host().end();
+  const unsigned long elapsed = fakeble::clockMs() - start;
+
+  CHECK(!fakeble::taskDeletedWhileHeld());
+  CHECK(elapsed < 2000);  // the 8.5 s connect wait is for a GAP cancel, not for this
+  CHECK(!host().isRunning());
+}
+
+// Scanning from a settings screen cancels a pending reconnect. A reconnect that
+// is already pairing must end too, instead of holding the caller for the whole
+// connect wait and leaving the attempt running beside the scan.
+void testScanCancelsReconnectThatIsPairing() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  fakeble::holdAt(fakeble::Stage::Security);
+  CHECK(host().connect(kRemote));
+  CHECK(fakeble::waitUntilHeld(fakeble::Stage::Security));
+
+  const unsigned long start = fakeble::clockMs();
+  host().startScan(5000);
+  const unsigned long elapsed = fakeble::clockMs() - start;
+
+  CHECK(elapsed < 2000);
+  CHECK(host().isScanning());
+  CHECK(fakeble::waitForWorkerIdle(200));  // the attempt is over, not still pairing
+}
+
 }  // namespace
 
 int main() {
   testKeyboardPressIsOneKeyEvent();
+  testEndDuringPairingDoesNotDeleteTaskInsideNimble(fakeble::Stage::Security);
+  testEndDuringPairingDoesNotDeleteTaskInsideNimble(fakeble::Stage::Discovery);
+  testScanCancelsReconnectThatIsPairing();
   fakeble::resetWorld();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);

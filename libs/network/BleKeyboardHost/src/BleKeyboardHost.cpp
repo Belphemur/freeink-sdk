@@ -206,6 +206,16 @@ bool hasHidService(NimBLEClient* client) {
   return client && client->getService(NimBLEUUID(kHidService)) != nullptr;
 }
 
+// Ends an in-flight connection attempt at whatever stage it has reached.
+// cancelConnect() stops only the GAP connect. Once the link is up the worker
+// waits inside NimBLE for pairing or GATT discovery, and only a disconnect ends
+// that wait. Deleting the worker there leaves NimBLE holding its task handle.
+void cancelPendingConnect() {
+  if (!g_client) return;
+  g_client->cancelConnect();
+  if (g_client->isConnected()) g_client->disconnect();
+}
+
 void doConnect(const char* addrStr, uint8_t type) {
   if (!g_client) {
     self().onConnectFailed("BLE client unavailable");
@@ -437,9 +447,10 @@ void BleKeyboardHost::end() {
   // worker or deinit NimBLE under it. Let the blocking connect path unwind first;
   // killing it inside NimBLE leaves host/controller state inconsistent and can
   // crash on Bluetooth-off, sleep, or the next begin().
-  if (g_connecting && g_client) g_client->cancelConnect();
+  // Cancel on every pass: the worker can bring the link up after the first try.
   const uint32_t waitStart = millis();
   while (g_connecting && millis() - waitStart < kTeardownConnectWaitMs) {
+    cancelPendingConnect();
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 
@@ -537,9 +548,9 @@ void BleKeyboardHost::startScan(uint32_t ms) {
 #if FREEINK_BLE_HID_SCAN_DEBUG
     Serial.println("[BleHid] scan start: cancelling pending reconnect");
 #endif
-    g_client->cancelConnect();
     const uint32_t waitStart = millis();
     while (g_connecting && millis() - waitStart < kTeardownConnectWaitMs) {
+      cancelPendingConnect();
       vTaskDelay(pdMS_TO_TICKS(20));
     }
   }
