@@ -116,6 +116,7 @@ class BleKeyboardHost {
   // Begin an async connect to a scanned/bonded address. isConnected() flips once
   // the link is encrypted and the HID input report is subscribed.
   bool connect(const char* addr);
+  // Drop the link and pause auto-reconnect until the next connect() or begin().
   void disconnect();
   bool isConnected() const { return connected_; }
   bool isConnecting() const { return connecting_; }

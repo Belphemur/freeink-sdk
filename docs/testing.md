@@ -36,6 +36,18 @@ bundled font: exact-value assertions for the five standard Latin ligatures,
 the codepoint-vs-glyph-ID contract boundary, deinit()/re-init cache
 invalidation, and a null-pointer safety check on `Gsub::LigatureGlyphId`.
 
+## BLE HID host
+
+```sh
+sh libs/network/BleKeyboardHost/test/host/run.sh
+```
+
+Compiles `BleKeyboardHost` with `FREEINK_CAP_BLE_HID_HOST=1` against a fake
+NimBLE and FreeRTOS layer, with the connection task on a real thread. Covers
+report decode into key events, auto-reconnect, scanning and teardown order.
+The fake has no radio, so pairing, link timing and memory use still need a
+device.
+
 ## Display drivers
 
 ```sh
