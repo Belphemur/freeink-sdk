@@ -635,7 +635,8 @@ slot, such as a book page renderer or a cover image.
 The e-reader-specific components are still immediate-mode: every frame gets a
 props struct, draws into a rect, and registers semantic actions.
 
-Controls default to square corners. Pass a positive radius on the relevant
+The full keyboard components default to a 3px key radius; `keyGrid` and most
+other controls start square. Pass a positive radius on the relevant
 props (`ButtonProps::radius`, `SettingRowProps::radius`,
 `ToggleRowProps::radius`/`knobRadius`, `StepperRowProps::buttonRadius`,
 `CheckboxProps::radius`, `SliderProps::radius`, `DropdownProps::radius`,
@@ -731,28 +732,38 @@ qwertyKeyboard(ui, keyboardRect, keyboard);
 
 `Screen::keyboard` and `Screen::qwertyKeyboard` use the full safe-area width,
 including the space outside text-content side margins. Their automatic height
-allocates at least 64px per row, scaling to 80px on a 480px-wide screen: 348px
-for four rows, or 434px with a dedicated number row. On short screens the total
-is capped at 50% of the safe height plus the extra row spacing, and the remaining
-content space. An explicit
-height still overrides automatic sizing. Low-level calls with a `Rect` use that
-rectangle exactly; reserve `keyboardPreferredHeight(width, layout.rowCount)`
-pixels to get the same taller rows there.
+sizes each row to about 4/3 of a ten-key letter key's width, up to 56px. At
+480px or 800px wide, that gives 56px rows: 250px for the default four rows, or
+312px when `numberRow` is enabled. Narrower screens scale the row height down.
+On short screens, the keyboard is capped at two-thirds of the safe height so
+the entry field retains space. An explicit height still overrides automatic
+sizing. Low-level calls with a `Rect` use that rectangle exactly; reserve
+`keyboardPreferredHeight(width, layout.rowCount)` pixels for the same sizing.
 
-Keys are borderless by default, with a filled highlight when selected or pressed. Primary labels
+Keyboard keys default to white with a 1px black outline on a light gray dithered
+panel. The panel has 4px padding, keys have 6px gaps in both directions, and
+character keys share one width across rows. `keyGrid` uses the same outlined
+keys and 6px gaps; its caller supplies the panel background and padding. The
+outlined Space key has no inner glyph by default: set `spaceLabel` to `nullptr`
+for the rule glyph, or to text for a localized label. Apps can override these
+values through the keyboard props, including `background`, `keyStyles`,
+`padding`, `gap`, `rowGap`, and `uniformKeyWidth`. Set `uniformKeyWidth` to
+`false` for rows meant to stretch independently, such as wide URL shortcuts.
+
+Selected and pressed keys use a full-size filled highlight. Primary labels
 use the body font slot, with smaller alternate hints. Set `labelText.font` to a
 larger registered font and `controlText.font` to a smaller font for word labels
 such as Shift or localized OK text. The gallery uses 36px letters, 24px control
 labels, and 13px alternate hints on a 480×800 display, with the five-row keyboard
-occupying the lower 416px. Rows are separated by 6px (`rowGap`), while the
-horizontal key spacing remains 2px (`gap`). Selected and pressed highlights are
-about 20% shorter and centered on the labels, without reducing hit targets; alternate
-hints keep the same position and 10px right padding in every state, inside the
-highlight area. Selecting or pressing a key changes only the hint color. Keys with alternate
+occupying the lower 416px. Alternate hints keep the same position and 10px
+right padding in every state, inside the highlight area. Alternate hints change
+color with the key state without moving. Keys with alternate
 hints reserve 4px of extra headroom above the primary glyph, with matching
 clearance below so the highlight stays centered. Firmware can tune this geometry with
 `altHintRightPadding`, `altLabelGap`, and the signed `digitLabelOffsetX` on
-`KeyboardProps` or `QwertyKeyboardProps`; their defaults are 10px, 4px, and -4px.
+`KeyboardProps` or `QwertyKeyboardProps`. Both use 10px right padding and a
+4px label gap; the digit offset is -6px for `KeyboardProps` and -4px for
+`QwertyKeyboardProps`.
 Negative padding or gap values are treated as zero.
 
 The keyboard is stateless like every component: Shift and mode ("?123"/"ABC")

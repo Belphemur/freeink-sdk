@@ -22,8 +22,8 @@ struct QwertyKeyboardProps {
   TextStyle labelText{FONT_SLOT_BODY};
   TextStyle altText{};
   StyleSet keyStyles{};
-  Insets padding{5, 2, 5, 2};
-  int16_t gap = 2;
+  Insets padding{4, 4, 4, 4};
+  int16_t gap = 6;
   int16_t minTouchSize = 28;
   uint8_t keyRadius = 3;
   int16_t bottomHitOverflow = 0;
@@ -39,6 +39,10 @@ struct QwertyKeyboardProps {
   int16_t altHintRightPadding = 10;
   int16_t altLabelGap = 4;
   int16_t digitLabelOffsetX = -4;
+  // Appended fields preserve positional aggregate initialization.
+  Paint background = Paint::dither(Color::LightGray);
+  const char* spaceLabel = "";
+  bool uniformKeyWidth = true;
 };
 
 // Mirror a KeyboardEntry's layer state into the props for this frame.
@@ -67,9 +71,12 @@ void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboa
   keyboardProps.labelText = props.labelText;
   keyboardProps.controlText = props.controlText;
   keyboardProps.altText = props.altText;
+  keyboardProps.background = props.background;
   keyboardProps.altHintRightPadding = props.altHintRightPadding;
   keyboardProps.altLabelGap = props.altLabelGap;
   keyboardProps.digitLabelOffsetX = props.digitLabelOffsetX;
+  keyboardProps.spaceLabel = props.spaceLabel;
+  keyboardProps.uniformKeyWidth = props.uniformKeyWidth;
   keyboardProps.keyStyles = props.keyStyles;
   keyboardProps.padding = props.padding;
   keyboardProps.gap = props.gap;

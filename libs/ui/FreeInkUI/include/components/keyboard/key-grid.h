@@ -42,7 +42,7 @@ struct KeyGridProps {
   TextStyle labelText{};
   TextStyle secondaryText{};
   StyleSet keyStyles{};
-  int16_t gap = 0;
+  int16_t gap = 6;
   int16_t minTouchSize = 28;
   uint8_t radius = 0;
   bool inactiveSelection = false;
