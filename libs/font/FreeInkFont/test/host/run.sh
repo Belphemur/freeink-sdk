@@ -146,4 +146,14 @@ c++ -std=c++17 -O1 -Wall -Wextra -Werror $INCLUDES $DEFINES \
   -o "$BUILD_DIR/ftfont-glyph-cache-test"
 "$BUILD_DIR/ftfont-glyph-cache-test" "$FONT_FIXTURE" ../fixtures/fonts/AtkinsonHyperlegibleNext-Regular.otf
 
+# --- advance() fast-path parity -------------------------------------------
+# advance() reads FT_Get_Advance instead of decoding the outline; the value
+# must stay bit-identical to the metrics-load reference, and the memo must be
+# size-keyed. Both a TrueType and a CFF/OTF face.
+c++ -std=c++17 -O1 -Wall -Wextra -Werror $INCLUDES \
+  ../../src/FtFont.cpp $GSUB_SOURCE \
+  FtFontAdvanceParityTest.cpp "$BUILD_DIR"/obj_*.o \
+  -o "$BUILD_DIR/ftfont-advance-parity-test"
+"$BUILD_DIR/ftfont-advance-parity-test" "$FONT_FIXTURE" ../fixtures/fonts/AtkinsonHyperlegibleNext-Regular.otf
+
 echo "FreeInkFont host tests: OK"

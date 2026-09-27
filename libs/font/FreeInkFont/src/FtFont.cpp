@@ -1,6 +1,7 @@
 #include "FtFont.h"
 
 #include <ft2build.h>
+#include FT_ADVANCES_H
 #include FT_FREETYPE_H
 #include FT_MODULE_H
 #include FT_MULTIPLE_MASTERS_H
@@ -501,6 +502,80 @@ void FtFont::flushGlyphCache() {
   cacheNewest_ = nullptr;
   cacheOldest_ = nullptr;
   cacheBytes_ = 0;
+  // The metrics memo has the same lifetime rules as the bitmap cache (both
+  // key on face-local state), so every flush point covers it too.
+  flushMetricsMemo();
+}
+
+// --- metrics memo ----------------------------------------------------------
+// Backs advance()/kerning() so the several measurement walks over one
+// paragraph do not each re-enter FreeType. Direct-mapped (a collision simply
+// replaces the slot) with a fixed slot count, so a book never grows this
+// beyond one small fontAlloc block and a workload with many codepoints just
+// misses more often.
+
+size_t FtFont::advanceMemoIndex(const uint32_t codepoint, const uint32_t pixelSize26_6) {
+  uint32_t hash = codepoint * 2654435761u;
+  hash ^= pixelSize26_6 * 2246822519u;
+  hash ^= hash >> 15;
+  return hash & (kAdvanceMemoSlots - 1);
+}
+
+size_t FtFont::kernMemoIndex(const uint32_t left, const uint32_t right, const uint32_t pixelSize26_6) {
+  uint32_t hash = left * 2654435761u;
+  hash ^= right * 2246822519u;
+  hash ^= pixelSize26_6 * 3266489917u;
+  hash ^= hash >> 15;
+  return hash & (kKernMemoSlots - 1);
+}
+
+const int16_t* FtFont::findAdvanceMemo(const uint32_t codepoint, const uint32_t pixelSize26_6) const {
+  if (advanceMemo_ == nullptr) return nullptr;
+  const AdvanceMemo& entry = advanceMemo_[advanceMemoIndex(codepoint, pixelSize26_6)];
+  return (entry.pixelSize26_6 == pixelSize26_6 && entry.codepoint == codepoint) ? &entry.advance : nullptr;
+}
+
+void FtFont::storeAdvanceMemo(const uint32_t codepoint, const uint32_t pixelSize26_6, const int16_t value) {
+  if (pixelSize26_6 < 64) return;  // invalid size: never create a slot
+  if (advanceMemo_ == nullptr) {
+    void* block = fontAlloc(sizeof(AdvanceMemo) * kAdvanceMemoSlots);
+    if (block == nullptr) return;  // OOM degrades to never-cached, always safe
+    advanceMemo_ = static_cast<AdvanceMemo*>(block);
+    memset(advanceMemo_, 0, sizeof(AdvanceMemo) * kAdvanceMemoSlots);
+  }
+  AdvanceMemo& entry = advanceMemo_[advanceMemoIndex(codepoint, pixelSize26_6)];
+  entry.codepoint = codepoint;
+  entry.pixelSize26_6 = pixelSize26_6;
+  entry.advance = value;
+}
+
+const int16_t* FtFont::findKernMemo(const uint32_t left, const uint32_t right, const uint32_t pixelSize26_6) const {
+  if (kernMemo_ == nullptr) return nullptr;
+  const KernMemo& entry = kernMemo_[kernMemoIndex(left, right, pixelSize26_6)];
+  return (entry.pixelSize26_6 == pixelSize26_6 && entry.left == left && entry.right == right) ? &entry.value : nullptr;
+}
+
+void FtFont::storeKernMemo(const uint32_t left, const uint32_t right, const uint32_t pixelSize26_6,
+                           const int16_t value) {
+  if (pixelSize26_6 < 64) return;
+  if (kernMemo_ == nullptr) {
+    void* block = fontAlloc(sizeof(KernMemo) * kKernMemoSlots);
+    if (block == nullptr) return;
+    kernMemo_ = static_cast<KernMemo*>(block);
+    memset(kernMemo_, 0, sizeof(KernMemo) * kKernMemoSlots);
+  }
+  KernMemo& entry = kernMemo_[kernMemoIndex(left, right, pixelSize26_6)];
+  entry.left = left;
+  entry.right = right;
+  entry.pixelSize26_6 = pixelSize26_6;
+  entry.value = value;
+}
+
+void FtFont::flushMetricsMemo() {
+  fontFree(advanceMemo_);
+  advanceMemo_ = nullptr;
+  fontFree(kernMemo_);
+  kernMemo_ = nullptr;
 }
 
 const FtFont::GlyphCacheEntry* FtFont::findCachedGlyph(const GlyphId glyph, const uint32_t pixelSize26_6) {
@@ -1026,12 +1101,40 @@ bool FtFont::lineMetrics26_6(const uint32_t pixelSize26_6, LineMetrics& out) {
 }
 
 int16_t FtFont::advance(const uint32_t codepoint, const uint16_t sizePx, uint8_t) {
-  // The metrics load below clobbers the glyph-slot bitmap; hand the last
-  // rasterize() bitmap to the caller before it goes (RasterFont contract).
+  const uint32_t pixelSize26_6 = uint32_t(sizePx) * 64u;
+  if (const int16_t* hit = findAdvanceMemo(codepoint, pixelSize26_6)) return *hit;
+
+  // Fast path: FT_Get_Advance reads the advance straight from the metrics
+  // table without decoding the outline. On CFF faces that skips the Adobe
+  // charstring interpreter — the dominant cost of a layout pass, which
+  // measures every codepoint several times. FAST_ONLY refuses (and we fall
+  // back) for drivers that cannot answer from metrics alone; the computed
+  // value is bit-identical to linearHoriAdvance rounding (verified across
+  // sizes/codepoints on CFF and TTF fixtures).
+  if (ready_ && ensureSize26_6(pixelSize26_6)) {
+    auto face = static_cast<FT_Face>(face_);
+    const FT_UInt glyph = FT_Get_Char_Index(face, codepoint);
+    if (glyph == 0) {
+      storeAdvanceMemo(codepoint, pixelSize26_6, 0);
+      return 0;
+    }
+    FT_Fixed fastAdvance = 0;
+    if (FT_Get_Advance(face, glyph, FT_LOAD_NO_HINTING | FT_ADVANCE_FLAG_FAST_ONLY, &fastAdvance) == 0) {
+      const int16_t value = int16_t(std::clamp<int32_t>(fixed16_16To26_6(fastAdvance) >> 6, INT16_MIN, INT16_MAX));
+      storeAdvanceMemo(codepoint, pixelSize26_6, value);
+      return value;
+    }
+  }
+
+  // Fallback: full metrics load. The metrics load clobbers the glyph-slot
+  // bitmap; hand the last rasterize() bitmap to the caller before it goes
+  // (RasterFont contract).
   preserveGlyphBitmap();
   GlyphMetrics metrics;
-  if (!metrics26_6(codepoint, uint32_t(sizePx) * 64u, metrics)) return 0;
-  return int16_t(std::clamp<int32_t>(metrics.advance26_6 >> 6, INT16_MIN, INT16_MAX));
+  if (!metrics26_6(codepoint, pixelSize26_6, metrics)) return 0;
+  const int16_t value = int16_t(std::clamp<int32_t>(metrics.advance26_6 >> 6, INT16_MIN, INT16_MAX));
+  storeAdvanceMemo(codepoint, pixelSize26_6, value);
+  return value;
 }
 
 int16_t FtFont::lineHeight(const uint16_t sizePx) {
@@ -1050,10 +1153,14 @@ int16_t FtFont::ascent(const uint16_t sizePx) {
 
 int16_t FtFont::kerning(const uint32_t left, const uint32_t right, const uint16_t sizePx, uint8_t) {
   if (!ready_) return 0;
+  const uint32_t pixelSize26_6 = uint32_t(sizePx) * 64u;
+  if (const int16_t* hit = findKernMemo(left, right, pixelSize26_6)) return *hit;
   // Route through the glyph-ID form so the integer-pixel Font API sees the
   // GPOS fallback too; round the 26.6 result to whole pixels.
-  const int32_t value = kerningGlyphs26_6(glyphId(left), glyphId(right), uint32_t(sizePx) * 64u);
-  return int16_t(std::clamp<int32_t>((value + 32) >> 6, INT16_MIN, INT16_MAX));
+  const int32_t value = kerningGlyphs26_6(glyphId(left), glyphId(right), pixelSize26_6);
+  const int16_t px = int16_t(std::clamp<int32_t>((value + 32) >> 6, INT16_MIN, INT16_MAX));
+  storeKernMemo(left, right, pixelSize26_6, px);
+  return px;
 }
 
 void FtFont::ensureGsubLoaded() {
