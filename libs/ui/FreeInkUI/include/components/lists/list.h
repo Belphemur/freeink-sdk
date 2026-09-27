@@ -101,6 +101,9 @@ struct ListProps {
   int16_t rowHeight = 0;
   int16_t rowGap = -1;
   uint8_t rowRadius = 0;
+  // A 1px rule between visible rows, inset to the content edges. None
+  // inherits Screen's theme; raw list() draws no separators by default.
+  Paint separatorPaint = Paint::none();
   int16_t sidePadding = -1;
   int16_t textGap = 10;
   int16_t iconSize = 0;
@@ -578,6 +581,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
   int16_t cursorY = rowArea.y;
   uint16_t consumedIndexes = 0; // item AND header indexes laid out from top
   bool selectedDrawn = false;
+  bool previousWasRow = false;
   for (uint16_t i = top; i < props.count; ++i) {
     // Stop before reading the next window entry. The size/layout work below
     // dereferences `item`, so checking after it would require callers that
@@ -596,6 +600,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     const ListItem &item =
         props.rowProvider ? scratch : props.items[i - props.itemsWindowFirst];
     if (item.isHeader) {
+      previousWasRow = false;
       const int16_t pad = i != top ? props.sectionGap : 0;
       if (static_cast<int16_t>(cursorY + pad + headerH) > rowArea.bottom())
         break;
@@ -659,6 +664,14 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
         selectedDrawn = true;
     }
     Rect row{rowArea.x, cursorY, rowArea.width, itemH};
+    if (previousWasRow && !hasSectionHeading && props.separatorPaint.kind != PaintKind::None &&
+        rowArea.width > sidePad * 2) {
+      frame.target().fill(
+          Rect{static_cast<int16_t>(rowArea.x + sidePad), static_cast<int16_t>(row.y - (rowGap > 1 ? rowGap / 2 : 1)),
+               static_cast<int16_t>(rowArea.width - sidePad * 2), 1},
+          props.separatorPaint);
+    }
+    previousWasRow = true;
     cursorY = static_cast<int16_t>(cursorY + itemH + rowGap);
     if (props.hugContents && item.label) {
       // Hug-content rows shrink to the label width plus padding so the

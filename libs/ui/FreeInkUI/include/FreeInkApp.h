@@ -319,6 +319,8 @@ public:
     }
     if (themed.rowRadius == 0)
       themed.rowRadius = theme_.listRowRadius;
+    if (themed.separatorPaint.kind == PaintKind::None)
+      themed.separatorPaint = theme_.listSeparator;
     if (themed.sidePadding < 0)
       themed.sidePadding = theme_.listSidePadding;
     if (themed.scrollIndicatorWidth < 0)

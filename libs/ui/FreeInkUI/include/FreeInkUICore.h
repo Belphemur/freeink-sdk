@@ -659,6 +659,7 @@ struct ThemeTokens {
   // List shape tokens forwarded by Screen::resolveListProps().
   int16_t listRowGap = 0;
   uint8_t listRowRadius = 0;
+  Paint listSeparator = Paint::none();
   int16_t listSidePadding = 8; // text inset within a row
   int16_t listInset = 0; // horizontal inset of the rows (scroll indicator stays
                          // at the band edge)
