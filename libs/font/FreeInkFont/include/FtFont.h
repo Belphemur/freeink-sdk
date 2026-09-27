@@ -314,6 +314,37 @@ class FtFont : public RasterFont {
   const GlyphCacheEntry* findCachedGlyph(GlyphId glyph, uint32_t pixelSize26_6);
   void evictOldestCachedGlyph();
 
+  // Per-face metrics memo for advance()/kerning(). Laying out a paragraph
+  // walks the same codepoints several times (measure, per-line record,
+  // placement), and every walk would otherwise re-enter FreeType. Keyed by
+  // codepoint rather than glyph id, and flushed with the glyph bitmap cache
+  // (setRenderOptions/re-init), so a face change can never serve the previous
+  // font's value. Direct-mapped and fixed size: a book with more distinct
+  // codepoints than slots degrades to "uncached", never to unbounded memory.
+  static constexpr uint32_t kAdvanceMemoSlots = 512;
+  static constexpr uint32_t kKernMemoSlots = 512;
+  struct AdvanceMemo {
+    uint32_t codepoint;
+    uint32_t pixelSize26_6;  // 0 = empty (valid sizes are >= 64)
+    int16_t advance;
+  };
+  struct KernMemo {
+    uint32_t left;
+    uint32_t right;
+    uint32_t pixelSize26_6;  // 0 = empty
+    int16_t value;
+  };
+  static size_t advanceMemoIndex(uint32_t codepoint, uint32_t pixelSize26_6);
+  static size_t kernMemoIndex(uint32_t left, uint32_t right, uint32_t pixelSize26_6);
+  const int16_t* findAdvanceMemo(uint32_t codepoint, uint32_t pixelSize26_6) const;
+  void storeAdvanceMemo(uint32_t codepoint, uint32_t pixelSize26_6, int16_t value);
+  const int16_t* findKernMemo(uint32_t left, uint32_t right, uint32_t pixelSize26_6) const;
+  void storeKernMemo(uint32_t left, uint32_t right, uint32_t pixelSize26_6, int16_t value);
+  void flushMetricsMemo();
+  void flushKernMemo();
+  AdvanceMemo* advanceMemo_ = nullptr;  // fontAlloc'd lazily; freed in deinit()
+  KernMemo* kernMemo_ = nullptr;        // fontAlloc'd lazily; freed in deinit()
+
   // A monochrome FT_Bitmap is 1-bpp packed (pitch = (width+7)/8), but
   // GlyphBitmap's contract is 8-bit coverage at stride `width` (see Font.h).
   // Expands into monoBuf_ (grown on demand, freed in deinit()) rather than
