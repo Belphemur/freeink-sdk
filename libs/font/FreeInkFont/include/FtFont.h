@@ -341,6 +341,7 @@ class FtFont : public RasterFont {
   const int16_t* findKernMemo(uint32_t left, uint32_t right, uint32_t pixelSize26_6) const;
   void storeKernMemo(uint32_t left, uint32_t right, uint32_t pixelSize26_6, int16_t value);
   void flushMetricsMemo();
+  void flushKernMemo();
   AdvanceMemo* advanceMemo_ = nullptr;  // fontAlloc'd lazily; freed in deinit()
   KernMemo* kernMemo_ = nullptr;        // fontAlloc'd lazily; freed in deinit()
 

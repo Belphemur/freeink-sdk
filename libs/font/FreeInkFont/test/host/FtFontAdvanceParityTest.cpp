@@ -97,6 +97,31 @@ void checkFont(const char* path) {
     if (font.advance(cp, 14, 0) != at14 || font.advance(cp, 22, 0) != at22) sizeIsolation = false;
   }
   expect(sizeIsolation, "memo keys on size (14/22 interleave stable)");
+
+  // Missing-glyph diagnostics: the fast path must report the same stage the
+  // metrics-load path always did, on every call (missing results are never
+  // memoized for exactly this reason).
+  const uint32_t absent = 0x732B;  // 猫 — outside both Latin fixtures
+  if (!font.hasGlyph(absent)) {
+    font.advance(absent, 16, 0);
+    expect(font.lastGlyphFailure() == FtFont::GlyphFailure::MissingGlyph, "absent-glyph advance reports MissingGlyph");
+    font.advance(absent, 16, 0);
+    expect(font.lastGlyphFailure() == FtFont::GlyphFailure::MissingGlyph,
+           "absent-glyph advance keeps reporting MissingGlyph");
+  }
+
+  // The memo must agree with the live (memo-bypassing) computation, and must
+  // be discarded when the GPOS table goes away: releaseKerningTable()
+  // permanently disables GPOS, so a memoized pair outliving it would serve a
+  // value the live path can no longer produce.
+  const auto liveKernPx = [&font](uint32_t l, uint32_t r) {
+    const int32_t raw = font.kerningGlyphs26_6(font.glyphId(l), font.glyphId(r), 16u * 64u);
+    return static_cast<int16_t>((raw + 32) >> 6);
+  };
+  expect(font.kerning('A', 'V', 16, 0) == liveKernPx('A', 'V'), "memoized kerning matches the live computation");
+  font.releaseKerningTable();
+  expect(font.kerning('A', 'V', 16, 0) == liveKernPx('A', 'V'),
+         "kerning matches live computation after releaseKerningTable() (memo invalidated)");
 }
 
 }  // namespace

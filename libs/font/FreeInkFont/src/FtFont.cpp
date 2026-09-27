@@ -574,6 +574,10 @@ void FtFont::storeKernMemo(const uint32_t left, const uint32_t right, const uint
 void FtFont::flushMetricsMemo() {
   fontFree(advanceMemo_);
   advanceMemo_ = nullptr;
+  flushKernMemo();
+}
+
+void FtFont::flushKernMemo() {
   fontFree(kernMemo_);
   kernMemo_ = nullptr;
 }
@@ -635,6 +639,11 @@ void FtFont::freeGposTable() {
   gposTable_ = nullptr;
   gposTableSize_ = 0;
   gposTableOwned_ = false;
+  // GPOS-derived pairs are stale the moment the table goes away
+  // (releaseKerningTable() / an oversized setGposByteBudget() release): the
+  // kern memo must not keep serving values the live path can no longer
+  // produce.
+  flushKernMemo();
 }
 
 void FtFont::setGposByteBudget(const size_t maxBytes) {
@@ -1115,12 +1124,21 @@ int16_t FtFont::advance(const uint32_t codepoint, const uint16_t sizePx, uint8_t
     auto face = static_cast<FT_Face>(face_);
     const FT_UInt glyph = FT_Get_Char_Index(face, codepoint);
     if (glyph == 0) {
-      storeAdvanceMemo(codepoint, pixelSize26_6, 0);
+      // Same diagnostic stage the metrics-load path reports for a missing
+      // glyph. Deliberately NOT memoized: a cached zero cannot distinguish an
+      // absent glyph from a real zero-advance one (space), so a later hit
+      // would keep reporting a stale failure stage.
+      lastGlyphFailure_ = GlyphFailure::MissingGlyph;
+      lastGlyphError_ = 0;
       return 0;
     }
     FT_Fixed fastAdvance = 0;
     if (FT_Get_Advance(face, glyph, FT_LOAD_NO_HINTING | FT_ADVANCE_FLAG_FAST_ONLY, &fastAdvance) == 0) {
       const int16_t value = int16_t(std::clamp<int32_t>(fixed16_16To26_6(fastAdvance) >> 6, INT16_MIN, INT16_MAX));
+      // loadGlyph() resets these at entry; keep the diagnostic surface
+      // identical now that a memo hit can bypass the load entirely.
+      lastGlyphFailure_ = GlyphFailure::None;
+      lastGlyphError_ = 0;
       storeAdvanceMemo(codepoint, pixelSize26_6, value);
       return value;
     }
