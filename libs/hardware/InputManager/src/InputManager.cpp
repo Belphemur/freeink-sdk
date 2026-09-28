@@ -2810,19 +2810,25 @@ void InputManager::enterGt911Sleep() {
   // here is the sleep signal (datasheet §8.1.d); anything else stays on the
   // uncertainty path — gt911Asleep remains false and the low-power poll
   // throttle keeps applying.
-  bool stillAcking = false;
+  //
+  // Wire::endTransmission() codes: 0 = ACK (still awake), 2 = NACK on the
+  // ADDRESS phase (the sleep signal), 1/3/4/5 = data-too-long / NACK on the
+  // data phase / other error / bus timeout. Only code 2 proves the controller
+  // dropped off the bus; every other non-zero code is a transaction anomaly
+  // that leaves the controller's state UNKNOWN and must not park it.
+  uint8_t probeStatus = 0;
   if (sent) {
     Wire.beginTransmission(gt911Addr);
     Wire.write(0x81);
     Wire.write(0x4E);
-    stillAcking = Wire.endTransmission() == 0; // ACK on the address = still awake
+    probeStatus = Wire.endTransmission();
   }
-  if (sent && !stillAcking) {
+  if (sent && probeStatus == 2) {
     gt911Asleep.store(true, std::memory_order_release);
     GT911_LOG_INF("GT911 sleep entered (bus silent until wake)");
     return;
   }
-  GT911_LOG_INF("GT911 sleep command may not have taken (read OK)");
+  GT911_LOG_INF("GT911 sleep not confirmed (probe code %u); staying awake", static_cast<unsigned>(probeStatus));
   if (t.irq >= 0) {
     pinMode(t.irq, INPUT); // controller is awake: stop contending on INT
   }
