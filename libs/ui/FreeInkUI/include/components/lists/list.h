@@ -183,6 +183,8 @@ struct ListProps {
   // Explicit vertical content padding. -1 preserves legacy row-height-derived
   // padding; non-negative values make rowHeight a minimum, growing to content.
   int16_t rowPaddingY = -1;
+  // Draw toggle rows as outlined boxes with an inset fill when checked.
+  bool toggleCheckbox = false;
 };
 
 // Stateful companion to the immediate-mode list helpers in FreeInkUICore.h:
@@ -814,38 +816,39 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       // The switch draws in row-foreground ink with the foreground's opposite
       // as "paper", so it inverts along with the row when selected.
       const Paint fg = style.foreground;
-      const bool fgWhite =
-          fg.kind == PaintKind::Solid && fg.color == Color::White;
+      const bool fgWhite = fg.kind == PaintKind::Solid && fg.color == Color::White;
       const Paint paper = Paint::solid(fgWhite ? Color::Black : Color::White);
-      const uint8_t trackRadius = static_cast<uint8_t>(
-          props.toggleRadius > togH / 2 ? togH / 2 : props.toggleRadius);
-      frame.target().fill(toggleRect, item.toggleChecked ? fg : paper,
-                          trackRadius);
-      if (props.toggleBorderWidth > 0) {
-        frame.target().stroke(toggleRect, fg, props.toggleBorderWidth,
-                              trackRadius);
+      if (props.toggleCheckbox) {
+        const int16_t size = static_cast<int16_t>((togW < togH ? togW : togH) - 6);
+        const Rect box{static_cast<int16_t>(toggleRect.right() - size - 3),
+                       static_cast<int16_t>(toggleRect.y + (togH - size) / 2), size, size};
+        frame.target().stroke(box, fg, 2, 2);
+        if (item.toggleChecked) {
+          const int16_t inset = static_cast<int16_t>(size / 4);
+          const Rect inner = box.inset(Insets{inset, inset, inset, inset});
+          frame.target().fill(inner, fg, 2);
+        }
+      } else {
+        const uint8_t trackRadius = static_cast<uint8_t>(props.toggleRadius > togH / 2 ? togH / 2 : props.toggleRadius);
+        frame.target().fill(toggleRect, item.toggleChecked ? fg : paper, trackRadius);
+        if (props.toggleBorderWidth > 0) {
+          frame.target().stroke(toggleRect, fg, props.toggleBorderWidth, trackRadius);
+        }
+        const int16_t knobInset = props.toggleKnobInset < 0 ? 0 : props.toggleKnobInset;
+        const int16_t knobH = static_cast<int16_t>(togH - knobInset * 2);
+        if (knobH > 0) {
+          Rect knob{static_cast<int16_t>(item.toggleChecked ? toggleRect.right() - knobInset - knobH
+                                                            : toggleRect.x + knobInset),
+                    static_cast<int16_t>(toggleRect.y + knobInset), knobH, knobH};
+          const uint8_t knobRadius =
+              static_cast<uint8_t>(props.toggleKnobRadius > knobH / 2 ? knobH / 2 : props.toggleKnobRadius);
+          frame.target().fill(knob, item.toggleChecked ? paper : fg, knobRadius);
+        }
       }
-      const int16_t knobInset =
-          props.toggleKnobInset < 0 ? 0 : props.toggleKnobInset;
-      const int16_t knobH = static_cast<int16_t>(togH - knobInset * 2);
-      if (knobH > 0) {
-        Rect knob{
-            static_cast<int16_t>(item.toggleChecked
-                                     ? toggleRect.right() - knobInset - knobH
-                                     : toggleRect.x + knobInset),
-            static_cast<int16_t>(toggleRect.y + knobInset), knobH, knobH};
-        const uint8_t knobRadius = static_cast<uint8_t>(
-            props.toggleKnobRadius > knobH / 2 ? knobH / 2
-                                               : props.toggleKnobRadius);
-        frame.target().fill(knob, item.toggleChecked ? paper : fg, knobRadius);
-      }
-      availW = static_cast<int16_t>(availW - togW - props.valueInset -
-                                    props.textGap);
-      if (props.rtl)
-        labelX = static_cast<int16_t>(band.x + band.width - availW);
+      availW = static_cast<int16_t>(availW - togW - props.valueInset - props.textGap);
+      if (props.rtl) labelX = static_cast<int16_t>(band.x + band.width - availW);
     } else if (item.value) {
-      TextStyle valueStyle =
-          textStyleWithForeground(props.valueText, style.foreground);
+      TextStyle valueStyle = textStyleWithForeground(props.valueText, style.foreground);
       valueStyle.align = props.rtl ? TextAlign::Left : TextAlign::Right;
       const int16_t valueW = layout.valueWidth;
       const int16_t valueX = props.rtl

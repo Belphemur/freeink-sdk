@@ -56,6 +56,7 @@ struct TileGridProps {
   // RADIUS_INHERIT: Screen::tileGrid() substitutes the theme's controlRadius;
   // on a bare Frame it resolves to the classic 18.
   uint8_t radius = RADIUS_INHERIT;
+  bool iconOnRight = false;
 };
 
 // Height the grid needs for count tiles — for sizing the band (or a whole
@@ -88,6 +89,7 @@ void tileGrid(Frame<MaxInteractions> &frame, Rect rect, const TileGridProps &pro
   tile.styles = styles;
   tile.inputMask = props.inputMask;
   tile.iconSize = props.iconSize;
+  tile.iconOnRight = props.iconOnRight;
 
   for (uint16_t i = 0; i < props.count; ++i) {
     const int16_t r = static_cast<int16_t>(i / columns);
