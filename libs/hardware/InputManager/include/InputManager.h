@@ -245,10 +245,13 @@ class InputManager {
   //
   // Threading: the sequences execute on the task that owns touch polling
   // (async poll task when armed via beginAsync(), otherwise the app task
-  // through update()). setTouchSleep/wakeTouch only post a command and block
-  // until the polling task executes it, so Wire and the INT pin always have a
-  // single owner. The touchPressed guard is likewise evaluated on that task.
-  // Calls must come from a task context that can block (not an ISR).
+  // through update()). setTouchSleep/wakeTouch go through one funnel
+  // (runGt911TouchCmd): the caller executes the sequence INLINE when it is
+  // that owner (a sync-build caller waiting for its own task would deadlock),
+  // and otherwise posts a bounded request for the owner to service, so Wire
+  // and the INT pin always have a single owner. The touchPressed/
+  // touchHomeKeyDown guard is likewise evaluated on that task. Calls must
+  // come from a task context that can block (not an ISR).
   bool setTouchSleep(bool asleep);
   bool wakeTouch();
   // True while the GT911 is in Sleep mode (no scanning, no I2C ACK, home key
@@ -585,6 +588,14 @@ class InputManager {
   static constexpr uint8_t GT911_TOUCH_CMD_WAKE = 2;
   static constexpr unsigned long GT911_TOUCH_CMD_TIMEOUT_MS = 1000;
   void serviceGt911TouchCmd();
+  // True when the calling task is the touch-poll owner (async task when
+  // armed, else the task stamped by begin()): inline execution of the
+  // Wire/INT sequences is then safe.
+  bool onGt911PollOwnerTask() const;
+  // Shared funnel for setTouchSleep/wakeTouch (see the public threading
+  // comment): posts the request, runs it inline on the poll owner, and
+  // resolves the outcome from gt911Asleep.
+  bool runGt911TouchCmd(uint8_t requestedCmd);
   void enterGt911Sleep();
   bool exitGt911Sleep();
   void beginFt6336u();
@@ -732,7 +743,16 @@ class InputManager {
   static const char *BUTTON_NAMES[];
   static bool s_sharedConfirmPowerShortPressEmitsPower;
   static bool s_lowPowerPolling;
-  // GT911 sleep/wake request channel (see serviceGt911TouchCmd); in-flight
-  // command stays visible to the caller until the polling task clears it.
-  static std::atomic<uint8_t> s_gt911TouchCmd;
+  // GT911 sleep/wake request channel (see serviceGt911TouchCmd): one slot,
+  // latest request wins — a concurrent opposite request overwrite the slot
+  // and both callers resolve against the settled gt911Asleep outcome, so no
+  // request is silently consumed by a stale clear. Per-instance on purpose:
+  // a static slot would let two InputManager instances consume each other's
+  // request against the wrong controller.
+  std::atomic<uint8_t> gt911TouchCmd{0};
+  // Task identity running touch polling in sync builds (stamped by begin());
+  // the async poll task takes over via _asyncTask in beginAsync(). The
+  // sleep/wake funnel executes inline only on this owner, keeping Wire and
+  // the INT pin single-owner.
+  TaskHandle_t gt911PollTask = nullptr;
 };
