@@ -73,6 +73,12 @@ class ProtectedBook {
   bool inflateTo(const uint8_t* in, size_t inLen, uint8_t* out, size_t outLen);
 
  private:
+  // Reserves lastError_'s buffer up front. Every error string assigned by this
+  // class is longer than the SSO buffer, so without this each assignment
+  // allocates -- including the ones on the out-of-memory paths, where a failing
+  // operator new aborts the firmware under -fno-exceptions. Both open entry
+  // points must call it before anything that can fail.
+  void reserveErrorBuffer();
   bool finishOpen(ByteSource& source, Crypto& crypto, const Credential& identity,
                   const std::string& rightsXmlOverride);
   bool unwrapBookKey(Crypto& crypto, const Credential& identity, uint8_t out[16]);

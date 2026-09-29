@@ -848,6 +848,31 @@ active `DrawTarget` font asset, so devices shipping wider language support
 should include matching Noto Sans glyph ranges in their generated bitmap font or
 use a renderer with native text shaping.
 
+The Latin locale layouts follow their printed keyboards. QWERTZ German carries
+ä, ö, ü and ß as keys; AZERTY French keeps é as a key and reaches è, ê, à, ç, ù,
+î and ô by long-press, and Spanish reaches its acute vowels the same way. A key
+has a single long-press alternate, so letters beyond one per key (French â, û,
+ë, ï, œ) are not on the built-in layers.
+
+`builtinKeyboardLayout` keeps every layer of every built-in layout expanded in
+flash, about 16 KB on a 32-bit target. `buildKeyboardLayout` takes the same
+arguments and returns the same layout, key for key, but builds it from a
+compact description (about 2 KB for all layouts) into a `KeyboardLayoutBuffer`
+the app owns:
+
+```cpp
+// A member of the screen that shows the keyboard (~1.2 KB), rebuilt whenever
+// shift, the symbol pages or the script change.
+freeink::ui::KeyboardLayoutBuffer layoutBuffer;
+
+keyboard.layout = &freeink::ui::buildKeyboardLayout(layoutBuffer, freeink::ui::KeyboardLayoutId::CyrillicRu,
+                                                    shifted, symbols, /*numberRow=*/true, /*langKey=*/true);
+```
+
+A firmware that only ever builds its layers this way, and never reaches
+`builtinKeyboardLayout` (directly, or through `KeyboardEntry` or FreeInkApp's
+`qwertyKeyboard`), does not link the expanded tables.
+
 An app that reaches more than one script sets `builtinKeyboardLayout`'s
 `langKey` flag and a `KeyboardProps::langAction`, which puts a script-switch key
 in the bottom row. It draws a globe and takes no label of its own: which layout

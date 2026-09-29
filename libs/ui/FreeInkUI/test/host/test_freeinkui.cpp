@@ -3511,6 +3511,144 @@ void testLocalizedKeyboardLayout() {
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), interactions.count());
 }
 
+void testGermanAndFrenchLetters() {
+  // Null-safe: a missing key must read as a failed check, not a crash.
+  const auto same = [](const char* got, const char* want) { return got && std::strcmp(got, want) == 0; };
+
+  // German: every QWERTZ letter is a key, in its printed position, in all
+  // eight variants (shift x digit row x language key).
+  for (const bool shifted : {false, true}) {
+    for (const bool numbers : {false, true}) {
+      for (const bool lang : {false, true}) {
+        const KeyboardLayout& de = builtinKeyboardLayout(KeyboardLayoutId::QwertzDe, shifted, false, numbers, lang);
+        const uint8_t top = numbers ? 1 : 0;
+        CHECK_EQ(de.rows[top].count, 11);
+        CHECK_EQ(de.rows[top + 1].count, 11);
+        if (de.rows[top].count < 11 || de.rows[top + 1].count < 11) continue;  // keep a regression a failure, not a crash
+        CHECK_EQ(de.rows[top].keys[10].value, shifted ? 1151 : 1101);      // ü / Ü closes the top row
+        CHECK_EQ(de.rows[top + 1].keys[9].value, shifted ? 1153 : 1103);   // ö / Ö
+        CHECK_EQ(de.rows[top + 1].keys[10].value, shifted ? 1154 : 1104);  // ä / Ä
+        CHECK_EQ(de.rows[top + 2].keys[8].value, 1102);                    // ß has no uppercase
+        if (numbers) CHECK(de.rows[0].independentKeyWidth);
+      }
+    }
+  }
+  const KeyboardLayout& de = builtinKeyboardLayout(KeyboardLayoutId::QwertzDe);
+  const KeyboardLayout& deShift = builtinKeyboardLayout(KeyboardLayoutId::QwertzDe, true);
+  CHECK(same(keyboardOutputFor(de, 1103), "\xc3\xb6"));       // ö
+  CHECK(same(keyboardOutputFor(de, 1104), "\xc3\xa4"));       // ä
+  CHECK(same(keyboardOutputFor(deShift, 1153), "\xc3\x96"));  // Ö
+  CHECK(same(keyboardOutputFor(deShift, 1154), "\xc3\x84"));  // Ä
+
+  // Eleven letters are wider than ten digits: the digit row keeps full-size
+  // keys, as it does over the Cyrillic layouts, and the letters narrow.
+  {
+    DeviceContext device = makeDevice(480, 300);
+    InputSnapshot input;
+    FakeDrawTarget draw;
+    InteractionBuffer<64> interactions;
+    Frame<64> frame(draw, device, input, interactions);
+    KeyboardProps props;
+    props.layout = &builtinKeyboardLayout(KeyboardLayoutId::QwertzDe, false, false, true);
+    props.keyAction = 1;
+    props.padding = Insets{4, 4, 4, 4};
+    props.gap = 6;
+    props.uniformKeyWidth = true;
+    keyboard(frame, Rect{0, 0, 480, 300}, props);
+    CHECK_EQ(interactions.data()[0].rect.width, 40);   // digits: as in English
+    CHECK_EQ(interactions.data()[9].rect.width, 40);
+    CHECK_EQ(interactions.data()[10].rect.width, 36);  // q .. ü
+    CHECK_EQ(interactions.data()[20].rect.width, 36);
+    CHECK_EQ(interactions.data()[31].rect.width, 36);  // ä
+  }
+
+  // French: é keeps its key, the other accents long-press off their base
+  // letter, in both cases. Letters without an alternate still flip case.
+  const KeyboardLayout& fr = builtinKeyboardLayout(KeyboardLayoutId::AzertyFr);
+  const KeyboardLayout& frShift = builtinKeyboardLayout(KeyboardLayoutId::AzertyFr, true);
+  const struct {
+    int16_t lower, upper;
+    const char *alt, *altUpper;
+  } frenchAlts[] = {
+      {1001, 1051, "\xc3\xa8", "\xc3\x88"},  // é -> è, É -> È
+      {'e', 'E', "\xc3\xaa", "\xc3\x8a"},    // ê Ê
+      {'a', 'A', "\xc3\xa0", "\xc3\x80"},    // à À
+      {'c', 'C', "\xc3\xa7", "\xc3\x87"},    // ç Ç
+      {'u', 'U', "\xc3\xb9", "\xc3\x99"},    // ù Ù
+      {'i', 'I', "\xc3\xae", "\xc3\x8e"},    // î Î
+      {'o', 'O', "\xc3\xb4", "\xc3\x94"},    // ô Ô
+  };
+  for (const auto& a : frenchAlts) {
+    CHECK(same(keyboardAltOutputFor(fr, a.lower), a.alt));
+    CHECK(same(keyboardAltOutputFor(frShift, a.upper), a.altUpper));
+  }
+  CHECK(same(keyboardAltOutputFor(fr, 'z'), "Z"));
+
+  // Through KeyboardEntry, a long-press inserts the alternate's UTF-8 whole.
+  char buf[16] = "";
+  KeyboardEntry kb;
+  kb.layout = KeyboardLayoutId::AzertyFr;
+  kb.attach(buf, sizeof buf);
+  CHECK(kb.key('e', /*longPress=*/true));
+  CHECK(kb.key('t'));
+  CHECK(kb.key('r'));
+  CHECK(kb.key('e'));
+  CHECK(std::strcmp(buf, "\xc3\xaatre") == 0);  // être
+}
+
+void testCompactLayoutsMatchBuiltin() {
+  // buildKeyboardLayout() must be builtinKeyboardLayout() without the tables:
+  // every layer of every layout, one id past the last as the unknown-id path,
+  // compared field by field. This is what keeps the compact strings and the
+  // expanded tables from drifting apart.
+  const auto sameText = [](const char* a, const char* b) {
+    return a == b || (a && b && std::strcmp(a, b) == 0);
+  };
+  KeyboardLayoutBuffer buffer;
+  size_t keysCompared = 0;
+  for (uint8_t raw = 0; raw <= static_cast<uint8_t>(KeyboardLayoutId::ArabicAr) + 1; ++raw) {
+    const auto id = static_cast<KeyboardLayoutId>(raw);
+    for (uint8_t flags = 0; flags < 16; ++flags) {
+      const bool shifted = flags & 1, symbols = flags & 2, numbers = flags & 4, lang = flags & 8;
+      const KeyboardLayout& want = builtinKeyboardLayout(id, shifted, symbols, numbers, lang);
+      const KeyboardLayout& got = buildKeyboardLayout(buffer, id, shifted, symbols, numbers, lang);
+      CHECK_EQ(got.rowCount, want.rowCount);
+      if (got.rowCount != want.rowCount) continue;
+      for (uint8_t r = 0; r < want.rowCount; ++r) {
+        const KeyboardRow& wr = want.rows[r];
+        const KeyboardRow& gr = got.rows[r];
+        CHECK_EQ(gr.count, wr.count);
+        CHECK_EQ(gr.insetUnits, wr.insetUnits);
+        CHECK_EQ(gr.independentKeyWidth, wr.independentKeyWidth);
+        if (gr.count != wr.count) continue;
+        for (uint8_t c = 0; c < wr.count; ++c) {
+          const KeyboardKey& w = wr.keys[c];
+          const KeyboardKey& g = gr.keys[c];
+          CHECK(sameText(g.label, w.label));
+          CHECK(sameText(g.output, w.output));
+          CHECK(sameText(g.alt, w.alt));
+          CHECK(g.kind == w.kind);
+          CHECK_EQ(g.state, w.state);
+          CHECK_EQ(g.value, w.value);
+          CHECK_EQ(g.widthUnits, w.widthUnits);
+          CHECK_EQ(g.enabled, w.enabled);
+          ++keysCompared;
+        }
+      }
+    }
+  }
+  CHECK(keysCompared > 6000);  // the loops above really ran over every layer
+
+  // Each build owns its buffer: a second buffer leaves the first one's layout
+  // untouched, and building into the same buffer again reuses it in place.
+  KeyboardLayoutBuffer other;
+  const KeyboardLayout& ru = buildKeyboardLayout(buffer, KeyboardLayoutId::CyrillicRu, false, false, true);
+  buildKeyboardLayout(other, KeyboardLayoutId::QwertzDe, true);
+  CHECK(sameText(keyboardOutputFor(ru, 0x439), "\xd0\xb9"));  // й
+  CHECK(sameText(keyboardAltOutputFor(ru, 0x435), "\xd1\x91"));  // е -> ё
+  CHECK(&buildKeyboardLayout(buffer, KeyboardLayoutId::QwertyEn) == &buffer.layout);
+}
+
 void testKeyboardUniformRowWidths() {
   DeviceContext device = makeDevice(800, 480);
   InputSnapshot input;
@@ -5721,6 +5859,8 @@ int main() {
   testLvglParityControls();
   testQwertyKeyboardComponent();
   testLocalizedKeyboardLayout();
+  testGermanAndFrenchLetters();
+  testCompactLayoutsMatchBuiltin();
   testKeyboardUniformRowWidths();
   testKeyboardOuterControlAlignment();
   testWideScriptNumberRowWidth();

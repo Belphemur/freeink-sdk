@@ -13,6 +13,7 @@ Device build flags and dependencies are in [platformio.sample.ini](../platformio
 | [Deferred refresh migration](deferred-refresh-migration.md) | Split refresh interface and consumer migration |
 | [MCU portability](consumer-mcu-portability.md) | Runtime profiles, GPIO wakeup, and C3/S3 differences |
 | [BLE keyboard host](ble-keyboard-host.md) | Enabling and using BLE HID input |
+| [Haptic feedback](haptics.md) | Consumer-triggered vibration, PWM intensity and asynchronous patterns |
 | [Testing](testing.md) | Local host regression suites and validation limits |
 
 ## Board support
@@ -27,6 +28,7 @@ for the full device list.
 - [EEGO A4](eego-a4-support.md)
 - [LilyGo T5 S3](lilygo-t5s3-support.md)
 - [M5Stack PaperS3](m5stack-papers3-support.md)
+- [Metalio E-Ink 4](metalio-eink4-support.md)
 - [OnePage ESP32-C61](onepage-c61-support.md)
 - [Waveshare ESP32-S3-ePaper-3.97](waveshare-epaper-397-support.md)
 

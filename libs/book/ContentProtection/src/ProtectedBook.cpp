@@ -50,9 +50,14 @@ bool tagAttr(const char* tag, size_t len, const char* attr, std::string* out) {
 }
 }  // namespace
 
+void ProtectedBook::reserveErrorBuffer() {
+  if (heapProbe(96)) lastError_.reserve(64);
+  lastError_.clear();
+}
+
 bool ProtectedBook::open(ByteSource& source, Crypto& crypto, const Credential& identity,
                          const std::string& rightsXmlOverride) {
-  lastError_.clear();
+  reserveErrorBuffer();
   protected_ = false;
 
   if (!zip_.open(source)) {
@@ -66,10 +71,7 @@ bool ProtectedBook::open(ByteSource& source, Crypto& crypto, const Credential& i
 bool ProtectedBook::openFromScan(ByteSource& source, Crypto& crypto,
                                  const Credential& identity, ZipScan&& scan,
                                  const std::string& rightsXmlOverride) {
-  // Error strings below assign literals longer than the SSO buffer; one
-  // probed reserve makes every later lastError_ assignment allocation-free.
-  if (heapProbe(96)) lastError_.reserve(64);
-  lastError_.clear();
+  reserveErrorBuffer();
   protected_ = false;
   zip_ = std::move(scan);
   return finishOpen(source, crypto, identity, rightsXmlOverride);

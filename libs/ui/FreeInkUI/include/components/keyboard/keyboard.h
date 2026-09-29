@@ -161,6 +161,42 @@ inline int16_t keyboardPreferredHeight(int16_t width, uint8_t rowCount, Insets p
 const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted = false, bool symbols = false,
                                             bool numberRow = false, bool langKey = false);
 
+// Caller-owned storage for buildKeyboardLayout(): one layer of a built-in
+// layout, expanded on demand. Keep it for as long as the keyboard is on screen
+// -- a member of the screen that owns the keyboard, say -- and build into it
+// again whenever the layer changes (shift, symbols, script). A layout built
+// into it stays valid until the next build into the same buffer.
+//
+// Only the character rows are copied in; the bottom control rows point at
+// shared tables. About 1.2 KB on a 32-bit target.
+struct KeyboardLayoutBuffer {
+  // The widest built-in layer: a digit row over Arabic's 12/11/12 letters.
+  static constexpr uint8_t MAX_KEYS = 48;
+  static constexpr uint8_t MAX_ROWS = 5;
+  // NUL-terminated label and alternate text for those keys.
+  static constexpr uint16_t TEXT_BYTES = 256;
+
+  // Every member starts initialised, like the key and row structs it holds:
+  // a buffer is only ever read after a build, but a type that leaves 256 bytes
+  // indeterminate is a static-analysis finding in every app that embeds it.
+  KeyboardKey keys[MAX_KEYS];
+  KeyboardRow rows[MAX_ROWS];
+  KeyboardLayout layout;
+  char text[TEXT_BYTES] = {};
+};
+
+// Exactly the layout builtinKeyboardLayout() returns for the same arguments --
+// the same rows, keys, ids, widths and alternates -- built into `buffer`.
+//
+// builtinKeyboardLayout() keeps every layer of every layout expanded in flash,
+// about 16 KB of tables on a 32-bit target. This keeps one compact
+// description of each layout (about 2 KB) and expands only the layer asked
+// for. An app that builds its layers here and never reaches
+// builtinKeyboardLayout() -- directly, or through KeyboardEntry or
+// FreeInkApp's qwertyKeyboard -- does not link the expanded tables at all.
+const KeyboardLayout& buildKeyboardLayout(KeyboardLayoutBuffer& buffer, KeyboardLayoutId id, bool shifted = false,
+                                          bool symbols = false, bool numberRow = false, bool langKey = false);
+
 // The UTF-8 text a key id inserts under the given layout (nullptr for
 // shift/mode/delete/OK and unknown ids). Keys report stable ids in
 // ActionEvent::value — ASCII keys their code point, localized keys (é, ñ, ß)
