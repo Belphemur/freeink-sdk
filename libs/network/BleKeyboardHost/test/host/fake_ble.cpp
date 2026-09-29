@@ -53,6 +53,7 @@ struct Gate {
   fakeble::Stage configured = fakeble::Stage::None;
   fakeble::Stage active = fakeble::Stage::None;
   bool released = false;
+  bool stubborn = false;
   Task* heldTask = nullptr;
 };
 
@@ -78,6 +79,7 @@ bool holdHere(fakeble::Stage stage) {
   g.cv.wait(lock, [&g] { return g.released; });
   g.active = fakeble::Stage::None;
   g.configured = fakeble::Stage::None;
+  g.stubborn = false;
   g.heldTask = nullptr;
   lock.unlock();
   // A task deleted while it sat in this wait must never run again: on the device
@@ -90,7 +92,7 @@ void releaseHeld(bool onlyConnectStage) {
   Gate& g = gate();
   {
     std::lock_guard<std::mutex> guard(g.m);
-    if (g.active == fakeble::Stage::None) return;
+    if (g.active == fakeble::Stage::None || g.stubborn) return;
     if (onlyConnectStage && g.active != fakeble::Stage::Connect) return;
     g.released = true;
   }
@@ -175,12 +177,15 @@ struct FakeState {
   bool initialized = false;
   int lastError = 0;
   size_t connectCalls = 0;
+  std::vector<std::string> connectAddresses;
+  bool failConnects = false;
   std::vector<std::unique_ptr<NimBLERemoteCharacteristic>> owned;
   std::vector<NimBLERemoteCharacteristic*> chars;
   NimBLERemoteService service;
   NimBLEClient* client = nullptr;
   NimBLEScan scan;
   std::map<std::string, std::vector<uint8_t>> nvs;
+  bool lingerOnDisconnect = false;
 
   NimBLERemoteCharacteristic* at(int index) {
     if (index < 0 || static_cast<size_t>(index) >= chars.size()) return nullptr;
@@ -198,10 +203,10 @@ struct FakeState {
     return static_cast<int>(chars.size()) - 1;
   }
 
-  int addInput() {
+  int addInput(uint8_t reportId) {
     const int index = add(0x2A4D, true, false, true);
     NimBLERemoteCharacteristic* chr = at(index);
-    chr->reportReference_.bytes_[0] = 0;     // report id
+    chr->reportReference_.bytes_[0] = reportId;
     chr->reportReference_.bytes_[1] = 0x01;  // Input
     chr->reportReference_.len_ = 2;
     chr->hasReportReference_ = true;
@@ -239,16 +244,28 @@ struct FakeState {
 
   size_t retained() const { return scan.retained_.size(); }
 
+  void finishDisconnect() {
+    lingerOnDisconnect = false;
+    if (client != nullptr) client->disconnecting_ = false;
+  }
+
+  NimBLEClient* disconnectedClient() const {
+    return client != nullptr && !client->connected_ && !client->disconnecting_ ? client : nullptr;
+  }
+
   void reset() {
     owned.clear();
     chars.clear();
     initialized = false;
     lastError = 0;
     connectCalls = 0;
+    connectAddresses.clear();
+    failConnects = false;
     delete client;
     client = nullptr;
     scan = NimBLEScan();
     nvs.clear();
+    lingerOnDisconnect = false;
   }
 };
 
@@ -260,11 +277,13 @@ FakeState& state() {
 freeink::BleKeyboardHost& host() { return freeink::BleKeyboardHost::getInstance(); }
 
 void resetWorld() {
-  if (host().isRunning()) host().end();
-  releaseHeld(false);
+  releaseHold();
+  finishDisconnect();
+  if (host().isRunning() || host().isStopping()) host().end();
   {
     std::lock_guard<std::mutex> guard(gate().m);
     gate().configured = Stage::None;
+    gate().stubborn = false;
   }
   g_deletedWhileHeld = false;
   state().reset();
@@ -300,7 +319,7 @@ void peerDisconnect() { state().peerDrop(); }
 int addCharacteristic(uint16_t uuid, bool canRead, bool canWrite, bool canNotify) {
   return state().add(uuid, canRead, canWrite, canNotify);
 }
-int addInputReport() { return state().addInput(); }
+int addInputReport(uint8_t reportId) { return state().addInput(reportId); }
 void setValue(int index, const uint8_t* data, size_t len) { state().set(index, data, len); }
 bool notify(int index, const uint8_t* data, size_t len) { return state().notify(index, data, len); }
 
@@ -318,8 +337,30 @@ bool waitUntilHeld(Stage stage, uint32_t timeoutMs) {
   return g.cv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&g, stage] { return g.active == stage; });
 }
 
+void holdStubbornlyAt(Stage stage) {
+  std::lock_guard<std::mutex> guard(gate().m);
+  gate().configured = stage;
+  gate().stubborn = true;
+}
+
+void releaseHold() {
+  {
+    std::lock_guard<std::mutex> guard(gate().m);
+    gate().stubborn = false;
+  }
+  releaseHeld(false);
+}
+
+void lingerOnDisconnect() { state().lingerOnDisconnect = true; }
+
+void finishDisconnect() { state().finishDisconnect(); }
+
+bool clientExists() { return state().client != nullptr; }
+
 bool taskDeletedWhileHeld() { return g_deletedWhileHeld; }
 size_t connectCalls() { return state().connectCalls; }
+std::vector<std::string> connectAddresses() { return state().connectAddresses; }
+void failConnects(bool fail) { state().failConnects = fail; }
 unsigned long clockMs() { return g_clockMs.load(); }
 void advanceMillis(uint32_t ms) { g_clockMs += ms; }
 
@@ -355,9 +396,10 @@ const std::vector<NimBLERemoteCharacteristic*>& NimBLERemoteService::getCharacte
   return state().chars;
 }
 
-bool NimBLEClient::connect(const NimBLEAddress&) {
+bool NimBLEClient::connect(const NimBLEAddress& address) {
   state().connectCalls++;
-  if (holdHere(Stage::Connect)) {
+  state().connectAddresses.push_back(address.toString());
+  if (holdHere(Stage::Connect) || state().failConnects) {
     state().lastError = BLE_HS_ETIMEOUT;
     return false;
   }
@@ -370,6 +412,7 @@ bool NimBLEClient::disconnect() {
   releaseHeld(false);
   if (!connected_) return true;
   connected_ = false;
+  disconnecting_ = state().lingerOnDisconnect;
   if (callbacks_ != nullptr) callbacks_->onDisconnect(this, 0x16);
   return true;
 }
@@ -439,6 +482,7 @@ bool NimBLEDevice::deleteClient(NimBLEClient* client) {
   state().client = nullptr;
   return true;
 }
+NimBLEClient* NimBLEDevice::getDisconnectedClient() { return state().disconnectedClient(); }
 bool NimBLEDevice::deleteBond(const NimBLEAddress&) { return true; }
 
 // --- Preferences (in-memory NVS) ------------------------------------------------

@@ -6,6 +6,9 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <initializer_list>
+#include <vector>
+
 #include "fake_ble.h"
 
 namespace {
@@ -25,6 +28,7 @@ int checksFailed = 0;
 using fakeble::host;
 
 constexpr const char* kRemote = "AA:BB:CC:DD:EE:01";
+constexpr const char* kSecondRemote = "AA:BB:CC:DD:EE:02";
 
 // HID 1.11 Appendix B.1 boot keyboard: modifiers, reserved byte, six key bytes.
 constexpr uint8_t kKeyboardMap[] = {
@@ -243,6 +247,361 @@ void testScanKeepsNoAdvertiserInNimble() {
   CHECK(fakeble::retainedScanResults() == 0);
 }
 
+void testConnectedAddressFollowsTheLink() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(std::strcmp(host().connectedAddr(), "") == 0);
+  CHECK(fakeble::connectTo(kRemote));
+  CHECK(std::strcmp(host().connectedAddr(), kRemote) == 0);
+  fakeble::peerDisconnect();
+  CHECK(std::strcmp(host().connectedAddr(), "") == 0);
+}
+
+void testEndCancelsAPairingWaitBeforeDeletingTheTask() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  fakeble::holdAt(fakeble::Stage::Security);
+  CHECK(host().connect(kRemote));
+  CHECK(fakeble::waitUntilHeld(fakeble::Stage::Security));
+
+  CHECK(host().end(1000));
+  CHECK(!fakeble::taskDeletedWhileHeld());
+  CHECK(!host().isStopping());
+  CHECK(!fakeble::clientExists());
+  CHECK(!NimBLEDevice::isInitialized());
+}
+
+void testEndLeavesAStuckTaskAloneAndFinishesLater() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  fakeble::holdStubbornlyAt(fakeble::Stage::Connect);
+  CHECK(host().connect(kRemote));
+  CHECK(fakeble::waitUntilHeld(fakeble::Stage::Connect));
+
+  CHECK(!host().end(0));
+  CHECK(!host().isRunning());
+  CHECK(host().isStopping());
+  CHECK(!host().end(100));
+  CHECK(host().isStopping());
+  CHECK(fakeble::clientExists());
+  CHECK(NimBLEDevice::isInitialized());
+  CHECK(!fakeble::taskDeletedWhileHeld());
+  CHECK(!fakeble::beginHost());  // nothing may re-initialize under the live task
+
+  fakeble::releaseHold();
+  CHECK(host().end(1000));
+  CHECK(!host().isStopping());
+  CHECK(!fakeble::clientExists());
+  CHECK(!NimBLEDevice::isInitialized());
+  CHECK(!fakeble::taskDeletedWhileHeld());
+  CHECK(fakeble::beginHost());
+  CHECK(host().end());
+}
+
+void testEndWaitsForTheClientToFinishDisconnecting() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+
+  fakeble::lingerOnDisconnect();
+  CHECK(!host().end(0));
+  CHECK(!host().isConnected());
+  CHECK(host().isStopping());
+  CHECK(fakeble::clientExists());
+  CHECK(NimBLEDevice::isInitialized());
+  CHECK(!host().end(50));
+  CHECK(fakeble::clientExists());
+
+  fakeble::finishDisconnect();
+  CHECK(host().end(0));
+  CHECK(!fakeble::clientExists());
+  CHECK(!NimBLEDevice::isInitialized());
+  CHECK(!host().isStopping());
+}
+
+// Both remotes bonded, nothing connected, every later connect failing, and the
+// connect log cleared: the start of a reader visit with the remotes switched off.
+void bondTwoRemotesThenSwitchThemOff() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+  host().disconnect();
+  CHECK(fakeble::connectTo(kSecondRemote));
+  host().disconnect();
+  CHECK(host().pairedCount() == 2);
+  CHECK(host().end());
+  fakeble::failConnects(true);
+  CHECK(fakeble::beginHost());
+  const size_t before = fakeble::connectAddresses().size();
+  CHECK(before == 2);
+}
+
+// One poll, then wait for the connection task to finish what it started.
+void pollOnce() {
+  host().poll();
+  CHECK(fakeble::waitForWorkerIdle());
+}
+
+size_t attemptsAt(const char* addr) {
+  size_t n = 0;
+  const std::vector<std::string> all = fakeble::connectAddresses();
+  for (size_t i = 2; i < all.size(); ++i) n += all[i] == addr ? 1 : 0;
+  return n;
+}
+
+void testSelectedPeerIsTheOnlyOneRetriedSixTimes() {
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  pollOnce();
+  CHECK(attemptsAt(kSecondRemote) == 1);  // at once, not after the first backoff
+  fakeble::advanceMillis(3999);
+  pollOnce();
+  CHECK(attemptsAt(kSecondRemote) == 1);
+  for (int i = 0; i < 12; ++i) {
+    fakeble::advanceMillis(4000);
+    pollOnce();
+  }
+  CHECK(attemptsAt(kSecondRemote) == 6);
+  CHECK(attemptsAt(kRemote) == 0);  // no fallback to the other bond
+}
+
+void testSelectedPlanStartsNothingAfterItsWindow() {
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  pollOnce();
+  fakeble::advanceMillis(120000);
+  pollOnce();
+  CHECK(attemptsAt(kSecondRemote) == 1);
+  CHECK(attemptsAt(kRemote) == 0);
+}
+
+void testArmIsRefusedWhenItCannotApply() {
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(!host().armSelectedPeerReconnect(nullptr));
+  CHECK(!host().armSelectedPeerReconnect("AA:BB"));
+  CHECK(!host().armSelectedPeerReconnect("AA:BB:CC:DD:EE:99"));  // not bonded
+  host().startScan(1000);
+  CHECK(!host().armSelectedPeerReconnect(kSecondRemote));
+  CHECK(host().isScanning());
+  host().stopScan();
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  CHECK(!host().armSelectedPeerReconnect(kSecondRemote));  // one plan at a time
+
+  fakeble::failConnects(false);
+  CHECK(fakeble::connectTo(kRemote));
+  CHECK(!host().armSelectedPeerReconnect(kSecondRemote));
+  CHECK(host().isConnected());
+}
+
+void testConnectAndDisconnectCancelThePlan() {
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  CHECK(host().connect(kRemote));
+  CHECK(fakeble::waitForWorkerIdle());
+  fakeble::advanceMillis(4001);
+  pollOnce();
+  // The default turn over the bonds again (first bond first), not the plan.
+  CHECK(attemptsAt(kSecondRemote) == 0);
+  CHECK(attemptsAt(kRemote) == 2);
+
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  host().disconnect();
+  fakeble::advanceMillis(4001);
+  pollOnce();
+  CHECK(attemptsAt(kSecondRemote) == 0);
+  CHECK(attemptsAt(kRemote) == 0);  // disconnect() also pauses auto-reconnect
+}
+
+void testSelectedPeerThatDropsGetsAFreshPlan() {
+  bondTwoRemotesThenSwitchThemOff();
+  fakeble::failConnects(false);
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));
+  pollOnce();
+  CHECK(host().isConnected());
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+  fakeble::advanceMillis(200000);  // long past the first plan's window
+  fakeble::peerDisconnect();
+  fakeble::advanceMillis(4000);
+  pollOnce();
+  CHECK(host().isConnected());
+  CHECK(attemptsAt(kSecondRemote) == 2);
+  CHECK(attemptsAt(kRemote) == 0);
+}
+
+// --- Raw button edges ------------------------------------------------------------
+
+// A remote with no readable Report Map and one Input report declaring `reportId`.
+int connectBareRemote(uint8_t reportId) {
+  fakeble::resetWorld();
+  const int in = fakeble::addInputReport(reportId);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+  return in;
+}
+
+void frame(int in, std::initializer_list<uint8_t> bytes) {
+  const std::vector<uint8_t> data(bytes);
+  fakeble::notify(in, data.data(), data.size());
+}
+
+std::vector<freeink::RawButtonEvent> drainRaw() {
+  std::vector<freeink::RawButtonEvent> edges;
+  freeink::RawButtonEvent ev;
+  while (host().popRawButton(ev)) edges.push_back(ev);
+  return edges;
+}
+
+void testRawEdgeNamesTheReportAndTheByte() {
+  const int in = connectBareRemote(3);
+  freeink::RawButtonEvent ev;
+  CHECK(!host().popRawButton(ev));
+  frame(in, {0x00, 0x02, 0x00});
+  frame(in, {0x00, 0x00, 0x00});
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 2);
+  if (edges.size() != 2) return;
+  CHECK(edges[0].pressed);
+  CHECK(edges[0].code() == 0x030102u);
+  CHECK(edges[0].keycode == 0x02);  // what the key decode read from the same frame
+  CHECK(!edges[1].pressed);
+  CHECK(edges[1].code() == 0x030102u);
+  CHECK(!edges[1].wasRest);
+  freeink::KeyEvent key;
+  CHECK(host().popKey(key) && key.keycode == 0x02);  // the key path is unchanged
+}
+
+void testKeyboardModifierByteIsNotTheButton() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+  frame(g_inputReport, {0x02, 0, 0x04, 0, 0, 0, 0, 0});  // Shift + A
+  frame(g_inputReport, {0x02, 0, 0, 0, 0, 0, 0, 0});     // A up, Shift still down
+  frame(g_inputReport, {0, 0, 0, 0, 0, 0, 0, 0});
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 2);
+  if (edges.size() != 2) return;
+  CHECK(edges[0].pressed && edges[0].code() == 0x000204u);
+  CHECK(edges[0].keycode == 0x04 && edges[0].mods == 0x02);
+  CHECK(!edges[1].pressed && edges[1].code() == 0x000204u);
+}
+
+void testStreamedHoldIsOnePressAndOneRelease() {
+  const int in = connectBareRemote(3);
+  unsigned long lastFrameMs = 0;
+  for (int i = 0; i < 6; ++i) {
+    frame(in, {0x00, 0x02, 0x00});
+    lastFrameMs = fakeble::clockMs();
+    fakeble::advanceMillis(40);
+    host().poll();
+  }
+  CHECK(drainRaw().size() == 1);  // the press only, while the frames keep coming
+  fakeble::advanceMillis(200);
+  host().poll();
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 1);
+  if (edges.size() != 1) return;
+  CHECK(!edges[0].pressed);
+  CHECK(edges[0].atMs == lastFrameMs);  // dated by the last frame, when it came up
+}
+
+void testSilentHoldKeepsItsReleaseForTheReleaseFrame() {
+  const int in = connectBareRemote(3);
+  frame(in, {0x00, 0x02, 0x00});
+  fakeble::advanceMillis(1000);
+  host().poll();
+  CHECK(drainRaw().size() == 1);  // still held: one frame per edge, no stream
+  frame(in, {0x00, 0x00, 0x00});
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 1 && !edges[0].pressed);
+}
+
+void testPressOnlyFramesAfterSilenceAreNewPresses() {
+  const int in = connectBareRemote(6);
+  for (int i = 0; i < 3; ++i) {
+    frame(in, {0x01});
+    fakeble::advanceMillis(400);
+    host().poll();
+  }
+  int presses = 0;
+  int releases = 0;
+  for (const freeink::RawButtonEvent& e : drainRaw()) {
+    CHECK(e.code() == 0x060001u);
+    (e.pressed ? presses : releases)++;
+  }
+  CHECK(presses == 3);
+  CHECK(releases == 2);  // the third is still open
+}
+
+void testStatusByteAtConnectIsFlaggedAsTheRest() {
+  // A remote whose idle frame is "10 00 00": its first frame reads as a press
+  // against the zero guess until the next frame shows it was the rest.
+  const int in = connectBareRemote(0);
+  frame(in, {0x10, 0x00, 0x00});
+  frame(in, {0x10, 0x02, 0x00});
+  frame(in, {0x10, 0x00, 0x00});
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 4);
+  if (edges.size() != 4) return;
+  CHECK(edges[0].pressed && edges[0].code() == 0x000010u);
+  CHECK(!edges[1].pressed && edges[1].code() == 0x000010u && edges[1].wasRest);
+  CHECK(edges[2].pressed && edges[2].code() == 0x000102u);
+  CHECK(!edges[3].pressed && edges[3].code() == 0x000102u && !edges[3].wasRest);
+}
+
+void testFullRingDropsWholePressesNeverAReleaseAlone() {
+  const int in = connectBareRemote(3);
+  for (int i = 0; i < 9; ++i) {
+    frame(in, {0x00, 0x02, 0x00});
+    frame(in, {0x00, 0x00, 0x00});
+  }
+  std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 16);  // eight taps; the ninth is dropped whole
+  for (size_t i = 0; i < edges.size(); ++i) CHECK(edges[i].pressed == (i % 2 == 0));
+
+  // One slot free: a press would fit, its release would not, so the press stays out.
+  for (int i = 0; i < 8; ++i) {
+    frame(in, {0x00, 0x02, 0x00});
+    frame(in, {0x00, 0x00, 0x00});
+  }
+  freeink::RawButtonEvent first;
+  CHECK(host().popRawButton(first) && first.pressed);
+  frame(in, {0x00, 0x02, 0x00});
+  frame(in, {0x00, 0x00, 0x00});
+  edges = drainRaw();
+  CHECK(edges.size() == 15);
+  CHECK(!edges.empty() && !edges.back().pressed);
+}
+
+void testAxisGamepadButtonComesAsOneTapNamedByItsZone() {
+  const int in = connectBareRemote(0);
+  frame(in, {0x13, 0xD0, 0x07, 0xD0, 0x07});  // pressed, axes still centred
+  frame(in, {0x13, 0xD0, 0x07, 0x84, 0x03});  // axis 2 ramped low
+  frame(in, {0x12, 0xD0, 0x07, 0x84, 0x03});  // released: the decoder reads the zone
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 2);
+  if (edges.size() != 2) return;
+  CHECK(edges[0].pressed && edges[0].code() == 0xFFFF43u && edges[0].keycode == 0x43);
+  CHECK(!edges[1].pressed && edges[1].code() == 0xFFFF43u);
+}
+
+void testNextLinkStartsWithNoButtonHeld() {
+  const int in = connectBareRemote(3);
+  frame(in, {0x00, 0x02, 0x00});
+  fakeble::peerDisconnect();
+  CHECK(fakeble::connectTo(kRemote));
+  frame(in, {0x00, 0x02, 0x00});
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 2);
+  for (const freeink::RawButtonEvent& e : edges) CHECK(e.pressed);
+}
+
 }  // namespace
 
 int main() {
@@ -254,6 +613,24 @@ int main() {
   testStreamedHeldKeyIsOnePress();
   testScanKeepsNoAdvertiserInNimble();
   testKeyHeldAcrossLinkDropIsPressedAgain();
+  testConnectedAddressFollowsTheLink();
+  testEndCancelsAPairingWaitBeforeDeletingTheTask();
+  testEndLeavesAStuckTaskAloneAndFinishesLater();
+  testEndWaitsForTheClientToFinishDisconnecting();
+  testSelectedPeerIsTheOnlyOneRetriedSixTimes();
+  testSelectedPlanStartsNothingAfterItsWindow();
+  testArmIsRefusedWhenItCannotApply();
+  testConnectAndDisconnectCancelThePlan();
+  testSelectedPeerThatDropsGetsAFreshPlan();
+  testRawEdgeNamesTheReportAndTheByte();
+  testKeyboardModifierByteIsNotTheButton();
+  testStreamedHoldIsOnePressAndOneRelease();
+  testSilentHoldKeepsItsReleaseForTheReleaseFrame();
+  testPressOnlyFramesAfterSilenceAreNewPresses();
+  testStatusByteAtConnectIsFlaggedAsTheRest();
+  testFullRingDropsWholePressesNeverAReleaseAlone();
+  testAxisGamepadButtonComesAsOneTapNamedByItsZone();
+  testNextLinkStartsWithNoButtonHeld();
   fakeble::resetWorld();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);

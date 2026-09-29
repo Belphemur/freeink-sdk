@@ -126,6 +126,7 @@ class NimBLEClient {
 
  private:
   bool connected_ = false;
+  bool disconnecting_ = false;  // callback delivered, NimBLE not yet DISCONNECTED
   NimBLEClientCallbacks* callbacks_ = nullptr;
   friend struct fakeble::FakeState;
 };
@@ -203,5 +204,6 @@ class NimBLEDevice {
   static NimBLEScan* getScan();
   static NimBLEClient* createClient();
   static bool deleteClient(NimBLEClient* client);
+  static NimBLEClient* getDisconnectedClient();
   static bool deleteBond(const NimBLEAddress& address);
 };

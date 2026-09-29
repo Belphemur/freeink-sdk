@@ -16,6 +16,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <string>
+#include <vector>
+
 #include "BleKeyboardHost.h"
 
 namespace fakeble {
@@ -38,7 +41,7 @@ void peerDisconnect();
 
 int addCharacteristic(uint16_t uuid, bool canRead, bool canWrite, bool canNotify);
 // A notifiable Report characteristic with an Input Report Reference descriptor.
-int addInputReport();
+int addInputReport(uint8_t reportId = 0);
 void setValue(int index, const uint8_t* data, size_t len);
 bool notify(int index, const uint8_t* data, size_t len);
 
@@ -46,12 +49,26 @@ void advertise(const char* addr, const char* name);
 size_t retainedScanResults();
 
 void holdAt(Stage stage);
+// Holds at `stage` and ignores GAP cancels and disconnects there, like a NimBLE
+// wait that does not come back in time; only releaseHold() ends it.
+void holdStubbornlyAt(Stage stage);
+void releaseHold();
+// The next link teardown delivers the disconnect callback but leaves the client
+// DISCONNECTING (not yet reported by getDisconnectedClient) until
+// finishDisconnect().
+void lingerOnDisconnect();
+void finishDisconnect();
+bool clientExists();
 bool waitUntilHeld(Stage stage, uint32_t timeoutMs = 1000);
 // True once vTaskDelete() was called on the connection task while it was held
 // inside a NimBLE wait.
 bool taskDeletedWhileHeld();
 
 size_t connectCalls();
+// Addresses the host asked NimBLE to connect to, in order.
+std::vector<std::string> connectAddresses();
+// While set, every GAP connect fails with a timeout (the peer is off or away).
+void failConnects(bool fail);
 unsigned long clockMs();
 void advanceMillis(uint32_t ms);
 

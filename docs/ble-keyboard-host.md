@@ -77,6 +77,24 @@ BleHid.pairedCount(); BleHid.paired(i);
 BleHid.forget(addr);
 ```
 
+Page-turner remotes:
+
+```cpp
+BleHid.armSelectedPeerReconnect(addr);  // retry only the remote the user chose, bounded
+BleHid.connectedAddr();                 // peer on the live link ("" when none)
+
+freeink::RawButtonEvent raw;            // each button edge as the report bytes carry it
+while (BleHid.popRawButton(raw)) {
+  // raw.code() = value | byteIndex << 8 | reportId << 16, raw.pressed, raw.atMs
+}
+
+if (!BleHid.end(0)) { /* isStopping(): call end() again on a later pass */ }
+```
+
+`end(timeoutMs)` returns false instead of deleting a connection task that is
+still inside a NimBLE wait, or a client that is still disconnecting; a later
+`end()` finishes the teardown and `begin()` is refused until then.
+
 `FREEINK_BLE_HID_SHOW_UNNAMED_DEVICES` controls scan-list noise at SDK level.
 The default `0` keeps named devices and devices advertising HID, but drops
 anonymous non-HID advertisers. Set it to `1` to include unnamed connectable
@@ -107,6 +125,7 @@ peripheral requires passkey pairing, the host exposes the six-digit code through
 ## Memory
 
 All storage is fixed-capacity: discovered devices (`kMaxDiscovered` = 24), bonds
-(`kMaxBonds` = 4), and the key ring (`kKeyQueueLen` = 16). One active connection.
+(`kMaxBonds` = 4), the key ring (`kKeyQueueLen` = 16) and the raw button ring
+(`kRawQueueLen` = 17, eight taps). One active connection.
 No `std::vector`/heap in the hot path. Configure NimBLE for a single connection,
 central-only, to keep its static footprint small on the C3.
