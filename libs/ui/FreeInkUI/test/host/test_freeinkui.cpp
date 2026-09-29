@@ -3590,6 +3590,40 @@ void testKeyboardUniformRowWidths() {
   }
 }
 
+void testKeyboardOuterControlAlignment() {
+  for (const int16_t width : {320, 480, 601, 800}) {
+    for (const bool shifted : {false, true}) {
+      for (const bool langKey : {false, true}) {
+        FakeDrawTarget draw;
+        DeviceContext device = makeDevice(width, 400);
+        InputSnapshot input;
+        InteractionBuffer<64> interactions;
+        Frame<64> frame(draw, device, input, interactions);
+        KeyboardProps props;
+        props.layout = &builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, shifted, false, true, langKey);
+        props.keyAction = 1;
+        keyboard(frame, Rect{0, 0, width, 350}, props);
+
+        Rect keys[42]{};
+        size_t count = 0;
+        for (size_t i = 0; i < draw.opCount; ++i) {
+          if (draw.ops[i].kind == FakeDrawTarget::Op::Stroke && count < 42) keys[count++] = draw.ops[i].rect;
+        }
+        CHECK_EQ(count, langKey ? 42u : 41u);
+        CHECK_EQ(keys[29].x, keys[0].x);                    // Shift / 1
+        CHECK_EQ(keys[37].right(), keys[9].right());        // Delete / 0
+        CHECK_EQ(keys[38].x, keys[0].x);                    // Mode / 1
+        CHECK_EQ(keys[count - 1].right(), keys[9].right()); // OK / 0
+        CHECK_EQ(keys[30].x - keys[29].right(), props.gap);
+        CHECK_EQ(keys[37].x - keys[36].right(), props.gap);
+        CHECK_EQ(keys[39].x - keys[38].right(), props.gap);
+        CHECK_EQ(keys[count - 1].x - keys[count - 2].right(), props.gap);
+        for (size_t i = 30; i <= 36; ++i) CHECK_EQ(keys[i].width, keys[0].width);
+      }
+    }
+  }
+}
+
 void testWideScriptNumberRowWidth() {
   DeviceContext device = makeDevice(480, 300);
   InputSnapshot input;
@@ -5688,6 +5722,7 @@ int main() {
   testQwertyKeyboardComponent();
   testLocalizedKeyboardLayout();
   testKeyboardUniformRowWidths();
+  testKeyboardOuterControlAlignment();
   testWideScriptNumberRowWidth();
   testKeyboardBackground();
   testSymbolKeyboardPages();

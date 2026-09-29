@@ -1,0 +1,117 @@
+// Host test for fetchResumable (ResumableFetch.h) over scripted HTTP replies.
+#include <ResumableFetch.h>
+
+#include <cassert>
+#include <cstdio>
+
+// SecureClient is only reached for https, which these tests avoid (the
+// redirect test proves an https target was stepped down to http).
+namespace freeink {
+SecureClient::~SecureClient() = default;
+void SecureClient::setCACert(const char*) {}
+void SecureClient::setInsecure() {}
+int SecureClient::connect(IPAddress, uint16_t) { return 0; }
+int SecureClient::connect(const char*, uint16_t) { return 0; }
+size_t SecureClient::write(uint8_t) { return 0; }
+size_t SecureClient::write(const uint8_t*, size_t) { return 0; }
+int SecureClient::available() { return 0; }
+int SecureClient::read() { return -1; }
+int SecureClient::read(uint8_t*, size_t) { return -1; }
+int SecureClient::peek() { return -1; }
+void SecureClient::flush() {}
+void SecureClient::stop() {}
+uint8_t SecureClient::connected() { return 0; }
+bool SecureClient::tls13Available() { return false; }
+}  // namespace freeink
+
+using freeink::FetchOptions;
+using freeink::FetchResult;
+using freeink::FetchSink;
+
+namespace {
+std::string body;
+int rewinds = 0;
+
+void reset(std::initializer_list<const char*> replies) {
+  FakeNet::replies().assign(replies.begin(), replies.end());
+  FakeNet::requests().clear();
+  FakeNet::hosts().clear();
+  body.clear();
+  rewinds = 0;
+}
+
+FetchSink sink(bool canRewind = true) {
+  FetchSink s;
+  s.write = [](const uint8_t* d, size_t n) {
+    body.append(reinterpret_cast<const char*>(d), n);
+    return true;
+  };
+  if (canRewind) {
+    s.rewind = [] {
+      ++rewinds;
+      body.clear();
+      return true;
+    };
+  }
+  return s;
+}
+
+FetchResult get(const char* url, const FetchSink& s, FetchOptions o = {}) {
+  return freeink::fetchResumable(url, o, [](freeink::SecureHttpClient& h) { h.setTimeout(1000); }, s);
+}
+
+bool sentRange(size_t i, const char* range) {
+  return FakeNet::requests()[i].find(std::string("Range: ") + range) != std::string::npos;
+}
+}  // namespace
+
+int main() {
+  // Drop mid-body, then a 206 continues from the received count.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234",
+         "HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\n\r\n56789"});
+  FetchResult r = get("http://a/f", sink());
+  assert(r.complete && r.status == 206 && r.bytes == 10 && r.total == 10 && body == "0123456789");
+  assert(!sentRange(0, "") && sentRange(1, "bytes=5-") && rewinds == 0);
+
+  // Range ignored: the 200 restarts the body, so the sink rewinds first.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234",
+         "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789"});
+  r = get("http://a/f", sink());
+  assert(r.complete && r.bytes == 10 && body == "0123456789" && rewinds == 1);
+
+  // A sink that cannot rewind stops instead of appending a restarted body.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234",
+         "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789"});
+  r = get("http://a/f", sink(false));
+  assert(r.stopped && !r.complete && body == "01234");
+
+  // Continuing an earlier transfer asks for the rest on the first request.
+  reset({"HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\n\r\n456789"});
+  FetchOptions from4;
+  from4.startOffset = 4;
+  r = get("http://a/f", sink(), from4);
+  assert(r.complete && r.bytes == 10 && r.total == 10 && body == "456789" && sentRange(0, "bytes=4-"));
+
+  // Redirects are followed, and redirectToHttp steps an https target down.
+  reset({"HTTP/1.1 302 Found\r\nLocation: https://b/g\r\nContent-Length: 3\r\n\r\nxyz",
+         "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});
+  FetchOptions down;
+  down.redirectToHttp = true;
+  r = get("http://a/f", sink(), down);
+  assert(r.complete && body == "ok" && FakeNet::hosts()[1] == "b" && FakeNet::requests()[1].find("GET /g ") == 0);
+
+  // Error bodies never reach the sink, and an http error is not retried.
+  reset({"HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\n\r\nnope", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});
+  r = get("http://a/f", sink());
+  assert(r.status == 404 && !r.complete && body.empty() && FakeNet::requests().size() == 1);
+
+  // Consecutive zero-progress attempts give up after maxStalled.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01", "HTTP/1.1 206 Partial Content\r\nContent-Length: 8\r\n\r\n",
+         "HTTP/1.1 206 Partial Content\r\nContent-Length: 8\r\n\r\n",
+         "HTTP/1.1 206 Partial Content\r\nContent-Length: 8\r\n\r\n",
+         "HTTP/1.1 206 Partial Content\r\nContent-Length: 8\r\n\r\n23456789"});
+  r = get("http://a/f", sink());
+  assert(!r.complete && r.bytes == 2 && FakeNet::requests().size() == 4);
+
+  puts("resumable fetch ok");
+}

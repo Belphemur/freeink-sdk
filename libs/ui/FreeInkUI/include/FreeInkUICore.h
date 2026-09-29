@@ -716,6 +716,12 @@ public:
   virtual Size measureText(FontId font, const char *text,
                            TextStyle style) const = 0;
   virtual int16_t lineHeight(FontId font) const = 0;
+  // Visible ink of `text` relative to its line box (y = ink top below the
+  // line top), for centering glyphs rather than line boxes. Targets without
+  // glyph metrics report the whole line box.
+  virtual Rect inkBounds(FontId font, const char *text, TextStyle style) const {
+    return Rect{0, 0, measureText(font, text, style).width, lineHeight(font)};
+  }
   // text() implementations must honor style.align, style.maxLines, and
   // ellipsis truncation. Targets with a native wrapping pipeline (bidi,
   // kerning-aware) should use it; everyone else can delegate the whole

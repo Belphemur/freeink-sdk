@@ -708,6 +708,7 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
                         Point{static_cast<int16_t>(cx + half), static_cast<int16_t>(cy + 3)}, 3, ink);
   };
 
+  Rect topRowBounds{};
   for (uint8_t row = 0; row < props.layout->rowCount; ++row) {
     const KeyboardRow& layoutRow = props.layout->rows[row];
     if (!layoutRow.keys || layoutRow.count == 0) continue;
@@ -728,12 +729,26 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     int16_t x = static_cast<int16_t>(rect.x + layoutRow.insetUnits * unitW);
     const int16_t rowRight = static_cast<int16_t>(rect.right() - layoutRow.insetUnits * unitW);
     if (useUniformWidth) x = static_cast<int16_t>(x + (rect.width - usedWidth) / 2);
+    if (row == 0 && useUniformWidth) {
+      topRowBounds = Rect{x, y, static_cast<int16_t>(usedWidth - 2 * layoutRow.insetUnits * unitW), rowH};
+    }
     for (uint8_t col = 0; col < layoutRow.count; ++col) {
       const KeyboardKey& key = layoutRow.keys[col];
       const uint8_t keyUnits = key.widthUnits ? key.widthUnits : 1;
       const int16_t w = !useUniformWidth && col + 1 == layoutRow.count ? static_cast<int16_t>(rowRight - x)
                                                                        : static_cast<int16_t>(unitW * keyUnits);
-      drawKey(Rect{x, y, w, rowH}, key, logicalIndex++);
+      Rect keyRect{x, y, w, rowH};
+      // Align outer controls with the top row without moving the inner keys.
+      if (!topRowBounds.empty() && layoutRow.insetUnits == 0) {
+        if (col == 0 && (key.kind == KeyKind::Shift || key.kind == KeyKind::Mode)) {
+          keyRect.width = static_cast<int16_t>(keyRect.right() - topRowBounds.x);
+          keyRect.x = topRowBounds.x;
+        }
+        if (col + 1 == layoutRow.count && (key.kind == KeyKind::Delete || key.kind == KeyKind::Ok)) {
+          keyRect.width = static_cast<int16_t>(topRowBounds.right() - keyRect.x);
+        }
+      }
+      drawKey(keyRect, key, logicalIndex++);
       x = static_cast<int16_t>(x + w + gap);
     }
   }

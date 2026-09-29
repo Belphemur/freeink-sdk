@@ -99,6 +99,28 @@ class GfxRendererTarget final : public DrawTarget {
     return static_cast<int16_t>(renderer.getLineHeight(gfxFont(font)));
   }
 
+  // Ink from glyph metrics: drawText puts the baseline `ascender` below the
+  // line top, and a glyph's ink starts `top` above the baseline.
+  // ponytail: ASCII only (status labels, clocks); other text keeps the line box.
+  Rect inkBounds(const FontId font, const char* text, const TextStyle style) const override {
+    const Rect lineBox = DrawTarget::inkBounds(font, text, style);
+    const int fontId = gfxFont(font);
+    const auto it = renderer.getFontMap().find(fontId);
+    if (!text || it == renderer.getFontMap().end()) return lineBox;
+    const int ascender = renderer.getFontAscenderSize(fontId);
+    int top = lineBox.height;
+    int bottom = 0;
+    for (const char* p = text; *p; ++p) {
+      if (static_cast<unsigned char>(*p) >= 0x80) return lineBox;
+      const auto glyph = it->second.getGlyph(static_cast<uint32_t>(*p), fontStyle(style));
+      if (!glyph || glyph->height <= 0) continue;
+      top = std::min(top, ascender - static_cast<int>(glyph->top));
+      bottom = std::max(bottom, ascender - static_cast<int>(glyph->top) + static_cast<int>(glyph->height));
+    }
+    if (top >= bottom) return lineBox;
+    return Rect{0, static_cast<int16_t>(top), lineBox.width, static_cast<int16_t>(bottom - top)};
+  }
+
   void fill(const Rect rect, const Paint paint, const uint8_t radius = 0,
             const uint8_t corners = CornersAll) override {
     if (rect.empty()) return;

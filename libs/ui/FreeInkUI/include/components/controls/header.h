@@ -271,17 +271,18 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     batteryIndicator(frame, Rect{batteryX, rect.y, batteryReserve, statusStripH}, status.battery);
   }
   if (clockWidth > 0) {
-    // Centered: on the band's midline with the rest of the chrome. Corner:
-    // in the headroom above the title row, top-aligned like the legacy
-    // status strips (its own line height, not the battery strip).
+    // Centered or in a corner, the clock's ink centers on the status strip,
+    // level with the battery glyph and its label (targets without glyph
+    // metrics center the line box instead).
     const int16_t clockLineH = frame.target().lineHeight(status.battery.text.font);
-    const int16_t clockH = status.clockCentered ? statusStripH : clockLineH;
+    const Rect ink = frame.target().inkBounds(status.battery.text.font, status.clockText, status.battery.text);
+    const int16_t clockY = static_cast<int16_t>(rect.y + (statusStripH - ink.height) / 2 - ink.y);
     const int16_t clockX = status.clockCentered
                                ? static_cast<int16_t>(rect.x + (rect.width - clockWidth) / 2)
                            : status.batteryLeft
                                ? static_cast<int16_t>(rect.right() - statusInset - clockWidth)
                                : static_cast<int16_t>(rect.x + statusInset);
-    frame.target().text(Rect{clockX, rect.y, clockWidth, clockH}, status.clockText, status.battery.text);
+    frame.target().text(Rect{clockX, clockY, clockWidth, clockLineH}, status.clockText, status.battery.text);
   }
 }
 
