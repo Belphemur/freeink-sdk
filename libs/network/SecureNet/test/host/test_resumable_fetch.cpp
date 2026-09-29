@@ -57,8 +57,16 @@ FetchSink sink(bool canRewind = true) {
 }
 
 FetchResult get(const char* url, const FetchSink& s, FetchOptions o = {}) {
-  return freeink::fetchResumable(url, o, [](freeink::SecureHttpClient& h) { h.setTimeout(1000); }, s);
+  return freeink::fetchResumable(
+      url, o,
+      [](freeink::SecureHttpClient& h, bool sameOrigin) {
+        h.setTimeout(1000);
+        if (sameOrigin) h.addHeader("Authorization", "Bearer secret");
+      },
+      s);
 }
+
+bool sentAuth(size_t i) { return FakeNet::requests()[i].find("Authorization:") != std::string::npos; }
 
 bool sentRange(size_t i, const char* range) {
   return FakeNet::requests()[i].find(std::string("Range: ") + range) != std::string::npos;
@@ -99,6 +107,22 @@ int main() {
   down.redirectToHttp = true;
   r = get("http://a/f", sink(), down);
   assert(r.complete && body == "ok" && FakeNet::hosts()[1] == "b" && FakeNet::requests()[1].find("GET /g ") == 0);
+  // Credentials stay with the starting origin: sent to a, withheld from b.
+  assert(sentAuth(0) && !sentAuth(1));
+
+  // A same-origin redirect (another path on the same host) keeps them.
+  reset({"HTTP/1.1 302 Found\r\nLocation: /other\r\nContent-Length: 0\r\n\r\n",
+         "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});
+  r = get("http://a/f", sink());
+  assert(r.complete && sentAuth(0) && sentAuth(1));
+
+  // Origin equality: default ports, case, and userinfo don't matter; scheme,
+  // host, and port do (an https->http step-down is a different origin).
+  assert(freeink::fetchOrigin("HTTPS://Host.Example/x") == freeink::fetchOrigin("https://host.example:443/y"));
+  assert(freeink::fetchOrigin("http://user:pw@a:80/") == freeink::fetchOrigin("http://a"));
+  assert(freeink::fetchOrigin("https://a/") != freeink::fetchOrigin("http://a/"));
+  assert(freeink::fetchOrigin("https://a/") != freeink::fetchOrigin("https://a:8443/"));
+  assert(freeink::fetchOrigin("http://[::1]/") == "http://[::1]:80");
 
   // Error bodies never reach the sink, and an http error is not retried.
   reset({"HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\n\r\nnope", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});

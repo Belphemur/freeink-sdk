@@ -10,6 +10,7 @@
 //
 // Header-only, like SecureHttpClient.
 
+#include <cctype>
 #include <functional>
 #include <string>
 
@@ -46,11 +47,36 @@ struct FetchResult {
   bool aborted = false;   // shouldAbort fired
 };
 
+// scheme://host:port, lowercased, with the scheme's default port made explicit
+// and any userinfo dropped: the unit credentials are scoped to.
+inline std::string fetchOrigin(const std::string& url) {
+  const size_t schemeEnd = url.find("://");
+  if (schemeEnd == std::string::npos) return {};
+  std::string scheme = url.substr(0, schemeEnd);
+  const size_t hostStart = schemeEnd + 3;
+  const size_t hostEnd = url.find_first_of("/?#", hostStart);
+  std::string authority = url.substr(hostStart, hostEnd == std::string::npos ? std::string::npos : hostEnd - hostStart);
+  const size_t at = authority.rfind('@');
+  if (at != std::string::npos) authority.erase(0, at + 1);
+  for (auto* part : {&scheme, &authority}) {
+    for (char& c : *part) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  }
+  const size_t bracket = authority.rfind(']');  // IPv6 literal: its colons are not a port
+  if (authority.find(':', bracket == std::string::npos ? 0 : bracket) == std::string::npos) {
+    authority += scheme == "https" ? ":443" : ":80";
+  }
+  return scheme + "://" + authority;
+}
+
 // GETs url into sink. configure runs on each attempt's client after begin():
-// headers, auth, user agent, timeout, trust. Non-2xx bodies never reach the sink.
+// user agent, timeout, trust, and (only while sameOrigin) credentials and other
+// caller headers. sameOrigin is false once a redirect leaves the starting URL's
+// scheme, host, or port, including an https->http step-down, so a caller's
+// Authorization never reaches a different server or crosses in clear text.
+// Non-2xx bodies never reach the sink.
 inline FetchResult fetchResumable(const std::string& startUrl, const FetchOptions& options,
-                                  const std::function<void(SecureHttpClient&)>& configure, const FetchSink& sink,
-                                  const SecureHttpClient::AbortCallback& shouldAbort = nullptr) {
+                                  const std::function<void(SecureHttpClient&, bool sameOrigin)>& configure,
+                                  const FetchSink& sink, const SecureHttpClient::AbortCallback& shouldAbort = nullptr) {
   static constexpr int kMaxRedirects = 5;
   // Only consecutive zero-progress attempts count toward kMaxStalled;
   // kMaxAttempts is a backstop against a server that trickles forever.
@@ -59,6 +85,7 @@ inline FetchResult fetchResumable(const std::string& startUrl, const FetchOption
   FetchResult result;
   result.bytes = options.startOffset;
   std::string url = startUrl;
+  const std::string startOrigin = fetchOrigin(startUrl);
   int redirects = 0;
   int stalled = 0;
   for (int attempt = 0; attempt < kMaxAttempts && stalled < kMaxStalled; ++attempt) {
@@ -67,7 +94,7 @@ inline FetchResult fetchResumable(const std::string& startUrl, const FetchOption
       result.status = -1;
       return result;
     }
-    if (configure) configure(http);
+    if (configure) configure(http, fetchOrigin(url) == startOrigin);
     size_t attemptStart = result.bytes;
     const bool resuming = attemptStart > 0;
     if (resuming) http.addHeader("Range", "bytes=" + std::to_string(attemptStart) + "-");

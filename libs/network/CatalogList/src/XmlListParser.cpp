@@ -30,7 +30,8 @@ const char* findAttr(const XML_Char** atts, const std::string& attr) {
   return nullptr;
 }
 
-// Percent-decodes, treating '+' as a space (form encoding, as some servers emit).
+// Percent-decodes a URL path. '+' stays literal: it means a space only in form
+// encoding, never in a path ("/books/A+B.epub" is a file named "A+B.epub").
 std::string urlDecode(const std::string& s) {
   const auto hex = [](char c) { return isxdigit(static_cast<unsigned char>(c)); };
   const auto val = [](char c) { return isdigit(static_cast<unsigned char>(c)) ? c - '0' : (tolower(c) - 'a' + 10); };
@@ -41,7 +42,7 @@ std::string urlDecode(const std::string& s) {
       out += static_cast<char>(val(s[i + 1]) << 4 | val(s[i + 2]));
       i += 2;
     } else {
-      out += s[i] == '+' ? ' ' : s[i];
+      out += s[i];
     }
   }
   return out;
@@ -103,13 +104,26 @@ void XmlListParser::setUrlOptions(UrlOptions options) {
   urls = std::move(options);
   std::string path;
   splitUrl(urls.requestUrl, origin, path);
-  decodedSelf = trimSlashes(urlDecode(path));
+  const std::string decodedPath = urlDecode(path);
+  decodedSelf = trimSlashes(decodedPath);
+  requestDir = decodedPath.substr(0, decodedPath.rfind('/') + 1);  // "/books/x" and "/books/" -> "/books/"
 }
 
 bool XmlListParser::acceptRow(RawItem& row) const {
   std::string& url = row.field[F_URL];
   if (url.empty()) return false;
-  const std::string decoded = urlDecode(url);
+  // Every href reduces to a decoded absolute path: an absolute URL keeps its
+  // path, "/x" is already one, and a relative "x" joins the listing's folder.
+  const bool absoluteUrl = url.find("://") != std::string::npos;
+  std::string decoded;
+  if (absoluteUrl) {
+    std::string unusedOrigin;
+    splitUrl(url, unusedOrigin, decoded);
+    decoded = urlDecode(decoded);
+  } else {
+    decoded = urlDecode(url);
+    if (decoded.front() != '/') decoded = requestDir + decoded;
+  }
   const std::string trimmed = trimSlashes(decoded);
   if (urls.skipSelf && trimmed == decodedSelf) return false;
   if (!row.isDir && !urls.extensions.empty() &&
@@ -121,7 +135,7 @@ bool XmlListParser::acceptRow(RawItem& row) const {
     const size_t slash = trimmed.rfind('/');
     row.field[F_TITLE] = slash == std::string::npos ? trimmed : trimmed.substr(slash + 1);
   }
-  if (urls.resolveUrls && url.rfind("http", 0) != 0) url = origin + urlEncodePath(decoded);
+  if (urls.resolveUrls && !absoluteUrl) url = origin + urlEncodePath(decoded);
   return true;
 }
 

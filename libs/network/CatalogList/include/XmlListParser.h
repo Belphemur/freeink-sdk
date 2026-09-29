@@ -34,7 +34,7 @@ class XmlListParser {
   struct UrlOptions {
     std::string requestUrl;               // the listing's own URL
     bool skipSelf = false;                // drop the entry for requestUrl itself
-    bool resolveUrls = false;             // make relative urls absolute against requestUrl's origin
+    bool resolveUrls = false;             // resolve "/path" and relative hrefs against requestUrl
     std::vector<std::string> extensions;  // allowed file extensions, case-insensitive; empty = all
   };
 
@@ -64,6 +64,7 @@ class XmlListParser {
   UrlOptions urls;
   std::string origin;       // scheme://host[:port] of requestUrl
   std::string decodedSelf;  // requestUrl's decoded path, trailing slashes trimmed
+  std::string requestDir;   // requestUrl's decoded folder, with trailing '/', for relative hrefs
   Selector sel[F_COUNT];
   char buf[2048] = {};
   ItemSink sink;
