@@ -44,6 +44,15 @@ class OpdsParser final : public Print {
   const std::string& getWishlistUrl() const { return wishlistUrl; }
   const std::string& getHistoryUrl() const { return historyUrl; }
   const std::string& getFeedTitle() const { return feedTitle; }
+  // Feed pagination from the opensearch elements; 0 when not reported.
+  int currentPage() const {
+    if (osItemsPerPage <= 0 || osStartIndex < 1) return 0;
+    return static_cast<int>((osStartIndex - 1) / osItemsPerPage) + 1;
+  }
+  int pageCount() const {
+    if (osTotalResults <= 0 || osItemsPerPage <= 0) return 0;
+    return static_cast<int>((osTotalResults + osItemsPerPage - 1) / osItemsPerPage);
+  }
   OpdsParser(const OpdsParser&) = delete;
   OpdsParser& operator=(const OpdsParser&) = delete;
 
@@ -128,6 +137,18 @@ class OpdsParser final : public Print {
   bool chosenLinkIsPurchase = false;
   bool inPrice = false;
   std::string priceCurrency;
+  // Feed-level opensearch pagination element currently being captured
+  // (totalResults / itemsPerPage / startIndex); null outside them.
+  int32_t* osTarget = nullptr;
+  int32_t osTotalResults = -1;
+  int32_t osItemsPerPage = -1;
+  int32_t osStartIndex = -1;
+  // Inside <summary> or <content>: nested markup elements are word
+  // boundaries, and literal tags (type="html" content arrives HTML-escaped,
+  // so expat hands the markup back as character data) are stripped.
+  bool inSummary = false;
+  bool summaryIsContent = false;  // <content> overwrites, <summary> only fills
+  bool descInMarkup = false;
 
   bool errorOccured = false;
   bool feedTruncated = false;

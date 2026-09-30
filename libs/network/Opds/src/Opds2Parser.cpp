@@ -185,7 +185,8 @@ Opds2Parser::Scope Opds2Parser::scopeForChild(const Scope parent, const bool isO
     case Scope::PUB:
       if (isObject && strcmp(pendingKey, "metadata") == 0) return Scope::PUB_META;
       if (!isObject && strcmp(pendingKey, "links") == 0) return Scope::PUB_LINKS;
-      return Scope::SKIP;  // images, reading order, resources
+      if (!isObject && strcmp(pendingKey, "images") == 0) return Scope::PUB_IMAGES;
+      return Scope::SKIP;  // reading order, resources
     case Scope::PUB_META:
       if (strcmp(pendingKey, "author") == 0) return isObject ? Scope::AUTHOR : Scope::AUTHOR_ARR;
       if (isObject && strcmp(pendingKey, "title") == 0) return Scope::PUB_TITLE;
@@ -194,6 +195,8 @@ Opds2Parser::Scope Opds2Parser::scopeForChild(const Scope parent, const bool isO
       return isObject ? Scope::AUTHOR : Scope::SKIP;
     case Scope::PUB_LINKS:
       return isObject ? Scope::PUB_LINK : Scope::SKIP;
+    case Scope::PUB_IMAGES:
+      return isObject ? Scope::PUB_IMAGE : Scope::SKIP;
     case Scope::GROUPS:
       return isObject ? Scope::GROUP : Scope::SKIP;
     case Scope::FACETS:
@@ -364,6 +367,10 @@ void Opds2Parser::onStringValue(const char* value, const size_t len) {
         if (currentEntry.author.empty()) assignBounded(currentEntry.author, value, len, MAX_AUTHOR_CHARS);
       } else if (strcmp(pendingKey, "identifier") == 0) {
         assignBounded(currentEntry.id, value, len, MAX_ID_CHARS);
+      } else if (strcmp(pendingKey, "description") == 0) {
+        // Inline feed description: the detail page's source when the
+        // publication offers no self document (or that document omits it).
+        assignBounded(currentEntry.description, value, len, MAX_DESCRIPTION_CHARS);
       }
       break;
     case Scope::PUB_TITLE:
@@ -385,6 +392,12 @@ void Opds2Parser::onStringValue(const char* value, const size_t len) {
       // Array of contributor name strings: take the first.
       if (currentEntry.author.empty()) assignBounded(currentEntry.author, value, len, MAX_AUTHOR_CHARS);
       break;
+    case Scope::PUB_IMAGE:
+      // First image entry is the cover, matching the publication-doc parser.
+      if (strcmp(pendingKey, "href") == 0 && currentEntry.coverHref.empty()) {
+        assignBounded(currentEntry.coverHref, value, len, MAX_HREF_CHARS);
+      }
+      break;
     case Scope::PRICE:
       if (strcmp(pendingKey, "currency") == 0) assignBounded(link.priceCurrency, value, len, 8);
       break;
@@ -395,6 +408,15 @@ void Opds2Parser::onStringValue(const char* value, const size_t len) {
 
 void Opds2Parser::onNumberValue(const char* value) {
   switch (current()) {
+    case Scope::FEED_META:
+      if (strcmp(pendingKey, "numberOfItems") == 0) {
+        feedNumberOfItems = static_cast<int32_t>(strtol(value, nullptr, 10));
+      } else if (strcmp(pendingKey, "itemsPerPage") == 0) {
+        feedItemsPerPage = static_cast<int32_t>(strtol(value, nullptr, 10));
+      } else if (strcmp(pendingKey, "currentPage") == 0) {
+        feedCurrentPage = static_cast<int32_t>(strtol(value, nullptr, 10));
+      }
+      break;
     case Scope::FACET_PROPS:
       if (strcmp(pendingKey, "numberOfItems") == 0) {
         link.numberOfItems = static_cast<int32_t>(strtol(value, nullptr, 10));

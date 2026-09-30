@@ -52,6 +52,13 @@ class Opds2Parser final : public Print {
   std::vector<OpdsEntry> getEntries() && { return std::move(entries); }
   std::vector<OpdsEntry> takeFacetEntries() { return std::move(facetEntries); }
   const std::string& getFeedTitle() const { return feedTitle; }
+  // Feed pagination (metadata numberOfItems/itemsPerPage/currentPage); 0 when
+  // the feed does not report it.
+  int currentPage() const { return feedCurrentPage > 0 ? feedCurrentPage : 0; }
+  int pageCount() const {
+    if (feedNumberOfItems <= 0 || feedItemsPerPage <= 0) return 0;
+    return static_cast<int>((feedNumberOfItems + feedItemsPerPage - 1) / feedItemsPerPage);
+  }
   const std::string& getSearchTemplate() const { return searchTemplate; }
   const std::string& getNextPageUrl() const { return nextPageUrl; }
   const std::string& getPrevPageUrl() const { return prevPageUrl; }
@@ -83,6 +90,8 @@ class Opds2Parser final : public Print {
     AUTHOR_ARR,      // contributor array (strings and/or objects)
     PUB_LINKS,       // publication "links" array
     PUB_LINK,        // one publication link object
+    PUB_IMAGES,      // publication "images" array (cover art)
+    PUB_IMAGE,       // one publication image object
     GROUPS,          // "groups" array
     GROUP,           // one group object
     GROUP_META,      // group "metadata" object
@@ -198,6 +207,9 @@ class Opds2Parser final : public Print {
   size_t facetStartIndex = 0;
 
   std::string feedTitle;
+  int32_t feedNumberOfItems = -1;
+  int32_t feedItemsPerPage = -1;
+  int32_t feedCurrentPage = -1;
   std::string searchTemplate;
   std::string nextPageUrl;
   std::string prevPageUrl;

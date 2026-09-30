@@ -112,6 +112,18 @@ std::vector<OpdsEntry> OpdsFeedParser::takeFacetEntries() {
   return {};
 }
 
+int OpdsFeedParser::currentPage() const {
+  if (jsonParser) return jsonParser->currentPage();
+  if (xmlParser) return xmlParser->currentPage();
+  return 0;
+}
+
+int OpdsFeedParser::pageCount() const {
+  if (jsonParser) return jsonParser->pageCount();
+  if (xmlParser) return xmlParser->pageCount();
+  return 0;
+}
+
 const std::string& OpdsFeedParser::getFeedTitle() const {
   if (jsonParser) return jsonParser->getFeedTitle();
   if (xmlParser) return xmlParser->getFeedTitle();

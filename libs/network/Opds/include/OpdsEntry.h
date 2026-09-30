@@ -35,6 +35,13 @@ struct OpdsEntry {
   // Publication "self" link (application/opds-publication+json): fetched to
   // build the detail page. Empty when the feed offers none.
   std::string selfHref;
+  // Feed-inline description (Atom summary/content), tags stripped and capped
+  // at MAX_DESCRIPTION_CHARS. OPDS 1.x has no per-publication document, so
+  // this is the detail page's only description source there.
+  std::string description;
+  // Feed-inline cover art href (OPDS 2.0 `images`, OPDS 1.x image rel links);
+  // the detail page's cover source when the publication has no self document.
+  std::string coverHref;
 };
 
 // Entry id marking a group's "see all" link; the UI supplies the label.
@@ -74,4 +81,7 @@ constexpr size_t MAX_HREF_CHARS = 768;
 constexpr size_t MAX_SEARCH_TEMPLATE_CHARS = 768;
 constexpr size_t MAX_PAGE_URL_CHARS = 768;
 constexpr size_t MAX_FACET_ENTRIES = 24;
+// Per-entry description cap: enough for the detail page's visible lines while
+// bounding worst-case feed RAM (MAX_ENTRIES * this).
+constexpr size_t MAX_DESCRIPTION_CHARS = 500;
 }  // namespace OpdsLimits
