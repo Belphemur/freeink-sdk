@@ -16,8 +16,6 @@ namespace content {
 
 namespace {
 constexpr const char* kEncryptionXml = "META-INF/encryption.xml";
-constexpr const char* kRightsXml = "META-INF/rights.xml";
-constexpr size_t kRsaBlock = 128;  // RSA-1024
 
 bool tagHas(const char* tag, size_t len, const char* token) {
   const size_t tlen = strlen(token);
@@ -55,8 +53,7 @@ void ProtectedBook::reserveErrorBuffer() {
   lastError_.clear();
 }
 
-bool ProtectedBook::open(ByteSource& source, Crypto& crypto, const Credential& identity,
-                         const std::string& rightsXmlOverride) {
+bool ProtectedBook::open(ByteSource& source) {
   reserveErrorBuffer();
   protected_ = false;
 
@@ -65,21 +62,17 @@ bool ProtectedBook::open(ByteSource& source, Crypto& crypto, const Credential& i
     return false;
   }
 
-  return finishOpen(source, crypto, identity, rightsXmlOverride);
+  return finishOpen(source);
 }
 
-bool ProtectedBook::openFromScan(ByteSource& source, Crypto& crypto,
-                                 const Credential& identity, ZipScan&& scan,
-                                 const std::string& rightsXmlOverride) {
+bool ProtectedBook::openFromScan(ByteSource& source, ZipScan&& scan) {
   reserveErrorBuffer();
   protected_ = false;
   zip_ = std::move(scan);
-  return finishOpen(source, crypto, identity, rightsXmlOverride);
+  return finishOpen(source);
 }
 
-bool ProtectedBook::finishOpen(ByteSource& source, Crypto& crypto,
-                               const Credential& identity,
-                               const std::string& rightsXmlOverride) {
+bool ProtectedBook::finishOpen(ByteSource& source) {
   const ZipEntryInfo* encEntry = zip_.find(kEncryptionXml);
   if (!encEntry) {
     return true;  // plain EPUB; nothing to do
@@ -94,36 +87,15 @@ bool ProtectedBook::finishOpen(ByteSource& source, Crypto& crypto,
     return false;
   }
 
-  // A manifest containing only embedded-font obfuscation needs no key unwrap
-  // or alternate read path.
-  if (encryptedUriHashes_.empty()) {
-    return true;  // protected_ stays false
-  }
-
-  // Prefer the out-of-band rights document (sidecar); fall back to reading
-  // META-INF/rights.xml from the zip for the legacy in-container form.
-  std::string rightsXml = rightsXmlOverride;
-  if (rightsXml.empty() && !readEntryInflated(source, kRightsXml, &rightsXml)) {
-    lastError_ = "failed to read rights.xml";
-    return false;
-  }
-  if (!parseRightsXml(rightsXml, &rights_)) {
-    lastError_ = "failed to parse rights.xml";
-    return false;
-  }
-
-  if (!rights_.user.empty() && !identity.userUuid.empty() && rights_.user != identity.userUuid) {
-    lastError_ = "registered to a different account";
-    return false;
-  }
-
-  if (!unwrapBookKey(crypto, identity, bookKey_)) {
-    lastError_ = "content key unavailable (wrong/incomplete credential?)";
-    return false;
-  }
-
-  protected_ = true;
+  // A manifest containing only embedded-font obfuscation needs no content
+  // key or alternate read path.
+  protected_ = !encryptedUriHashes_.empty();
   return true;
+}
+
+void ProtectedBook::setContentKey(const uint8_t key[16]) {
+  memcpy(bookKey_, key, sizeof(bookKey_));
+  hasKey_ = true;
 }
 
 bool ProtectedBook::isEncrypted(const std::string& name) const {
@@ -136,69 +108,13 @@ size_t ProtectedBook::decryptedSize(const std::string& name) const {
   return entry ? entry->uncompressedSize : 0;
 }
 
-bool ProtectedBook::unwrapBookKey(Crypto& crypto, const Credential& identity, uint8_t out[16]) {
-  std::string encryptedKey = base64Decode(rights_.encryptedKey);
-
-  // Optional first pass (newer ACS variants): the wrapped key is itself
-  // AES-encrypted with a key derived from the keyType attribute and an IV
-  // derived from the device/fulfillment/voucher UUIDs.
-  if (!rights_.keyType.empty()) {
-    uint8_t digest[32];
-    crypto.sha256(reinterpret_cast<const uint8_t*>(rights_.keyType.data()), rights_.keyType.size(),
-                  digest);
-    const long nonce = strtol(rights_.keyType.c_str(), nullptr, 10);
-    // keyType is attacker-controlled (from rights.xml); C++ % keeps the sign, so
-    // a negative value would make `remainder` negative and drive the memcpys out
-    // of bounds. Normalize into [0,16) — matches the reference's unsigned rotate.
-    const int remainder = static_cast<int>(((nonce % 16) + 16) % 16);
-
-    uint8_t key[16];
-    memcpy(key, digest + remainder * 2, 16 - remainder);
-    memcpy(key + (16 - remainder), digest + remainder, remainder);
-
-    uint8_t deviceId[16], fulfillmentId[16], voucherId[16], iv[16];
-    if (!uuidBytes(rights_.device, deviceId) || !uuidBytes(rights_.fulfillment, fulfillmentId) ||
-        !uuidBytes(rights_.voucher, voucherId)) {
-      return false;
-    }
-    for (int i = 0; i < 16; i++) iv[i] = deviceId[i] ^ fulfillmentId[i] ^ voucherId[i];
-
-    // Probed: vector construction throws on OOM (-fno-exceptions => abort).
-    if (!heapProbe(encryptedKey.size() + 64)) return false;
-    std::vector<uint8_t> firstPass(encryptedKey.size());
-    if (!crypto.aes128CbcDecrypt(key, iv, reinterpret_cast<const uint8_t*>(encryptedKey.data()),
-                                 encryptedKey.size(), firstPass.data())) {
-      return false;
-    }
-    // A trailing 16x 0x10 block is OpenSSL padding; remove when present.
-    size_t len = firstPass.size();
-    bool padded = len >= 16;
-    for (size_t i = len - 16; padded && i < len; i++) padded = firstPass[i] == 0x10;
-    if (padded) len -= 16;
-    encryptedKey.assign(reinterpret_cast<const char*>(firstPass.data()), len);
-  }
-
-  if (encryptedKey.size() != kRsaBlock) return false;
-
-  const std::string pkcs8 = base64Decode(identity.privateLicenseKey);
-  if (pkcs8.empty()) return false;
-
-  uint8_t block[kRsaBlock];
-  const int32_t n = crypto.rsaPrivateRaw(
-      reinterpret_cast<const uint8_t*>(pkcs8.data()), pkcs8.size(),
-      reinterpret_cast<const uint8_t*>(encryptedKey.data()), encryptedKey.size(), block,
-      sizeof(block));
-  if (n != static_cast<int32_t>(sizeof(block))) return false;
-
-  // PKCS#1 v1.5 type-2 padding: 0x00 0x02 <random nonzero> 0x00 <key at end>.
-  if (block[0] != 0x00 || block[1] != 0x02 || block[sizeof(block) - 16 - 1] != 0x00) return false;
-  memcpy(out, block + sizeof(block) - 16, 16);
-  return true;
-}
-
 bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
                                        const std::string& name, ContentChunkSink sink,
                                        void* context) {
+  if (!hasKey_) {
+    lastError_ = "no content key";
+    return false;
+  }
   const ZipEntryInfo* entry = zip_.find(name);
   if (!entry) {
     // The concat allocates a temporary; fall back to the SSO-sized literal

@@ -4,8 +4,8 @@
 //
 // Access-only, by design:
 //  - content stays encrypted at rest (items are accessed on read, into memory)
-//  - the content key is unwrapped with this device's access credential
-//  - access expiry from rights.xml is enforced by the caller (isExpired)
+//  - the content key comes from the caller (setContentKey); how it is
+//    obtained (a rights scheme, a key file) lives outside this lib
 // There is deliberately no API that writes the content out in the clear.
 //
 // Freestanding C++17. Crypto and storage are injected.
@@ -18,8 +18,6 @@
 #include "ByteSource.h"
 #include "ContentProtection.h"
 #include "Crypto.h"
-#include "Credential.h"
-#include "Rights.h"
 #include "Zip.h"
 
 namespace freeink {
@@ -27,32 +25,23 @@ namespace content {
 
 class ProtectedBook {
  public:
-  // Opens a (possibly protected) EPUB: scans the container, and when
-  // META-INF/encryption.xml is present, parses rights/encryption metadata and
-  // unwraps the content key with the credential's private key.
-  //
-  // rightsXmlOverride: the access-grant rights document (wrapped content key),
-  // supplied out-of-band. the source delivers rights.xml separately from the EPUB, so
-  // the preferred flow keeps it in a sidecar and passes it here — the EPUB on
-  // disk stays byte-identical to what was delivered. When empty, falls back to
-  // reading META-INF/rights.xml from inside the zip (legacy in-container form).
-  bool open(ByteSource& source, Crypto& crypto, const Credential& identity,
-            const std::string& rightsXmlOverride = "");
+  // Opens a (possibly protected) EPUB: scans the container and, when
+  // META-INF/encryption.xml lists encrypted entries, marks it protected.
+  bool open(ByteSource& source);
 
   // Completes open using an already-scanned ZIP index. This lets an embedding
-  // application classify a plain EPUB before initializing crypto or loading
-  // credentials, then transfer ownership of that same index instead of
-  // scanning the central directory a second time.
-  bool openFromScan(ByteSource& source, Crypto& crypto, const Credential& identity,
-                    ZipScan&& scan, const std::string& rightsXmlOverride = "");
+  // application classify a plain EPUB before loading any key material, then
+  // transfer ownership of that same index instead of scanning the central
+  // directory a second time.
+  bool openFromScan(ByteSource& source, ZipScan&& scan);
 
+  // True when the container has encrypted entries (font obfuscation alone
+  // does not count).
   bool isProtected() const { return protected_; }
-  const Rights& rights() const { return rights_; }
   const std::string& lastError() const { return lastError_; }
 
-  // Loan expiry (0 = none found). Caller enforces: refuse to open past due.
-  int64_t expiresAt() const { return rights_.expiresAt; }
-  bool isExpired(int64_t nowEpoch) const { return rights_.expiresAt != 0 && nowEpoch > rights_.expiresAt; }
+  // The 16-byte AES content key. Required before decryptEntryToSink().
+  void setContentKey(const uint8_t key[16]);
 
   bool isEncrypted(const std::string& name) const;
   size_t decryptedSize(const std::string& name) const;
@@ -79,20 +68,18 @@ class ProtectedBook {
   // operator new aborts the firmware under -fno-exceptions. Both open entry
   // points must call it before anything that can fail.
   void reserveErrorBuffer();
-  bool finishOpen(ByteSource& source, Crypto& crypto, const Credential& identity,
-                  const std::string& rightsXmlOverride);
-  bool unwrapBookKey(Crypto& crypto, const Credential& identity, uint8_t out[16]);
+  bool finishOpen(ByteSource& source);
   // Stream-parses encryption.xml out of the zip in chunks, keeping only path
   // hashes. The manifest scales with the container's file count, so it is
   // never materialized whole.
   bool scanEncryptionXml(ByteSource& source, const ZipEntryInfo& entry);
 
   ZipScan zip_;
-  Rights rights_;
   // Sorted FNV-1a hashes of the aes128-cbc encrypted entry paths.
   std::vector<uint64_t> encryptedUriHashes_;
   uint8_t bookKey_[16] = {0};
   bool protected_ = false;
+  bool hasKey_ = false;
   std::string lastError_;
 };
 
