@@ -25,6 +25,18 @@ The book engine consumes `esp_full_miniz` as a nested submodule. Clone with
 `git clone --recurse-submodules`, or run `git submodule update --init --recursive`
 first; the suite fails immediately if that checkout is missing.
 
+## Battery gauge
+
+```sh
+sh libs/hardware/BatteryMonitor/test/host/run.sh
+```
+
+Compiles `BatteryMonitor` and the real X3 board profile against a model BQ27220
+that holds the Design Capacity load to TRM SLUUBD4A 6.1: key timing, CONFIG
+UPDATE, checksummed Data Memory writes, and the X3's block re-select. Every
+refused I2C transaction must still leave the gauge out of CONFIG UPDATE and
+sealed, and the next start must finish the load.
+
 ## Fonts
 
 ```sh
