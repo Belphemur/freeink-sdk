@@ -21,6 +21,18 @@ checks skip when those converters are unavailable. It builds layout tests for
 the default, SMALL, and LARGE memory profiles. Build outputs go under the system
 temporary directory.
 
+## Battery gauge
+
+```sh
+sh libs/hardware/BatteryMonitor/test/host/run.sh
+```
+
+Compiles `BatteryMonitor` and the real X3 board profile against a model BQ27220
+that holds the Design Capacity load to TRM SLUUBD4A 6.1: key timing, CONFIG
+UPDATE, checksummed Data Memory writes, and the X3's block re-select. Every
+refused I2C transaction must still leave the gauge out of CONFIG UPDATE and
+sealed, and the next start must finish the load.
+
 ## Fonts
 
 ```sh
