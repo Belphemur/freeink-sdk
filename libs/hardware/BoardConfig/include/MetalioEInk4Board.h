@@ -50,6 +50,11 @@ inline bool setOutput(uint8_t pin, bool high) {
   return writeRegister(2, high ? value | mask : value & ~mask);
 }
 
+// The NT26 4G modem has no power enable; it runs whenever the board is on.
+// Its host link is the vendor's framed UART-eth protocol (2 Mbaud), not plain
+// AT. Hold MRDY at the vendor driver's idle level so the host never requests it.
+constexpr int MODEM_MRDY_GPIO = 21;
+
 inline bool ensureBooted() {
   static bool ready = false;
   if (ready) return true;
@@ -72,6 +77,8 @@ inline bool ensureBooted() {
   pinMode(2, INPUT_PULLUP);
   pinMode(VIBRATION_GPIO, OUTPUT);
   digitalWrite(VIBRATION_GPIO, LOW);
+  pinMode(MODEM_MRDY_GPIO, OUTPUT);
+  digitalWrite(MODEM_MRDY_GPIO, HIGH);
   ready = true;
   return true;
 }

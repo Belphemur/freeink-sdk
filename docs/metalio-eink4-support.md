@@ -26,8 +26,16 @@ Haptic playback is explicitly requested by the consumer; touch does not trigger 
 Set `USE_BLOCK_DEVICE_INTERFACE=1` for SdFat's SDMMC block-device interface.
 There is no frontlight in the supplied board configuration.
 
-The 4G modem, charger configuration and expander LED have no Metalio SDK backend
-in this port. `FREEINK_CAP_LED` remains off.
+The charger configuration and expander LED have no Metalio SDK backend in this
+port. `FREEINK_CAP_LED` remains off.
+
+The NT26 4G modem has no power enable and runs whenever the board is on. Its
+host link is the vendor's framed UART-ethernet protocol at 2 Mbaud; it does not
+answer plain AT commands. Board startup holds MRDY (GPIO21) high, the vendor
+driver's idle level. Its only other control is 4G_RST on expander P0.3.
+The Bluetooth audio module (UART2, TX48/RX47) also has no power enable or known
+sleep command. Only its amplifier (P0.4) is switchable; it stays off unless
+AudioManager plays.
 
 The SC7A20H identity was confirmed by the board owner. Its
 [Imu backend](metalio-accelerometer.md) probes 0x19 then 0x18 on the shared
@@ -102,9 +110,11 @@ the sample explicitly keeps it powered during panel shutdown. `powerOff()` does
 not replace application-level display/storage shutdown. Board helpers use the
 shared Wire bus; serialize board-control calls with your input/hardware task.
 
-`PowerManager` supports GPIO3 deep-sleep wake, but deep sleep retains the shared
-rail. Measure standby current on hardware; this is distinct from pulsing the
-external power controller.
+ESP32 deep sleep alone does not power the board down: the main and screen/SD
+rails, the 4G modem and the audio module stay powered. To turn the board off,
+call `powerOff()`, which pulses the power-switch chip. GPIO3 is that chip's
+button and cold-boots the board. If USB keeps power present, fall back to
+`PowerManager` deep sleep, which wakes on GPIO3.
 
 ## Refresh and waveforms
 
