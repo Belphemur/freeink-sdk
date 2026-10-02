@@ -98,6 +98,12 @@ public:
     // oscillating. Pass the last value this returned; pass > 100 for no history.
     static uint16_t percentageFromMillivolts(uint16_t millivolts, uint16_t previousPercent);
 
+    // Loads batteryGauge.designCapacityMah into a BQ27220 whose Design Capacity reads
+    // TI's 3000 mAh default (it returns there whenever the gauge loses power) or whose
+    // FullChargeCapacity() reads more than a quarter above it. One short step per call,
+    // about 8 s in all: call from the task that owns the gauge until it returns false.
+    static bool loadDesignCapacity();
+
 private:
     bool hasAdcBackend() const;
     bool hasGaugeBackend() const;

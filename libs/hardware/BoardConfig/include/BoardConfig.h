@@ -526,6 +526,8 @@ struct BatteryGaugeConfig {
   // multi-bus SoCs (SOC_I2C_NUM > 1); single-bus parts (ESP32-C3) ignore it.
   uint8_t i2cBus = 0;
   GaugeType gaugeType = GaugeType::Bq27220;  // register map / init to use
+  // BQ27220 cell capacity for BatteryMonitor::loadDesignCapacity(); 0 = leave it alone.
+  uint16_t designCapacityMah = 0;
 };
 
 struct InputPins {
@@ -952,7 +954,7 @@ constexpr BoardProfile XTEINK_X3 = {
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    {20, 0, 400000, 0x55, 0},  // BQ27220 fuel gauge (0x55) on SDA20/SCL0; no charger IC
+    {20, 0, 400000, 0x55, 0, 0, GaugeType::Bq27220, 650},  // BQ27220 fuel gauge (0x55) on SDA20/SCL0, 650 mAh cell; no charger IC
     NO_MIC,
     {20, 0, 400000, 0x68, 0, 0x6B, 0, RtcType::Ds3231, ImuType::Qmi8658}};
 
@@ -984,7 +986,7 @@ constexpr BoardProfile XTEINK_X3_UC8279 = {
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    {20, 0, 400000, 0x55, 0},
+    {20, 0, 400000, 0x55, 0, 0, GaugeType::Bq27220, 650},
     NO_MIC,
     {20, 0, 400000, 0x68, 0, 0x6B, 0, RtcType::Ds3231, ImuType::Qmi8658}};
 
