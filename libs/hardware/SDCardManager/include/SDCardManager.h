@@ -43,7 +43,9 @@ class SDCardManager {
   String readFile(const char* path);
   // Low-memory helpers:
   // Stream the file contents to a `Print` (e.g. `Serial`, or any `Print`-derived object).
-  // Returns true on success, false on failure.
+  // Returns true only when every byte is accepted by `out`. Retries positive
+  // short writes; returns false on a stalled write, read error, or premature EOF.
+  // On failure, `out` may already contain a prefix of the file.
   bool readFileToStream(const char* path, Print& out, size_t chunkSize = 256);
   // Read up to `bufferSize-1` bytes into `buffer`, null-terminating it. Returns bytes read.
   size_t readFileToBuffer(const char* path, char* buffer, size_t bufferSize, size_t maxBytes = 0);

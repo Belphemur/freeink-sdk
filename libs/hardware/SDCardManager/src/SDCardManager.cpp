@@ -335,20 +335,36 @@ bool SDCardManager::readFileToStream(const char* path, Print& out, const size_t 
   const bool watchdogWatchesThisTask = (esp_task_wdt_status(nullptr) == ESP_OK);
   uint32_t lastYieldMs = millis();
 
-  while (f.available()) {
-    const int r = f.read(buf, toRead);
+  uint64_t remaining = f.fileSize();
+  while (remaining > 0) {
+    const size_t want = remaining < toRead ? static_cast<size_t>(remaining) : toRead;
+    const int r = f.read(buf, want);
     if (r <= 0) {
-      break;
+      if (Serial) Serial.printf("SDCardManager: incomplete read of %s\n", path);
+      f.close();
+      return false;
     }
-    out.write(buf, static_cast<size_t>(r));
 
-    if (millis() - lastYieldMs >= yieldIntervalMs) {
-      if (watchdogWatchesThisTask) {
-        esp_task_wdt_reset();
+    const size_t count = static_cast<size_t>(r);
+    size_t sent = 0;
+    while (sent < count) {
+      const size_t written = out.write(buf + sent, count - sent);
+      if (written == 0 || written > count - sent) {
+        if (Serial) Serial.printf("SDCardManager: incomplete write while streaming %s\n", path);
+        f.close();
+        return false;
       }
-      vTaskDelay(1);  // let every other task on this core run
-      lastYieldMs = millis();
+      sent += written;
+
+      if (millis() - lastYieldMs >= yieldIntervalMs) {
+        if (watchdogWatchesThisTask) {
+          esp_task_wdt_reset();
+        }
+        vTaskDelay(1);  // let every other task on this core run
+        lastYieldMs = millis();
+      }
     }
+    remaining -= count;
   }
 
   f.close();
