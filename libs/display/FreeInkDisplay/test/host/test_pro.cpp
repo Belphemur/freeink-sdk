@@ -8,6 +8,7 @@
 #define private public
 #include "FreeInkDisplay.h"
 #include "src/driver/Ssd1677Driver.h"
+#include "src/lut/Ssd1677Luts.h"
 #include "src/driver/Uc8179Driver.h"
 #include "src/driver/Uc8279X4Driver.h"
 #undef private
@@ -551,15 +552,17 @@ static void testMetalio() {
   assert(driver.grayscaleCapabilities().supported());
   const auto bw = frame(42);
   bus.clear();
-  // Cold FAST uses the demo's two-partial black pulse, never OTP D7.
+  // Cold FAST uses the demo's two-partial black pulse, never OTP D7. Both
+  // phases run the vendor B/W fast LUT (0xCC activation, no OTP 0xFC).
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
-  assert(lastRegister(bus, 0x22) == 0xFC);
+  assert(lastRegister(bus, 0x22) == 0xCC);
   unsigned activations = 0;
   std::vector<Bytes> oldPlanes;
   for (const auto& w : bus.writes) {
     if (w.command == 0x20) ++activations;
     if (w.command == 0x26) oldPlanes.push_back(w.bytes);
-    if (w.command == 0x22) assert(w.bytes == Bytes({0xFC}));
+    if (w.command == 0x22) assert(w.bytes == Bytes({0xCC}));
+    if (w.command == 0x32) assert(w.bytes == Bytes(lut_fast_metalio, lut_fast_metalio + 105));
     assert(w.command != 0x1A);
   }
   assert(activations == 2 && bus.waits == 2);
@@ -567,11 +570,13 @@ static void testMetalio() {
   assert(oldPlanes[0] == Bytes(bw.size(), 0xFF));
   assert(oldPlanes[1] == Bytes(bw.size(), 0x00));
   assert(oldPlanes[2] == bw);
+  assert(!driver._customLutActive);
   bus.clear();
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
-  assert(lastRegister(bus, 0x22) == 0xFC);
+  assert(lastRegister(bus, 0x22) == 0xCC);
   assert(lastRegister(bus, 0x18) == 0x80);
   assert(lastRegister(bus, 0x3C) == 0x80);
+  assert(lastRegister(bus, 0x2C) == 0x10);
   for (const auto& w : bus.writes) if (w.command == 0x21) assert(w.bytes == Bytes({0, 0}));
   assert(driver._isScreenOn);
   bus.clear();
@@ -587,9 +592,9 @@ static void testMetalio() {
   driver.cleanupGrayscaleBuffers(bus, bw.data());
   bus.clear();
   driver.displayStart(bus, bw.data(), bw.data(), RefreshMode::Fast, true);
-  assert(lastRegister(bus, 0x22) == 0xFC);
+  assert(lastRegister(bus, 0x22) == 0xCF);  // LUT paint, then analog/clock off
   driver.displayFinish(bus, bw.data());
-  assert(lastRegister(bus, 0x22) == 0x03);
+  assert(lastRegister(bus, 0x22) == 0xCF);
   assert(!driver._isScreenOn);
   // Deferred FAST must resync both planes from the frame retained by the facade.
   assert(lastPlane(bus, 0x24) == bw && lastPlane(bus, 0x26) == bw);
@@ -602,7 +607,7 @@ static void testMetalio() {
   assert(lastPlane(bus, 0x26) == Bytes(bw.size(), 0));
   driver.displayFinish(bus, bw.data());
   assert(lastPlane(bus, 0x26) == bw && lastPlane(bus, 0x24) == bw);
-  assert(lastRegister(bus, 0x22) == 0x03);
+  assert(lastRegister(bus, 0x22) == 0xCF);
   driver.deepSleep(bus);
   assert(lastRegister(bus, 0x10) == 0x03);
 }
