@@ -2715,7 +2715,10 @@ bool InputManager::runGt911TouchCmd(const uint8_t requestedCmd) {
   // outcome into gt911Asleep. Bound the wait well beyond server latency +
   // sequence cost.
   gt911TouchCmd.store(requestedCmd, std::memory_order_release);
-  const unsigned long deadline = millis() + GT911_TOUCH_CMD_TIMEOUT_MS;
+  // Wrap-safe window: subtract from a start stamp, never compare against a
+  // pre-computed millis() + timeout (that wraps at 2^32 and inverts the test
+  // for ~one timeout window every ~49.7 days of uptime).
+  const unsigned long start = millis();
   for (;;) {
     if (onGt911PollOwnerTask()) {
       // We ARE the Wire/INT owner: waiting for our own task to service the
@@ -2728,7 +2731,7 @@ bool InputManager::runGt911TouchCmd(const uint8_t requestedCmd) {
       // truth; report it either way.
       return requestedCmd == GT911_TOUCH_CMD_SLEEP ? isTouchAsleep() : !isTouchAsleep();
     }
-    if (millis() >= deadline) {
+    if (millis() - start >= GT911_TOUCH_CMD_TIMEOUT_MS) {
       break;
     }
     delay(5);
