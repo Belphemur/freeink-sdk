@@ -128,6 +128,19 @@ int main() {
   assert(commands == (std::vector<int>{0x71,0x70,0x71,0x70,0xA2}));
   assert(getXteinkDisplayProbeDiag().verBytesRead == 5);
   assert(getXteinkDisplayProbeDiag().mtpValid);
+  // Stock panel table IDs, including the BOE 4.28 glass (0x40 UC8179,
+  // 0x41/0x42 UC8279 D/E).
+  for (uint8_t id : {uint8_t(0x01), uint8_t(0x40)}) {
+    reset(B::XteinkX4, {0,0,id,0xff,0xff}, false);
+    assert(applyXteinkDisplayController());
+    assert(BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8179);
+  }
+  for (uint8_t id : {uint8_t(0x02), uint8_t(0x41), uint8_t(0x42), uint8_t(0x68), uint8_t(0x69)}) {
+    reset(B::XteinkX4, {0,0,id,0xff,0xff}, false);
+    assert(applyXteinkDisplayController());
+    assert(BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8279);
+    assert(BoardConfig::ACTIVE.displayControllerVariant == id);
+  }
   reset(B::XteinkX3, {0,0,0x66});
   assert(detectXteinkDisplayController() == V::Uc81xxConfirmed);
   checkX3Wire();  // previous X4 MTP/status must not leak into the X3 snapshot

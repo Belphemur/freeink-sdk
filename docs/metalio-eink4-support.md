@@ -118,35 +118,33 @@ button and cold-boots the board. If USB keeps power present, fall back to
 
 ## Refresh and waveforms
 
-Default refresh settings follow the sample's internal controller waveforms:
+Full refresh uses the controller's internal waveform. Fast, window and half
+refreshes use the supplied `kEpdLutPartial` table, loaded as an external LUT:
 
-| Mode | Update register 0x22 | Border 0x3C |
-|---|---|---|
-| Full | 0xF7 | 0x01 |
-| Half | Two 0xFC partial updates: previous → black → target | 0x80 |
-| Fast / window | 0xFC | 0x80 |
+| Mode | Waveform | Update register 0x22 | Border 0x3C |
+|---|---|---|---|
+| Full | Internal | 0xF7 | 0x01 |
+| Fast / window | `lut_fast_metalio` | 0xCC | 0x80 |
+| Half | Two fast updates: previous → black → target | 0xCC | 0x80 |
+
+`lut_fast_metalio` is the first 110 bytes of `kEpdLutPartial` from the
+[waveform document](metalio-waveform-source.md). It is a single-pass differential
+waveform (group 0: 3/16/1/1 frames at frame-rate byte 0x22) that drives changed
+pixels to their target colour and gives unchanged pixels a short same-colour
+pulse. Voltages: VGH 0x17, VSH1 0x41, VSH2 0xA8, VSL 0x32, VCOM 0x10.
 
 A first FAST request becomes HALF to establish the initial screen contents.
-HALF follows `lv_adapter_display.cc::PeriodicBlackPulseClear` in the demo:
-one black pulse avoids the repeated flashes of the controller's 0xD7 waveform.
-Explicit FULL remains available for recovery. Both controller image-memory planes
-are synchronized after completion, including deferred updates, so the next partial
-starts with the displayed image as its baseline. Physical ghosting and refresh
-quality still require validation on the panel.
+HALF follows `lv_adapter_display.cc::PeriodicBlackPulseClear` in the demo.
+Both controller image-memory planes are synchronized after completion, including
+deferred updates, so the next update starts with the displayed image as its
+baseline. A requested power-down is folded into the fast activation (0xCF).
+Deep sleep uses mode 0x03. Grayscale anti-aliasing and four-tone images use the
+separate grayscale LUTs and are unaffected.
 
-Full/fast use internal temperature sensing. A requested power-down
-after 0xFC occurs after BUSY completes, including deferred refreshes. Deep sleep
-uses mode 0x03. Grayscale is not advertised, and legacy grayscale calls without
-a supplied LUT fall back to B/W.
-
-The separately supplied [waveform document](metalio-waveform-source.md) is
-preserved for bring-up. Its full-refresh `kEpdLutPartial` has 112 values, but its
-partial-refresh `kEpdLutFastUpdate[112]` has **113 initializers**. The extra entry
-precedes the frame-rate/voltage tail: applying the SDK's 105-byte LUT split would
-put `0x22` into the gate-voltage register instead of `0x17`. Neither custom table
-is enabled by default. Obtain a corrected partial table and validate the drive
-sequence before replacing the sample's working OTP path; do not silently drop
-a byte. These B/W tables also do not establish grayscale support.
+The document's other table, `kEpdLutFastUpdate`, has 113 initializers. The extra
+`0x01` is in group 9, whose phase durations are all zero, so either copy can be
+dropped without changing the waveform. That table drives every pixel to the
+opposite colour and back (about 72 frames) and is not used.
 
 ## USB SD-card export
 

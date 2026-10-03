@@ -115,7 +115,7 @@ static const Ssd1677Config& ssd1677MetalioConfig() {
   static const Ssd1677Config cfg = {
       {0xAE, 0xC7, 0xC3, 0xC0, 0x80}, 0x02, 0x01, 0x6A, lut_grayscale_metalio,
       0xF7, 0xFC, 0xD7, 0x01, 0x80, 0x01, 0xC0, false, true, true, true, true, true,
-      lut_factory_quality_metalio};
+      lut_factory_quality_metalio, lut_fast_metalio};
   return cfg;
 }
 #endif
@@ -296,6 +296,16 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     bus.cmd(CMD_TEMP_SENSOR_CONTROL);
     bus.data(0x80);
   }
+  // Board B/W fast LUT: load it so the custom-LUT branch below activates 0xCC.
+  // Not while a grayscale LUT is already loaded.
+  const bool fastLut = mode == RefreshMode::Fast && _cfg.fastLut != nullptr && !_customLutActive;
+  if (fastLut) {
+    setCustomLut(bus, true, _cfg.fastLut);
+    if (_cfg.borderWaveformFast != 0) {
+      bus.cmd(CMD_BORDER_WAVEFORM);
+      bus.data(_cfg.borderWaveformFast);
+    }
+  }
 
   // Per-board absolute update sequence (vendor 0x22 values). When set, it selects
   // the panel's waveform directly — including load-temperature and the partial/DU
@@ -379,6 +389,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   bus.data(displayMode);
   bus.cmd(CMD_MASTER_ACTIVATION);
   if (!async) bus.waitRefreshComplete("refresh");
+  if (fastLut) setCustomLut(bus, false, nullptr);
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   // esp_rom_printf hits the always-on IDF console; Serial (HWCDC) drops on S3.
   esp_rom_printf("[SSD1677] %s refresh %ums (ctrl2=0x%x)\n", dbgMode, (unsigned)(millis() - dbgStart), displayMode);
