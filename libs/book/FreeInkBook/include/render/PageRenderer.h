@@ -57,8 +57,14 @@ class PageRenderer {
   // positions. Returns the number of codepoints no chain font could
   // rasterize (their advance still spaces the line — visible as gaps);
   // `firstMissingOut` (optional) receives the first such codepoint.
+  //
+  // characterSpacingPx / wordSpacingPx must be the values the page was laid
+  // out with (ChapterLayout::advanceFor adds them to every advance), or
+  // painted glyph positions drift from the stored run geometry. They default
+  // to 0, which is correct for pages laid out without spacing.
   static uint32_t renderText(const Page& page, FontChain& fonts, const FrameTarget& target,
-                             uint32_t* firstMissingOut = nullptr);
+                             uint32_t* firstMissingOut = nullptr, int16_t characterSpacingPx = 0,
+                             int16_t wordSpacingPx = 0);
 
   // Draws the page's images (streaming decode + Bayer dither). `source`/
   // `zip` are the open book; scratch is released before returning.

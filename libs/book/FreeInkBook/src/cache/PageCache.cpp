@@ -74,7 +74,9 @@ constexpr uint32_t kRuleRecSize = 7;
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 14;  // 14: FtFont kerning adds GPOS pair-adjustment
+constexpr uint32_t kLayoutRevision = 15;  // 15: LayoutParams gains characterSpacingPx /
+                                          //  wordSpacingPx, applied in advanceFor
+                                          //  14: FtFont kerning adds GPOS pair-adjustment
                                           //  fallback (fonts kerned only via GPOS now
                                           //  kern; pagination changes for them)
                                           //  13: FtFont::ligature() resolves ff/fi/fl/ffi/ffl via GSUB
@@ -101,6 +103,9 @@ uint32_t layoutGenerationHash(const LayoutParams& params, uint32_t fontFingerpri
   hash = hashMix(hash, fontFingerprint);
   hash = hashMix(hash, static_cast<uint32_t>(params.defaultAlign));
   hash = hashMix(hash, static_cast<uint32_t>(params.lineSpacingPct) << 16 | params.paragraphSpacingPct);
+  // Spacing changes pagination, so distinct values must not share a cache file.
+  hash = hashMix(hash, static_cast<uint16_t>(params.characterSpacingPx));
+  hash = hashMix(hash, static_cast<uint16_t>(params.wordSpacingPx));
   hash = hashMix(hash, params.embeddedStyles ? 1u : 0u);
   hash = hashMix(hash, params.focusReading ? 1u : 0u);
   hash = hashMix(hash, static_cast<uint32_t>(params.orphanLines) << 8 | params.widowLines);
