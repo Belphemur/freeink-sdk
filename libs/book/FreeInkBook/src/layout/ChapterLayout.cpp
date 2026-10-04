@@ -1497,6 +1497,15 @@ class LayoutEngine : public XmlHandler {
       if (crossesScripts(prevCp, cp)) adv += sizePx / 4;
       adv += cjkCompression(prevCp, cp, sizePx);
     }
+    // Reader typography controls. Word spacing rides the space glyph's own
+    // advance rather than a separate word-gap term: justification distributes
+    // its slack across the spaceCount gaps counted from these same advances, so
+    // folding it in here keeps the two from fighting.
+    if (cp == ' ') {
+      adv += params_.wordSpacingPx;
+    } else {
+      adv += params_.characterSpacingPx;
+    }
     return adv;
   }
 
@@ -1542,7 +1551,10 @@ class LayoutEngine : public XmlHandler {
 
     const int32_t prefixWidth = measureRange(lineStart, wordStart);
     const Span& span = spanAt(wordStart);
-    const int32_t hyphenWidth = params_.font->advance('-', spanSizePx(span), span.flags);
+    // Matches advanceFor: the appended hyphen is an ordinary glyph, so it
+    // carries characterSpacingPx like any other.
+    const int32_t hyphenWidth =
+        params_.font->advance('-', spanSizePx(span), span.flags) + params_.characterSpacingPx;
     for (int i = n - 1; i >= 0; --i) {
       const uint32_t split = wordStart + positions[i];
       if (split <= lineStart) continue;
@@ -1691,7 +1703,7 @@ class LayoutEngine : public XmlHandler {
     rec.naturalWidth = measureRange(start, end);
     if (flags & kLineHyphen) {
       const Span& span = spanAt(end > start ? end - 1 : start);
-      rec.naturalWidth += params_.font->advance('-', spanSizePx(span), span.flags);
+      rec.naturalWidth += params_.font->advance('-', spanSizePx(span), span.flags) + params_.characterSpacingPx;
     }
   }
 
@@ -2032,7 +2044,12 @@ class LayoutEngine : public XmlHandler {
         const Seg& logicalOwner = sg;
         if (logicalOwner.gapBefore || logicalOwner.spaceBefore) {
           if (logicalOwner.spaceBefore) {
-            x += params_.font->advance(' ', spanSizePx(*logicalOwner.span), logicalOwner.span->flags);
+            // Must match advanceFor's space advance: the justify slack above
+            // was computed from measured widths that already include
+            // wordSpacingPx, so omitting it here leaves every justified line
+            // short by (space count x wordSpacingPx).
+            x += params_.font->advance(' ', spanSizePx(*logicalOwner.span), logicalOwner.span->flags) +
+                 params_.wordSpacingPx;
           }
           if (justify) {
             x += perGap;
@@ -2108,7 +2125,7 @@ class LayoutEngine : public XmlHandler {
     if (sg.level & 1) reverseUtf8(copy, outLen);  // store visual order (L2)
     if (addHyphen) {
       copy[outLen++] = '-';
-      segWidth += params_.font->advance('-', spanSizePx(*sg.span), runFlags);
+      segWidth += params_.font->advance('-', spanSizePx(*sg.span), runFlags) + params_.characterSpacingPx;
     }
     int16_t runBaseline = baselineY;
     if (sg.span->flags & StyleSuperscript) {

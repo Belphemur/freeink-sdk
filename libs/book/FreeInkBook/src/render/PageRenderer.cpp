@@ -163,7 +163,8 @@ struct ImageBlit {
 }  // namespace
 
 uint32_t PageRenderer::renderText(const Page& page, FontChain& fonts, const FrameTarget& target,
-                                  uint32_t* firstMissingOut) {
+                                  uint32_t* firstMissingOut, int16_t characterSpacingPx,
+                                  int16_t wordSpacingPx) {
   uint32_t missing = 0;
   for (uint16_t r = 0; r < page.runCount; ++r) {
     const PageTextRun& run = page.runs[r];
@@ -195,6 +196,9 @@ uint32_t PageRenderer::renderText(const Page& page, FontChain& fonts, const Fram
         }
       }
       penX += fonts.advance(cp, run.sizePx, run.styleFlags);
+      // Same spacing advanceFor() measured with; word spacing rides the
+      // space glyph so justification's own slack math stays consistent.
+      penX += cp == ' ' ? wordSpacingPx : characterSpacingPx;
       prev = cp;
     }
     if (run.styleFlags & StyleUnderline) {
@@ -303,9 +307,10 @@ uint32_t PageRenderer::renderRubies(const Page& page, FontChain& fonts, const Fr
 
 BookStatus PageRenderer::render(const Page& page, FontChain& fonts, BookSource& source,
                                 const ZipCatalog& zip, Arena& scratch,
-                                const FrameTarget& target) {
+                                const FrameTarget& target, int16_t characterSpacingPx,
+                                int16_t wordSpacingPx) {
   renderRules(page, target);
-  renderText(page, fonts, target);
+  renderText(page, fonts, target, nullptr, characterSpacingPx, wordSpacingPx);
   renderRubies(page, fonts, target);
   return renderImages(page, source, zip, scratch, target);
 }
