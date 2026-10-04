@@ -1497,6 +1497,15 @@ class LayoutEngine : public XmlHandler {
       if (crossesScripts(prevCp, cp)) adv += sizePx / 4;
       adv += cjkCompression(prevCp, cp, sizePx);
     }
+    // Reader typography controls. Word spacing rides the space glyph's own
+    // advance rather than a separate word-gap term: justification distributes
+    // its slack across the spaceCount gaps counted from these same advances, so
+    // folding it in here keeps the two from fighting.
+    if (cp == ' ') {
+      adv += params_.wordSpacingPx;
+    } else {
+      adv += params_.characterSpacingPx;
+    }
     return adv;
   }
 

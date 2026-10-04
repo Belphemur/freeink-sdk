@@ -48,6 +48,13 @@ struct LayoutParams {
   // Typography (Phase 4).
   uint16_t lineSpacingPct = 100;              // line height multiplier (CrossPoint parity)
   uint16_t paragraphSpacingPct = 100;         // scales block margins (0 = compact)
+  // Signed extra pixels added to every glyph advance and to each word gap
+  // respectively (reader typography controls). 0 = the font's own metrics.
+  // Applied in advanceFor(), the single choke point every measured and placed
+  // glyph passes through, so a run's stored width and its painted positions
+  // cannot disagree.
+  int16_t characterSpacingPx = 0;
+  int16_t wordSpacingPx = 0;
   TextAlign defaultAlign = TextAlign::Left;   // body alignment when CSS is silent
   uint8_t orphanLines = 2;                    // min paragraph lines at a page bottom
   uint8_t widowLines = 2;                     // min paragraph lines carried over

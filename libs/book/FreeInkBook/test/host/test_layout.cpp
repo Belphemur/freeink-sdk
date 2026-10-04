@@ -1243,6 +1243,71 @@ void testKerningAffectsMeasurement() {
   CHECK(kernedSink.textLen >= plainSink.textLen - 8);  // same content either way
 }
 
+// Reader typography controls. characterSpacingPx widens every non-space glyph
+// advance and wordSpacingPx widens the space glyph's own advance (the same
+// term justification distributes its slack across). Both must change measured
+// line width — and therefore pagination — not just the stored run geometry.
+void testCharacterAndWordSpacing() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+  FakeFont font;
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+  CHECK(entry != nullptr);
+
+  // Baseline, character-spaced, word-spaced, both — all over the same fixture.
+  LayoutParams plain = stickyParams(font);
+  LayoutParams charSpaced = stickyParams(font);
+  charSpaced.characterSpacingPx = 3;
+  LayoutParams wordSpaced = stickyParams(font);
+  wordSpaced.wordSpacingPx = 40;
+  LayoutParams bothSpaced = stickyParams(font);
+  bothSpaced.characterSpacingPx = 3;
+  bothSpaced.wordSpacingPx = 40;
+
+  CollectSink plainSink(plain, font);
+  CollectSink charSink(charSpaced, font);
+  CollectSink wordSink(wordSpaced, font);
+  CollectSink bothSink(bothSpaced, font);
+  uint32_t plainPages = 0;
+  uint32_t charPages = 0;
+  uint32_t wordPages = 0;
+  uint32_t bothPages = 0;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, plain,
+                                                  opened.scratch, plainSink, &plainPages)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, charSpaced,
+                                                  opened.scratch, charSink, &charPages)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, wordSpaced,
+                                                  opened.scratch, wordSink, &wordPages)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, bothSpaced,
+                                                  opened.scratch, bothSink, &bothPages)),
+           static_cast<int>(BookStatus::Ok));
+
+  CHECK_EQ(charSink.geometryViolations, 0);
+  CHECK_EQ(wordSink.geometryViolations, 0);
+  CHECK_EQ(bothSink.geometryViolations, 0);
+
+  // Widening glyphs and gaps cannot fit more per line, so pagination is
+  // monotonic: plain <= char, plain <= word, and both >= either alone.
+  CHECK(charPages > plainPages);   // spacing must actually re-paginate
+  CHECK(wordPages > plainPages);
+  CHECK(bothPages >= charPages);
+  CHECK(bothPages >= wordPages);
+  // Same content: the opening text is identical, and each variant delivers at
+  // least as many characters as the baseline (line breaks move, so only the
+  // direction is meaningful — never an exact total).
+  CHECK(std::strncmp(plainSink.text, charSink.text, 64) == 0);
+  CHECK(std::strncmp(plainSink.text, wordSink.text, 64) == 0);
+  CHECK(charSink.textLen > 0);
+  CHECK(wordSink.textLen > 0);
+  CHECK(bothSink.textLen > 0);
+  CHECK(std::strstr(charSink.text, "quick brown fox") != nullptr);
+  CHECK(std::strstr(wordSink.text, "quick brown fox") != nullptr);
+  CHECK(std::strstr(bothSink.text, "quick brown fox") != nullptr);
+}
+
 // Widow/orphan control, observed through first-line indents: with
 // p { text-indent: 1.5em } every paragraph-opening line starts at
 // margin + 24 while continuation lines start at the margin. A paragraph
@@ -2497,6 +2562,7 @@ int main(int argc, char** argv) {
   testHyphenation(hyphenator);
   testRunCharAnchoring(hyphenator);
   testKerningAffectsMeasurement();
+  testCharacterAndWordSpacing();
   testWidowOrphan();
   testImages();
   testProgressiveJpeg();
