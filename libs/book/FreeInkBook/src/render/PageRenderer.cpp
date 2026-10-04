@@ -307,9 +307,10 @@ uint32_t PageRenderer::renderRubies(const Page& page, FontChain& fonts, const Fr
 
 BookStatus PageRenderer::render(const Page& page, FontChain& fonts, BookSource& source,
                                 const ZipCatalog& zip, Arena& scratch,
-                                const FrameTarget& target) {
+                                const FrameTarget& target, int16_t characterSpacingPx,
+                                int16_t wordSpacingPx) {
   renderRules(page, target);
-  renderText(page, fonts, target);
+  renderText(page, fonts, target, nullptr, characterSpacingPx, wordSpacingPx);
   renderRubies(page, fonts, target);
   return renderImages(page, source, zip, scratch, target);
 }

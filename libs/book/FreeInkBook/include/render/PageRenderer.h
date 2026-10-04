@@ -78,9 +78,11 @@ class PageRenderer {
   // Returns the number of codepoints no chain font could rasterize.
   static uint32_t renderRubies(const Page& page, FontChain& fonts, const FrameTarget& target);
 
-  // Text + images.
+  // Text + images. Spacing values are those the page was laid out with and
+  // are forwarded to renderText; they default to 0 for unspaced layouts.
   static BookStatus render(const Page& page, FontChain& fonts, BookSource& source,
-                           const ZipCatalog& zip, Arena& scratch, const FrameTarget& target);
+                           const ZipCatalog& zip, Arena& scratch, const FrameTarget& target,
+                           int16_t characterSpacingPx = 0, int16_t wordSpacingPx = 0);
 };
 
 }  // namespace book
