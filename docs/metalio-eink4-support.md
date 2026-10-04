@@ -31,8 +31,8 @@ port. `FREEINK_CAP_LED` remains off.
 
 The NT26 4G modem has no power enable and runs whenever the board is on. Its
 host link is the vendor's framed UART-ethernet protocol at 2 Mbaud; it does not
-answer plain AT commands. Board startup holds MRDY (GPIO21) high, the vendor
-driver's idle level. Its only other control is 4G_RST on expander P0.3.
+answer plain AT commands. The SDK does not drive its pins; its only other
+control is 4G_RST on expander P0.3.
 The Bluetooth audio module (UART2, TX48/RX47) also has no power enable or known
 sleep command. Only its amplifier (P0.4) is switchable; it stays off unless
 AudioManager plays.
