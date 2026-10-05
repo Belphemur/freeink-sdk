@@ -18,6 +18,14 @@ namespace content {
 
 class Crypto;
 
+// The FreeInk LCP service endpoints. /fulfill
+// embeds a POSTed license document into its encrypted publication; /unlock
+// exchanges a license + sha256(passphrase) for the content key — profile
+// key derivation (including the production profile's confidential
+// transform, once certified) lives server-side only.
+inline constexpr const char* LCP_FULFILL_URL = "https://lcp.freeink.org/fulfill";
+inline constexpr const char* LCP_UNLOCK_URL = "https://lcp.freeink.org/unlock";
+
 struct LcpLicense {
   std::string id;
   std::string profile;        // encryption.profile URI
