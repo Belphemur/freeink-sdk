@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ByteSource.h"
@@ -85,6 +86,10 @@ class ProtectedBook {
   // uncompressed resources this way). Entries absent from here inflate, the
   // historical default.
   std::vector<uint64_t> storedUriHashes_;
+  // Sorted (path hash, plaintext size) from encryption.xml's Compression
+  // OriginalLength. decryptedSize() prefers it: the zip entry size is the
+  // encrypted blob's, which callers sizing a plaintext buffer cannot use.
+  std::vector<std::pair<uint64_t, uint32_t>> originalSizes_;
   uint8_t bookKey_[32] = {0};
   size_t keyLen_ = 0;
   bool aes256_ = false;

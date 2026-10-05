@@ -106,6 +106,11 @@ bool ProtectedBook::isEncrypted(const std::string& name) const {
 }
 
 size_t ProtectedBook::decryptedSize(const std::string& name) const {
+  // The zip records the stored blob (LCP: IV + ciphertext + padding), not the
+  // plaintext; encryption.xml's OriginalLength is the real size when given.
+  const uint64_t hash = fnv1a64(name.data(), name.size());
+  const auto it = std::lower_bound(originalSizes_.begin(), originalSizes_.end(), std::make_pair(hash, uint32_t{0}));
+  if (it != originalSizes_.end() && it->first == hash) return it->second;
   const ZipEntryInfo* entry = zip_.find(name);
   return entry ? entry->uncompressedSize : 0;
 }
@@ -268,6 +273,7 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
 bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& entry) {
   encryptedUriHashes_.clear();
   storedUriHashes_.clear();
+  originalSizes_.clear();
   aes256_ = false;
 
   uint64_t at = 0;
@@ -306,7 +312,8 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
     constexpr size_t kCarryReserve = 4096 + kChunk;
     constexpr size_t kValueReserve = 1024;  // attribute scratch (URIs)
     constexpr size_t kUriReserve = 256;     // encrypted-entry hashes (8B each)
-    void* probe = malloc(kCarryReserve + kValueReserve + kUriReserve * sizeof(uint64_t) + 512);
+    void* probe = malloc(kCarryReserve + kValueReserve + kUriReserve * sizeof(uint64_t) +
+                         kUriReserve * sizeof(std::pair<uint64_t, uint32_t>) + 512);
     if (!probe) {
       free(bufs);
       lastError_ = "out of memory";
@@ -316,6 +323,7 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
     carry.reserve(kCarryReserve);
     value.reserve(kValueReserve);
     encryptedUriHashes_.reserve(kUriReserve);
+    originalSizes_.reserve(kUriReserve);
     storedUriHashes_.reserve(64);  // covered by the probe's slack
   }
   auto handleTag = [&](const char* tag, size_t len) {
@@ -339,6 +347,13 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
       // is not deflated. Follows the entry's CipherReference in the manifest.
       if (haveLast && tagAttr(tag, len, "Method", &value) && value == "0") {
         storedUriHashes_.push_back(lastHash);
+      }
+      if (haveLast && tagAttr(tag, len, "OriginalLength", &value)) {
+        char* end = nullptr;
+        const unsigned long n = strtoul(value.c_str(), &end, 10);
+        if (end != value.c_str() && *end == '\0' && n <= UINT32_MAX) {
+          originalSizes_.emplace_back(lastHash, static_cast<uint32_t>(n));
+        }
       }
     }
   };
@@ -425,6 +440,7 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
   }
   std::sort(encryptedUriHashes_.begin(), encryptedUriHashes_.end());
   std::sort(storedUriHashes_.begin(), storedUriHashes_.end());
+  std::sort(originalSizes_.begin(), originalSizes_.end());
   return true;
 }
 
