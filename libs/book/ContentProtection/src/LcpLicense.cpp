@@ -93,11 +93,10 @@ int32_t decryptBlob(Crypto& crypto, const std::string& b64, const uint8_t userKe
   const size_t cipherLen = static_cast<size_t>(blobLen) - 16;
   if (cipherLen > outCap) return -1;
   if (!crypto.aes256CbcDecrypt(userKey, blob, blob + 16, cipherLen, out)) return -1;
+  // W3C xmlenc padding: random fill bytes, only the count byte matters. A
+  // wrong key shows up as a failed key_check comparison, not a pad error.
   const uint8_t pad = out[cipherLen - 1];
   if (pad < 1 || pad > 16 || pad > cipherLen) return -1;
-  for (size_t i = cipherLen - pad; i < cipherLen; i++) {
-    if (out[i] != pad) return -1;
-  }
   return static_cast<int32_t>(cipherLen - pad);
 }
 

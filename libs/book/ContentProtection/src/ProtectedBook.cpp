@@ -231,9 +231,15 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
     if (amount == remaining) {
       const uint8_t pad = plain[plainSize - 1];
       if (pad >= 1 && pad <= 16 && pad <= plainSize) {
-        bool valid = true;
-        for (size_t i = plainSize - pad; i < plainSize; i++) valid = valid && plain[i] == pad;
-        if (valid) plainSize -= pad;
+        if (aes256_) {
+          // W3C xmlenc padding (LCP): the fill bytes are random; only the
+          // count byte is meaningful.
+          plainSize -= pad;
+        } else {
+          bool valid = true;
+          for (size_t i = plainSize - pad; i < plainSize; i++) valid = valid && plain[i] == pad;
+          if (valid) plainSize -= pad;
+        }
       }
     }
     if (!emitChunk(plain, plainSize)) {

@@ -61,13 +61,16 @@ std::string b64(const uint8_t* data, size_t len) {
   return out;
 }
 
-// IV || plaintext with PKCS#7 pad — what the identity cipher "decrypts" to.
+// IV || plaintext with W3C xmlenc padding (random-looking fill, count in the
+// last byte) — what the identity cipher "decrypts" to. Real LCP servers pad
+// this way; strict PKCS#7 fill validation would reject it.
 std::string identityBlob(const std::string& plain) {
   uint8_t buf[256];
   memset(buf, 0xA5, 16);  // IV
   const size_t pad = 16 - (plain.size() % 16);
   memcpy(buf + 16, plain.data(), plain.size());
-  memset(buf + 16 + plain.size(), static_cast<int>(pad), pad);
+  for (size_t i = 0; i < pad; i++) buf[16 + plain.size() + i] = static_cast<uint8_t>(0x30 + i);  // junk fill
+  buf[16 + plain.size() + pad - 1] = static_cast<uint8_t>(pad);
   return b64(buf, 16 + plain.size() + pad);
 }
 
