@@ -28,6 +28,7 @@ inline constexpr const char* LCP_UNLOCK_URL = "https://lcp.freeink.org/unlock";
 
 struct LcpLicense {
   std::string id;
+  std::string provider;       // issuing provider URI; keys per-provider passphrase reuse
   std::string profile;        // encryption.profile URI
   std::string contentKeyB64;  // encryption.content_key.encrypted_value
   std::string keyCheckB64;    // encryption.user_key.key_check

@@ -56,6 +56,7 @@ void onString(void* ud, const char* value, const size_t len) {
   switch (ctx.depth) {
     case 1:  // top-level object
       if (strcmp(key, "id") == 0) assignCapped(lic.id, value, len, 256);
+      if (strcmp(key, "provider") == 0) assignCapped(lic.provider, value, len, 256);
       break;
     case 2:
       if (strcmp(ctx.parentAt(1), "encryption") == 0 && strcmp(key, "profile") == 0) {
