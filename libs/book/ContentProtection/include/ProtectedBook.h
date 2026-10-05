@@ -40,8 +40,10 @@ class ProtectedBook {
   bool isProtected() const { return protected_; }
   const std::string& lastError() const { return lastError_; }
 
-  // The 16-byte AES content key. Required before decryptEntryToSink().
-  void setContentKey(const uint8_t key[16]);
+  // The AES content key: 16 bytes (aes128-cbc schemes) or 32 bytes
+  // (aes256-cbc, e.g. Readium LCP). Required before decryptEntryToSink().
+  void setContentKey(const uint8_t* key, size_t len);
+  void setContentKey(const uint8_t key[16]) { setContentKey(key, 16); }
 
   bool isEncrypted(const std::string& name) const;
   size_t decryptedSize(const std::string& name) const;
@@ -75,9 +77,17 @@ class ProtectedBook {
   bool scanEncryptionXml(ByteSource& source, const ZipEntryInfo& entry);
 
   ZipScan zip_;
-  // Sorted FNV-1a hashes of the aes128-cbc encrypted entry paths.
+  // Sorted FNV-1a hashes of the encrypted entry paths (aes128-cbc or
+  // aes256-cbc; a container uses one cipher, recorded in aes256_).
   std::vector<uint64_t> encryptedUriHashes_;
-  uint8_t bookKey_[16] = {0};
+  // Sorted hashes of encrypted entries whose encryption.xml Compression
+  // property says Method="0": decrypt only, no inflate (LCP stores already
+  // uncompressed resources this way). Entries absent from here inflate, the
+  // historical default.
+  std::vector<uint64_t> storedUriHashes_;
+  uint8_t bookKey_[32] = {0};
+  size_t keyLen_ = 0;
+  bool aes256_ = false;
   bool protected_ = false;
   bool hasKey_ = false;
   std::string lastError_;

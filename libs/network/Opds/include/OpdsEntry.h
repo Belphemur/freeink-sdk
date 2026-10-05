@@ -39,6 +39,10 @@ struct OpdsEntry {
   // at MAX_DESCRIPTION_CHARS. OPDS 1.x has no per-publication document, so
   // this is the detail page's only description source there.
   std::string description;
+  // The chosen acquisition href is an LCP license document (.lcpl,
+  // application/vnd.readium.lcp.license.v1.0+json): download the license,
+  // then fulfill it into an EPUB through the LCP fulfillment service.
+  bool lcpLicense = false;
   // Feed-inline cover art href (OPDS 2.0 `images`, OPDS 1.x image rel links);
   // the detail page's cover source when the publication has no self document.
   std::string coverHref;

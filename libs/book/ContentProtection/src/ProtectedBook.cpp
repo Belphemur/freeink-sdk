@@ -93,8 +93,10 @@ bool ProtectedBook::finishOpen(ByteSource& source) {
   return true;
 }
 
-void ProtectedBook::setContentKey(const uint8_t key[16]) {
-  memcpy(bookKey_, key, sizeof(bookKey_));
+void ProtectedBook::setContentKey(const uint8_t* key, size_t len) {
+  if (len != 16 && len != 32) return;
+  memcpy(bookKey_, key, len);
+  keyLen_ = len;
   hasKey_ = true;
 }
 
@@ -111,7 +113,7 @@ size_t ProtectedBook::decryptedSize(const std::string& name) const {
 bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
                                        const std::string& name, ContentChunkSink sink,
                                        void* context) {
-  if (!hasKey_) {
+  if (!hasKey_ || keyLen_ != (aes256_ ? 32u : 16u)) {
     lastError_ = "no content key";
     return false;
   }
@@ -152,16 +154,21 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
   // block the 40KB needs, so a heap whose largest free region is ~47KB -- ample
   // for the window on its own -- fails on the pair. Measured on device: image
   // extraction refused at maxAlloc=47092 with 41168 required.
+  // LCP marks already-uncompressed resources Compression Method="0":
+  // decrypt-only, no inflate stage.
+  const bool stored =
+      std::binary_search(storedUriHashes_.begin(), storedUriHashes_.end(), fnv1a64(name.data(), name.size()));
+
   mz_stream stream;
   memset(&stream, 0, sizeof(stream));
-  if (mz_inflateInit2(&stream, -15) != MZ_OK) {
+  if (!stored && mz_inflateInit2(&stream, -15) != MZ_OK) {
     lastError_ = "inflate setup failed";
     return false;
   }
 
   auto* buffers = static_cast<uint8_t*>(malloc(kCipherChunk * 2 + kOutputChunk));
   if (!buffers) {
-    mz_inflateEnd(&stream);
+    if (!stored) mz_inflateEnd(&stream);
     lastError_ = "insufficient memory for content stream";
     return false;
   }
@@ -193,6 +200,12 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
     return true;
   };
 
+  auto emitChunk = [&](const uint8_t* data, size_t size) {
+    if (!stored) return inflateChunk(data, size);
+    if (size > 0 && (!sink || !sink(context, data, size))) return false;
+    return true;
+  };
+
   uint32_t remaining = entry->compressedSize - 16;
   offset += 16;
   bool ok = true;
@@ -205,7 +218,9 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
     }
     uint8_t nextIv[16];
     memcpy(nextIv, cipher + amount - sizeof(nextIv), sizeof(nextIv));
-    if (!crypto.aes128CbcDecrypt(bookKey_, iv, cipher, amount, plain)) {
+    const bool decrypted = aes256_ ? crypto.aes256CbcDecrypt(bookKey_, iv, cipher, amount, plain)
+                                   : crypto.aes128CbcDecrypt(bookKey_, iv, cipher, amount, plain);
+    if (!decrypted) {
       ok = false;
       lastError_ = "content read failed";
       break;
@@ -221,28 +236,33 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
         if (valid) plainSize -= pad;
       }
     }
-    if (!inflateChunk(plain, plainSize)) {
+    if (!emitChunk(plain, plainSize)) {
       ok = false;
-      lastError_ = "inflate failed";
+      lastError_ = stored ? "content sink failed" : "inflate failed";
       break;
     }
     offset += amount;
     remaining -= amount;
   }
 
-  if (ok && !ended) {
-    const uint8_t trailing = 'Z';
-    ok = inflateChunk(&trailing, 1) && ended;
-    if (!ok) lastError_ = "inflate failed";
+  if (stored) {
+    ended = ok;
+  } else {
+    if (ok && !ended) {
+      const uint8_t trailing = 'Z';
+      ok = inflateChunk(&trailing, 1) && ended;
+      if (!ok) lastError_ = "inflate failed";
+    }
+    mz_inflateEnd(&stream);
   }
-
-  mz_inflateEnd(&stream);
   free(buffers);
   return ok && ended;
 }
 
 bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& entry) {
   encryptedUriHashes_.clear();
+  storedUriHashes_.clear();
+  aes256_ = false;
 
   uint64_t at = 0;
   if (!zip_.dataOffset(source, entry, &at)) {
@@ -265,7 +285,9 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
   // manifest tags run ~200 bytes, so a tag that never closes within the cap
   // is a malformed document, not a real split.
   std::string carry;
-  bool aes128 = false;
+  int pendingCipher = 0;  // bits of the EncryptionMethod just seen; 0 = unsupported
+  uint64_t lastHash = 0;
+  bool haveLast = false;
   bool malformed = false;
   std::string value;
   // Pre-reserve the bounded worst case behind a nothrow probe: string/vector
@@ -288,16 +310,30 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
     carry.reserve(kCarryReserve);
     value.reserve(kValueReserve);
     encryptedUriHashes_.reserve(kUriReserve);
+    storedUriHashes_.reserve(64);  // covered by the probe's slack
   }
   auto handleTag = [&](const char* tag, size_t len) {
     if (len < 3 || tag[1] == '/' || tag[1] == '?' || tag[1] == '!') return;
     if (tagHas(tag, len, "EncryptionMethod")) {
-      aes128 = tagAttr(tag, len, "Algorithm", &value) && value.find("aes128-cbc") != std::string::npos;
-    } else if (tagHas(tag, len, "CipherReference")) {
-      if (aes128 && tagAttr(tag, len, "URI", &value) && !value.empty()) {
-        encryptedUriHashes_.push_back(fnv1a64(value.data(), value.size()));
+      pendingCipher = 0;
+      if (tagAttr(tag, len, "Algorithm", &value)) {
+        if (value.find("aes128-cbc") != std::string::npos) pendingCipher = 128;
+        if (value.find("aes256-cbc") != std::string::npos) pendingCipher = 256;
       }
-      aes128 = false;
+    } else if (tagHas(tag, len, "CipherReference")) {
+      if (pendingCipher != 0 && tagAttr(tag, len, "URI", &value) && !value.empty()) {
+        lastHash = fnv1a64(value.data(), value.size());
+        haveLast = true;
+        encryptedUriHashes_.push_back(lastHash);
+        if (pendingCipher == 256) aes256_ = true;
+      }
+      pendingCipher = 0;
+    } else if (tagHas(tag, len, "Compression")) {
+      // Per-entry compression property (LCP): Method="0" means the plaintext
+      // is not deflated. Follows the entry's CipherReference in the manifest.
+      if (haveLast && tagAttr(tag, len, "Method", &value) && value == "0") {
+        storedUriHashes_.push_back(lastHash);
+      }
     }
   };
   auto feed = [&](const uint8_t* data, size_t size) -> bool {
@@ -382,6 +418,7 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
     return false;
   }
   std::sort(encryptedUriHashes_.begin(), encryptedUriHashes_.end());
+  std::sort(storedUriHashes_.begin(), storedUriHashes_.end());
   return true;
 }
 

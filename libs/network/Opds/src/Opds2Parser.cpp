@@ -114,6 +114,7 @@ void Opds2Parser::resetLink() {
   link.typeEpub = false;
   link.typeIndirect = false;
   link.typePubDoc = false;
+  link.typeLcp = false;
   link.templated = false;
   link.numberOfItems = -1;
   link.priceValue.clear();
@@ -336,6 +337,7 @@ void Opds2Parser::onStringValue(const char* value, const size_t len) {
           link.typeIndirect = true;
           link.typePubDoc = true;
         }
+        if (strcmp(value, "application/vnd.readium.lcp.license.v1.0+json") == 0) link.typeLcp = true;
       }
       break;
     case Scope::LINK_REL:
@@ -498,7 +500,7 @@ void Opds2Parser::commitPubLink() {
   // reader can't download directly. Still record the purchase + price so the
   // book lists and opens its detail page; a real EPUB/indirect link, if any,
   // supplies the download href below.
-  if (!(link.typeEpub || link.typeIndirect)) {
+  if (!(link.typeEpub || link.typeIndirect || link.typeLcp)) {
     if (link.acqRank == 0 && !currentEntry.purchase) {
       currentEntry.purchase = true;
       if (currentEntry.detail.empty() && !link.priceValue.empty()) {
@@ -520,16 +522,19 @@ void Opds2Parser::commitPubLink() {
   // direct EPUBs a plain .epub path beats a derived format (kepub etc.).
   bool better = currentEntry.href.empty() || link.acqRank > pubAcqRank;
   if (!better && link.acqRank == pubAcqRank) {
-    if (link.typeEpub && currentEntry.indirect) {
-      better = true;
+    if (link.typeEpub && (currentEntry.indirect || currentEntry.lcpLicense)) {
+      better = true;  // a direct EPUB beats both an indirect hop and an LCP license
     } else if (link.typeEpub && !currentEntry.indirect && isPlainEpub && !pubHasPlainEpub) {
       better = true;
+    } else if (link.typeLcp && currentEntry.indirect && !currentEntry.lcpLicense) {
+      better = true;  // a fulfillable LCP license beats an opaque indirect hop
     }
   }
   if (!better) return;
 
   currentEntry.href = std::move(link.href);
-  currentEntry.indirect = !link.typeEpub;
+  currentEntry.lcpLicense = link.typeLcp;
+  currentEntry.indirect = !link.typeEpub && !link.typeLcp;
   pubAcqRank = link.acqRank;
   pubHasPlainEpub = isPlainEpub;
   currentEntry.purchase = link.acqRank == 0;

@@ -1,0 +1,53 @@
+#pragma once
+
+// FreeInk — Readium LCP license document (basic profile).
+//
+// Parses the fields the device needs out of a license.lcpl and performs the
+// basic-profile key derivation and checks. The production (1.0) profile
+// requires a confidential user-key transform and is out of scope here; a
+// license carrying it parses but fails isBasicProfile().
+//
+// Freestanding C++17. JSON via JsonSax (StreamingJsonParser); crypto injected.
+
+#include <stdint.h>
+
+#include <string>
+
+namespace freeink {
+namespace content {
+
+class Crypto;
+
+struct LcpLicense {
+  std::string id;
+  std::string profile;        // encryption.profile URI
+  std::string contentKeyB64;  // encryption.content_key.encrypted_value
+  std::string keyCheckB64;    // encryption.user_key.key_check
+  std::string hint;           // encryption.user_key.text_hint (passphrase prompt)
+  std::string rightsEnd;      // rights.end (ISO 8601); empty = no expiry
+
+  bool valid() const { return !id.empty() && !contentKeyB64.empty() && !keyCheckB64.empty(); }
+  bool isBasicProfile() const { return profile == "http://readium.org/lcp/basic-profile"; }
+};
+
+// Parses an LCP license document. False on malformed JSON or when a required
+// field (id, content key, key check) is missing.
+bool parseLcpLicense(const char* json, size_t len, LcpLicense* out);
+
+// Basic profile: user key = SHA-256(passphrase), no further transform.
+void lcpUserKey(Crypto& crypto, const char* passphrase, size_t passphraseLen, uint8_t out[32]);
+
+// True when userKey decrypts user_key.key_check back to exactly the license
+// id — the spec's wrong-passphrase test.
+bool lcpCheckUserKey(Crypto& crypto, const LcpLicense& license, const uint8_t userKey[32]);
+
+// Decrypts encryption.content_key.encrypted_value with the user key into the
+// 32-byte AES-256 content key.
+bool lcpContentKey(Crypto& crypto, const LcpLicense& license, const uint8_t userKey[32], uint8_t out[32]);
+
+// "2026-03-01T10:00:00Z" (optional fractional seconds, Z or ±hh:mm offset)
+// to epoch seconds; 0 on parse failure.
+int64_t lcpParseIso8601(const char* s);
+
+}  // namespace content
+}  // namespace freeink
