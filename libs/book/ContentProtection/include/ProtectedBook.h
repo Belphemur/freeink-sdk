@@ -55,15 +55,6 @@ class ProtectedBook {
   bool decryptEntryToSink(ByteSource& source, Crypto& crypto, const std::string& name,
                           ContentChunkSink sink, void* context);
 
-  // Read a non-encrypted entry fully, inflating when deflated. Capped and
-  // OOM-safe: fails (rather than aborting) when the entry is oversized or
-  // memory is unavailable.
-  bool readEntryInflated(ByteSource& source, const std::string& name, std::string* out);
-
-  // Inflates raw-deflate data (windowBits -15) into a caller-owned buffer of
-  // exactly the expected size.
-  bool inflateTo(const uint8_t* in, size_t inLen, uint8_t* out, size_t outLen);
-
  private:
   // Reserves lastError_'s buffer up front. Every error string assigned by this
   // class is longer than the SSO buffer, so without this each assignment
