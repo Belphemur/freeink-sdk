@@ -110,6 +110,7 @@ int main() {
   assert(doc.isBasicProfile());
   assert(doc.hint == "The passphrase is the word you chose");
   assert(doc.rightsEnd == "2026-10-31T09:00:00Z");
+  assert(doc.provider == "https://front-test.edrlab.org");
   // The hint link's "profile" must not clobber encryption.profile.
   assert(doc.profile == "http://readium.org/lcp/basic-profile");
 
