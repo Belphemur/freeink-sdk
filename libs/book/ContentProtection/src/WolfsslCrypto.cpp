@@ -380,6 +380,14 @@ bool WolfsslCrypto::aes128CbcDecrypt(const uint8_t key[16], const uint8_t iv[16]
   return wc_AesCbcDecrypt(&aes, out, in, static_cast<word32>(len)) == 0;
 }
 
+bool WolfsslCrypto::aes256CbcDecrypt(const uint8_t key[32], const uint8_t iv[16], const uint8_t* in,
+                                     size_t len, uint8_t* out) {
+  if (len % 16 != 0) return false;
+  Aes aes;
+  if (wc_AesSetKey(&aes, key, 32, iv, AES_DECRYPTION) != 0) return false;
+  return wc_AesCbcDecrypt(&aes, out, in, static_cast<word32>(len)) == 0;
+}
+
 bool WolfsslCrypto::aes128CbcEncrypt(const uint8_t key[16], const uint8_t iv[16], const uint8_t* in,
                                      size_t len, uint8_t* out) {
   // PKCS#7 pad first (wolfSSL does no padding).

@@ -30,6 +30,9 @@ class WolfsslCrypto : public Crypto {
                         uint8_t* out, size_t outCap) override;
   bool aes128CbcDecrypt(const uint8_t key[16], const uint8_t iv[16], const uint8_t* in, size_t len,
                         uint8_t* out) override;
+  bool aes256CbcDecrypt(const uint8_t key[32], const uint8_t iv[16], const uint8_t* in, size_t len,
+                        uint8_t* out) override;
+
   void sha1(const uint8_t* data, size_t len, uint8_t out[20]) override;
   void sha256(const uint8_t* data, size_t len, uint8_t out[32]) override;
 

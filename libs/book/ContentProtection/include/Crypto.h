@@ -38,6 +38,18 @@ class Crypto {
   virtual bool aes128CbcDecrypt(const uint8_t key[16], const uint8_t iv[16], const uint8_t* in,
                                 size_t len, uint8_t* out) = 0;
 
+  // AES-256-CBC decrypt, same contract. Defaulted (unsupported) so existing
+  // backends keep compiling; LCP content requires a backend that overrides it.
+  virtual bool aes256CbcDecrypt(const uint8_t key[32], const uint8_t iv[16], const uint8_t* in,
+                                size_t len, uint8_t* out) {
+    (void)key;
+    (void)iv;
+    (void)in;
+    (void)len;
+    (void)out;
+    return false;
+  }
+
   virtual void sha1(const uint8_t* data, size_t len, uint8_t out[20]) = 0;
   virtual void sha256(const uint8_t* data, size_t len, uint8_t out[32]) = 0;
 

@@ -216,17 +216,23 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
         self->inEntryLink = true;
         self->chosenLinkIsPurchase = false;
         const int rank = rel ? opdsAcquisitionRank(rel) : -1;
-        if (rank >= 0 && type && strcmp(type, "application/epub+zip") == 0) {
+        const bool isEpubType = type && strcmp(type, "application/epub+zip") == 0;
+        const bool isLcpType = type && strcmp(type, "application/vnd.readium.lcp.license.v1.0+json") == 0;
+        if (rank >= 0 && (isEpubType || isLcpType)) {
           // Prefer higher-ranked acquisitions (open-access over borrow,
-          // never buy/sample); at equal rank prefer a plain EPUB path over
-          // derived formats.
-          const bool isPlainEpub = strstr(href, ".epub") != nullptr || strstr(href, "/epub/") != nullptr;
-          if (self->currentEntry.type != OpdsEntryType::BOOK || rank > self->entryAcqRank ||
-              (rank == self->entryAcqRank && isPlainEpub && !self->entryHasPlainEpub)) {
+          // never buy/sample); at equal rank prefer a direct EPUB over an
+          // LCP license, and a plain EPUB path over derived formats.
+          const bool isPlainEpub = isEpubType && (strstr(href, ".epub") != nullptr || strstr(href, "/epub/") != nullptr);
+          const bool better =
+              self->currentEntry.type != OpdsEntryType::BOOK || rank > self->entryAcqRank ||
+              (rank == self->entryAcqRank &&
+               ((isEpubType && self->currentEntry.lcpLicense) || (isPlainEpub && !self->entryHasPlainEpub)));
+          if (better) {
             self->currentEntry.type = OpdsEntryType::BOOK;
             assignBounded(self->currentEntry.href, href, MAX_HREF_CHARS);
             self->entryAcqRank = rank;
             self->entryHasPlainEpub = isPlainEpub;
+            self->currentEntry.lcpLicense = isLcpType;
             self->currentEntry.purchase = rank == 0;
             self->currentEntry.detail.clear();
             self->chosenLinkIsPurchase = self->currentEntry.purchase;
