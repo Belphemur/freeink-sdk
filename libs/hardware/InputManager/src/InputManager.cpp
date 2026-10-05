@@ -223,6 +223,30 @@ uint8_t InputManager::getState() {
 
 InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
 
+bool InputManager::prepareForDeepSleep() {
+#if FREEINK_DEVICE_EEGO_A4
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.controller == BoardConfig::TouchController::Gslx680) {
+    const uint8_t halt = 0x88;
+    const bool ok = gslWrite(0xE0, &halt, 1);
+    delay(5);
+    Wire.end();
+    if (t.sda >= 0) pinMode(t.sda, INPUT);
+    if (t.scl >= 0) pinMode(t.scl, INPUT);
+    if (t.reset >= 0) {
+      const auto reset = static_cast<gpio_num_t>(t.reset);
+      gpio_hold_dis(reset);
+      pinMode(t.reset, OUTPUT);
+      digitalWrite(t.reset, LOW);
+      gpio_hold_en(reset);
+    }
+    touchDataEnabled = false;
+    return ok;
+  }
+#endif
+  return true;
+}
+
 void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs, const uint8_t queueLen) {
   if (_asyncTask) return;  // already running
   _asyncPollMs = pollMs;
