@@ -48,6 +48,13 @@ class PanelDriver {
   // --- lifecycle ---
   virtual void begin(EpdBus& bus) = 0;
   virtual void deepSleep(EpdBus& bus) = 0;
+  // Idle-hold power off (POF): the booster/source-gate drivers shut down while
+  // the panel retains its image (e-ink is bistable at zero power). Callers
+  // must ensure no refresh is in flight; the facade drains first. Returns
+  // true when a POF was actually issued (panel was on). Default no-op for
+  // drivers without an explicit power-off model (their deepSleep() still
+  // issues POF when needed).
+  virtual bool powerOffPanel(EpdBus& bus) { (void)bus; return false; }
 
   // --- core paint path (load RAM + refresh) ---
   virtual void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) = 0;

@@ -763,6 +763,53 @@ static void testMetalio() {
   assert(lastRegister(bus, 0x10) == 0x03);
 }
 
+static void testUc8279X4IdlePowerOff() {
+  // Idle-hold POF: powerOffPanel issues CMD_POWER_OFF (0x02) only while the
+  // panel is on, is a no-op when already off, and the next refresh re-powers
+  // (PON 0x04) — the single _isScreenOn guard in powerOnIfNeeded.
+  Uc8279X4Driver driver;
+  EpdBus bus;
+  driver.begin(bus);
+  const auto bw = frame(11);
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+  assert(driver._isScreenOn);
+  bus.clear();
+  assert(driver.powerOffPanel(bus));
+  assert(bus.writes.back().command == 0x02);  // CMD_POWER_OFF
+  assert(!driver._isScreenOn);
+  bus.clear();
+  assert(!driver.powerOffPanel(bus));  // already off: no bus traffic
+  assert(bus.writes.empty());
+  bus.clear();
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);  // re-power from POF
+  assert(std::any_of(bus.writes.begin(), bus.writes.end(),
+                     [](const EpdBus::Write& w) { return w.command == 0x04; }) &&  // CMD_POWER_ON
+         driver._isScreenOn);
+
+  // Facade path: powerOffScreen() drains an in-flight async refresh first
+  // (never POF mid-refresh), then POFs; a second call is a no-op.
+  Uc8279X4Driver x4;
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  display._driver = &x4;
+  display.begin();
+  const auto submitted = frame(27);
+  std::memcpy(display.getFrameBuffer(), submitted.data(), submitted.size());
+  display.displayBufferAsync(FreeInkDisplay::FAST_REFRESH);
+  assert(display.isRefreshPending());
+  assert(display.powerOffScreen());
+  assert(!display.isRefreshPending());  // drained before the POF
+  assert(display._bus.writes.back().command == 0x02);
+  assert(!x4._isScreenOn);
+  assert(!display.powerOffScreen());
+  std::memcpy(display.getFrameBuffer(), submitted.data(), submitted.size());
+  display._bus.clear();
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH);  // re-power from POF via facade
+  assert(std::any_of(display._bus.writes.begin(), display._bus.writes.end(),
+                     [](const EpdBus::Write& w) { return w.command == 0x04; }));
+  display.releaseBuffers();
+  std::puts("  UC8279X4 idle powerOffPanel/facade + re-power: PASS");
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
@@ -777,6 +824,7 @@ int main(int argc, char** argv) {
   testUc8179GrayShadeSplit();
   testUc8279X4WaveformSelection();
   testUc8279X4StateMachine();
+  testUc8279X4IdlePowerOff();
   testUc8279X4CleanupState();
   testUc8279X4Coverage();
   testDirectSleep<Uc8179Driver>();

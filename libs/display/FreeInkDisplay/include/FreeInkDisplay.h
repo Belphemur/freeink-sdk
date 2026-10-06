@@ -292,6 +292,12 @@ class FreeInkDisplay {
 
   // Power management
   void deepSleep();
+  // Idle-hold power off (POF): shuts the booster down between refreshes while
+  // the panel retains its image. Drains any in-flight async refresh first
+  // (never POF mid-refresh). The next refresh re-powers via the driver's
+  // powerOnIfNeeded, so wake cost is just the PON that precedes every paint.
+  // Returns true when a POF was actually issued (panel was on).
+  bool powerOffScreen();
 
   // Optional hooks fired around long BUSY waits (~0.3-2 s per refresh), so host
   // firmware can apply its own power policy (e.g. reduce the CPU clock) for the
