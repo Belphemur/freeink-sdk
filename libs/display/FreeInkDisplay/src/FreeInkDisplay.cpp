@@ -1041,7 +1041,8 @@ void FreeInkDisplay::deepSleep() {
 
 bool FreeInkDisplay::powerOffScreen() {
   if (_driver == nullptr) return false;
-  syncPendingAsync();  // drain any deferred refresh: never POF mid-refresh
+  cancelGrayscalePass();  // same as deepSleep: kill stale gray-plane state
+  syncPendingAsync();     // drain any deferred refresh: never POF mid-refresh
   return _driver->powerOffPanel(_bus);
 }
 
