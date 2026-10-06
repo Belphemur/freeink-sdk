@@ -1039,6 +1039,12 @@ void FreeInkDisplay::deepSleep() {
   if (_driver) _driver->deepSleep(_bus);
 }
 
+bool FreeInkDisplay::powerOffScreen() {
+  if (_driver == nullptr) return false;
+  syncPendingAsync();  // drain any deferred refresh: never POF mid-refresh
+  return _driver->powerOffPanel(_bus);
+}
+
 // ============================================================================
 // Desktop/test helper
 // ============================================================================

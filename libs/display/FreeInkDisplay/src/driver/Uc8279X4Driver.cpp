@@ -554,6 +554,19 @@ void Uc8279X4Driver::requestResync(uint8_t settlePasses) {
 
 void Uc8279X4Driver::skipInitialResync() { _needFullClear = false; }
 
+// Standalone idle-hold POF (image retained, wake = next refresh's
+// powerOnIfNeeded PON at ~40 ms, which precedes every paint anyway). Same
+// tail as displayFinish's _pendingTurnOff branch and the gray-path POFs:
+// guarded on _isScreenOn, no gray-plane bookkeeping touched (the retained
+// gray image is plane state, not booster state).
+bool Uc8279X4Driver::powerOffPanel(EpdBus& bus) {
+  if (!_isScreenOn) return false;
+  bus.cmd(CMD_POWER_OFF);
+  bus.waitBusy(" 8279x4_POF");
+  _isScreenOn = false;
+  return true;
+}
+
 void Uc8279X4Driver::deepSleep(EpdBus& bus) {
   _directGrayOnPanel = false;
   _grayImagePass = false;
