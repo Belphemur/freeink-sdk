@@ -21,6 +21,8 @@ class InputManager {
  public:
   InputManager();
   void begin();
+  // A4: stop touch and release the shared I2C bus after all other bus users finish.
+  bool prepareForDeepSleep();
   uint8_t getState();
 
   // Call regularly from the main loop to update button and touch edge state.

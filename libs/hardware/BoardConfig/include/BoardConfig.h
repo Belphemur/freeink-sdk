@@ -1424,7 +1424,7 @@ constexpr BoardProfile EEGO_A4 = {
     // GSLX680: pollGslx680 applies the 1.2.7 calibration and returns panel-native
     // x=0..767, y=0..551, so no raw-range/swap/flip mapping is needed here.
     {TouchController::Gslx680, 2, 1, PIN_UNASSIGNED, 3, 0x40, 0, 767, 0, 551, false, 0, false, false,
-     PIN_UNASSIGNED, false, false, false, true, true},  // powerEnable, swapXY, flipX, flipY, hasHomeKey, pwrEnActiveHigh
+     PIN_UNASSIGNED, false, false, false, false, true},  // powerEnable, swapXY, flipX, flipY, hasHomeKey, pwrEnActiveHigh
     // The frontlight is an LM3630A driven via the i2cFrontlight field below, not
     // this LEDC/PWM FrontlightConfig — the frontlit variant's light is I2C only.
     NO_FRONTLIGHT,
