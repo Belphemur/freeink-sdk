@@ -12,6 +12,8 @@
 #include <esp_rom_sys.h>
 #endif
 #if FREEINK_DEVICE_EEGO_A4
+#include <Logging.h>
+
 #include "gsl/EegoA4GslFirmware.h"
 #endif
 #endif
@@ -222,6 +224,30 @@ uint8_t InputManager::getState() {
 }
 
 InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
+
+bool InputManager::prepareForDeepSleep() {
+#if FREEINK_DEVICE_EEGO_A4
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.controller == BoardConfig::TouchController::Gslx680) {
+    const uint8_t halt = 0x88;
+    const bool ok = gslWrite(0xE0, &halt, 1);
+    delay(5);
+    Wire.end();
+    if (t.sda >= 0) pinMode(t.sda, INPUT);
+    if (t.scl >= 0) pinMode(t.scl, INPUT);
+    if (t.reset >= 0) {
+      const auto reset = static_cast<gpio_num_t>(t.reset);
+      gpio_hold_dis(reset);
+      pinMode(t.reset, OUTPUT);
+      digitalWrite(t.reset, LOW);
+      gpio_hold_en(reset);
+    }
+    touchDataEnabled = false;
+    return ok;
+  }
+#endif
+  return true;
+}
 
 void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs, const uint8_t queueLen) {
   if (_asyncTask) return;  // already running
@@ -1722,25 +1748,36 @@ bool InputManager::gslRead(const uint8_t reg, uint8_t* buf, const uint8_t len) {
 
 bool InputManager::gslUploadFirmware() {
 #if FREEINK_DEVICE_EEGO_A4
-  bool ok = true;
-  for (size_t i = 0; i < freeink::EEGO_A4_GSL_FIRMWARE_LEN; ++i) {
+  size_t i = 0;
+  while (i < freeink::EEGO_A4_GSL_FIRMWARE_LEN) {
     const freeink::Gslx680FwEntry& e = freeink::EEGO_A4_GSL_FIRMWARE[i];
     if (e.reg == 0xF0) {
       const uint8_t page = static_cast<uint8_t>(e.value & 0xFF);  // page select: one byte
-      ok = gslWrite(0xF0, &page, 1) && ok;
-    } else {
-      const uint8_t val[4] = {static_cast<uint8_t>(e.value & 0xFF), static_cast<uint8_t>((e.value >> 8) & 0xFF),
-                              static_cast<uint8_t>((e.value >> 16) & 0xFF), static_cast<uint8_t>((e.value >> 24) & 0xFF)};
-      ok = gslWrite(e.reg, val, 4) && ok;
+      if (!gslWrite(0xF0, &page, 1)) return false;
+      ++i;
+      continue;
     }
+
+    uint8_t payload[64];
+    const uint8_t firstReg = e.reg;
+    uint8_t bytes = 0;
+    while (i < freeink::EEGO_A4_GSL_FIRMWARE_LEN && bytes < sizeof(payload)) {
+      const auto& word = freeink::EEGO_A4_GSL_FIRMWARE[i];
+      if (word.reg == 0xF0 || word.reg != firstReg + bytes) break;
+      for (uint8_t shift = 0; shift < 32; shift += 8) payload[bytes++] = static_cast<uint8_t>(word.value >> shift);
+      ++i;
+    }
+    if (!gslWrite(firstReg, payload, bytes)) return false;
   }
-  return ok;
+  return true;
 #else
   return false;
 #endif
 }
 
 void InputManager::beginGslx680() {
+#if FREEINK_DEVICE_EEGO_A4
+  touchDataEnabled = false;
   const auto& t = BoardConfig::ACTIVE.touch;
   if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
 
@@ -1789,13 +1826,20 @@ void InputManager::beginGslx680() {
   wr1(0xF0, 0x12);
   delay(2);
   const bool present = gslRead(0xF0, &probe, 1);
+  if (!present) {
+    LOG_ERR("INPUT", "GSLX680 presence probe failed");
+    return;
+  }
 
   resetBlock();
   clearRegs();
   clearRegs();
   resetBlock();
   clearRegs();
-  gslUploadFirmware();
+  if (!gslUploadFirmware()) {
+    LOG_ERR("INPUT", "GSLX680 firmware upload failed");
+    return;
+  }
   startup();
   clearRegs();
   startup();
@@ -1809,10 +1853,12 @@ void InputManager::beginGslx680() {
     startup();
     loaded = gslRead(0xB0, chk, 4) && chk[0] == 0x5A && chk[1] == 0x5A && chk[2] == 0x5A && chk[3] == 0x5A;
   }
-  touchDataEnabled = present || loaded;  // still poll if the chip ACKs, even if the magic lags
+  touchDataEnabled = loaded;
+  if (!loaded) LOG_ERR("INPUT", "GSLX680 firmware status check failed");
 #ifdef TOUCH_PROBE_DEBUG
   touchDebugPrintf("[touch] GSLX680 probe present=%d loaded=%d chk=%02X%02X%02X%02X\n", present, loaded, chk[0], chk[1],
                    chk[2], chk[3]);
+#endif
 #endif
 }
 

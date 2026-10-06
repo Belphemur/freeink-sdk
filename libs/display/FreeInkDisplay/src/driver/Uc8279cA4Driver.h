@@ -27,7 +27,6 @@ class Uc8279cA4Driver : public PanelDriver {
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
-  void setHoldPeriodicFull(bool hold) override { _holdPeriodicFull = hold; }
 
  private:
   void hardwareReset(EpdBus& bus);
@@ -38,7 +37,7 @@ class Uc8279cA4Driver : public PanelDriver {
   void loadGrayLut(EpdBus& bus);
   void writeFrame(EpdBus& bus, uint8_t command, const uint8_t* fb, bool invert = false);
   void fillControllerRam(EpdBus& bus, uint8_t command, uint8_t fill);
-  void refresh(EpdBus& bus, bool turnOff);
+  void refresh(EpdBus& bus, bool turnOff, const uint8_t* bwBaseline = nullptr);
   uint8_t* allocateGrayBuffer();
 
   uint16_t _width;
@@ -46,14 +45,12 @@ class Uc8279cA4Driver : public PanelDriver {
   uint16_t _widthBytes;
   bool _screenOn = false;
   bool _grayControllerMode = false;
-  bool _redriveAfterGray = false;  // next B/W refresh re-drives to scrub gray residue
+  bool _redriveAfterGray = false;  // re-drive all target pixels after AA, using the requested waveform
   // begin() seeds DTM1 white, but after a reflash/reset the glass holds the
   // previous UI, so a white-assumed diff leaves it ghosting through the first
   // paint. Seed DTM1 with the inverse of the first frame instead: every pixel
   // transitions, so the full LUT drives the whole panel to a clean baseline.
   bool _firstRefreshPending = false;
-  bool _holdPeriodicFull = false;  // suppress the every-Nth full during a live drag
-  uint8_t _fastRefreshesSinceFull = 0;
   uint8_t* _grayLsb = nullptr;
   uint8_t* _grayMsb = nullptr;
 };
