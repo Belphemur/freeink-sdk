@@ -142,6 +142,19 @@ bool lcpContentKey(Crypto& crypto, const LcpLicense& license, const uint8_t user
   return true;
 }
 
+bool lcpUnwrapContentKey(Crypto& crypto, const uint8_t devicePriv[32], const uint8_t epk[32], const uint8_t iv[12],
+                         const uint8_t ct[32], const uint8_t tag[16], uint8_t out[32]) {
+  uint8_t shared[32];
+  if (!crypto.x25519SharedSecret(devicePriv, epk, shared)) return false;
+  uint8_t kek[32];
+  static constexpr char INFO[] = "lcp-key-wrap";
+  if (!crypto.hkdfSha256(shared, sizeof(shared), reinterpret_cast<const uint8_t*>(INFO), sizeof(INFO) - 1, kek,
+                         sizeof(kek))) {
+    return false;
+  }
+  return crypto.aes256GcmDecrypt(kek, iv, ct, 32, tag, out);
+}
+
 int64_t lcpParseIso8601(const char* s) {
   if (!s) return 0;
   int y, mo, d, h, mi, sec;

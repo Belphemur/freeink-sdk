@@ -54,6 +54,13 @@ bool lcpCheckUserKey(Crypto& crypto, const LcpLicense& license, const uint8_t us
 // 32-byte AES-256 content key.
 bool lcpContentKey(Crypto& crypto, const LcpLicense& license, const uint8_t userKey[32], uint8_t out[32]);
 
+// Unwraps a /unlock response's content key with the device's X25519 private
+// key: shared = X25519(priv, epk), kek = HKDF-SHA256(shared, info
+// "lcp-key-wrap"), content key = AES-256-GCM(kek, iv, ct, tag). All inputs
+// raw bytes (RFC 7748 little-endian keys); the caller handles base64.
+bool lcpUnwrapContentKey(Crypto& crypto, const uint8_t devicePriv[32], const uint8_t epk[32], const uint8_t iv[12],
+                         const uint8_t ct[32], const uint8_t tag[16], uint8_t out[32]);
+
 // "2026-03-01T10:00:00Z" (optional fractional seconds, Z or ±hh:mm offset)
 // to epoch seconds; 0 on parse failure.
 int64_t lcpParseIso8601(const char* s);
