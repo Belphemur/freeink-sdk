@@ -314,6 +314,20 @@ class SecureHttpClient {
     return found == _responseHeaders.end() ? "" : found->value;
   }
 
+  // Borrow one unambiguous response header without copying the header collection
+  // or its values. Pass a lowercased name. Null means absent or duplicated;
+  // the pointer stays valid only until begin(), another request, or destruction.
+  const std::string* getUniqueHeader(const char* lowercaseName) const {
+    if (!lowercaseName) return nullptr;
+    const std::string* value = nullptr;
+    for (const auto& header : _responseHeaders) {
+      if (header.name != lowercaseName) continue;
+      if (value) return nullptr;
+      value = &header.value;
+    }
+    return value;
+  }
+
   // All response headers, in receive order, as (lowercased-name, value) pairs.
   // Order-preserving and duplicate-preserving so callers can see every
   // Set-Cookie (or other repeated header) rather than just the first.
