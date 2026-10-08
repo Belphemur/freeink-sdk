@@ -203,6 +203,15 @@ class InputManager {
   // Cleared each #update().
   bool wasHomeKeyLongPressed() const;
 
+  // --- Slide switch (inert unless BoardConfig::ACTIVE.input.toggleSwitch is set)
+  bool hasToggleSwitch() const { return BoardConfig::ACTIVE.input.toggleSwitch >= 0; }
+  // Debounced switch position; begin() latches the boot position without
+  // raising a change event. False on boards without a switch.
+  bool isToggleSwitchOn() const { return toggleSwitchOn; }
+  // True for the one update() in which the debounced position changed. Under
+  // beginAsync() the task consumes this edge; poll isToggleSwitchOn() instead.
+  bool wasToggleSwitchChanged() const { return toggleSwitchChangedEvent; }
+
   // Optional board hook for buttons that aren't direct GPIOs — e.g. a key
   // behind an I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535). It
   // returns a (1<<BTN_*) bitmask that is OR'd into every update(); the board
@@ -350,6 +359,8 @@ class InputManager {
   void pollGslx680(unsigned long now);
   bool gslWrite(uint8_t reg, const uint8_t* data, uint8_t len);
   bool gslRead(uint8_t reg, uint8_t* buf, uint8_t len);
+  void beginPiccoTouch();               // Onyx Picco PiccoCst (I2C 0x24) init/reset
+  void pollPiccoTouch(unsigned long now);  // tap-dump scaffold — see InputManager.cpp
   bool gslUploadFirmware();
 
   enum class MultiTouchGestureState : uint8_t { Idle, Tracking, Blocked };
@@ -375,6 +386,12 @@ class InputManager {
   bool classifyMultiTouchRotation(unsigned long now);
   bool classifyMultiTouchPinch(unsigned long now);
   void normalizeTouchPoint(uint16_t x, uint16_t y, float& nx, float& ny) const;
+
+  void updateToggleSwitch(unsigned long now);
+  bool toggleSwitchOn = false;
+  bool toggleSwitchRaw = false;
+  bool toggleSwitchChangedEvent = false;
+  unsigned long toggleSwitchRawSince = 0;
 
   uint8_t currentState;
   uint8_t lastState;

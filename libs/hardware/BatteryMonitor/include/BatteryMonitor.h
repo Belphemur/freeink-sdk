@@ -64,8 +64,9 @@ public:
     double readVolts() const;
 
     // True when the battery is actively charging. Sources by backend:
-    //   * ADC boards: the MCP73832-style charge-status pin (LOW = charging);
-    //     always false when no charge-status pin is configured.
+    //   * ADC boards: the MCP73832-style charge-status pin (LOW = charging),
+    //     else an I2C charger IC's CHRG_STAT when one is configured (Picco's
+    //     SGM41562); false when neither exists.
     //   * Gauge boards: a charger IC's status (BQ25896 CHRG_STAT) when present,
     //     else the gauge's own Current() sign (BQ27220, positive = charging), so
     //     a board with a gauge but no charger IC (e.g. X3) still reports it.
@@ -75,9 +76,9 @@ public:
     //
     // This is NOT isCharging(): a full battery stops charging while still
     // plugged in, so isCharging() goes false with the cable still attached.
-    // Only a source that reports the input rail itself can answer this, so it
-    // is currently the BQ25896's REG0B — VBUS_STAT[7:5] plus PG_STAT — and
-    // nothing else. Boards without that charger IC cannot observe it.
+    // Only a source that reports the input rail itself can answer this: the
+    // BQ25896's REG0B (VBUS_STAT[7:5] plus PG_STAT), the SGM41562's REG08
+    // PG_STAT, or the M5 PMIC. Boards without one of those cannot observe it.
     //
     // `known` (optional, out) is set false when the board has no way to tell,
     // or the read failed. Callers MUST branch on it: a bare false means "no
@@ -103,6 +104,12 @@ public:
     // FullChargeCapacity() reads more than a quarter above it. One short step per call,
     // about 8 s in all: call from the task that owns the gauge until it returns false.
     static bool loadDesignCapacity();
+
+    // Cuts the battery off from the system through the charger IC's BATFET
+    // (ship mode) — a full power-off the MCU cannot undo; what turns the device
+    // back on is up to the charger. SGM41562 only (REG06 bit 5). Returns false
+    // when the board has no such charger or the I2C write failed.
+    static bool enterShipMode();
 
 private:
     bool hasAdcBackend() const;

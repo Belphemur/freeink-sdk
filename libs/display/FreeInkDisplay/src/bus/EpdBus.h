@@ -131,7 +131,7 @@ class EpdBus {
   EpdPins _pins{-1, -1, -1, -1, -1, -1};
   SPISettings _spi;
   BusyPolarity _busy = BusyPolarity::ActiveHigh;
-  uint32_t _spiHz = 40000000;
+  uint32_t _spiHz = 20000000;
   int8_t _coCs = -1;
 };
 
