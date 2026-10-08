@@ -38,6 +38,9 @@ inline uint8_t fakePanelRev[3];
 inline int fakePanelCommand = -1;
 inline int fakeLevels[64], fakeModes[64], fakeBit, fakeShift;
 inline void delayMicroseconds(unsigned) {}
+typedef int gpio_num_t;
+inline bool fakeHoldReleased[64];
+inline void gpio_hold_dis(gpio_num_t p) { fakeHoldReleased[p] = true; }
 inline void pinMode(int p, int m) { fakeModes[p] = m; }
 inline void digitalWrite(int p, int v) {
   const auto& d = BoardConfig::ACTIVE.display;

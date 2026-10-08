@@ -42,9 +42,10 @@ static void expectRefresh(Ssd1677Driver& d, RefreshMode mode, uint8_t ctrl2, con
   assert(!d._customLutActive);
 }
 
-// Stock AA (overlay): waveform-only LUT, CTRL1 0x00, 0x1A=0x5A, CTRL2 0xC4. Absolute
-// uses the default X4 factory LUT with its voltage tail.
-static void expectStockGray(Ssd1677Driver& d, const unsigned char* lut) {
+// AA follows the Sticky overlay path (its LUT + voltages, border parked at VCOM,
+// power-up first, 0xCC). Absolute uses the default X4 factory LUT.
+static void expectStickyGray(Ssd1677Driver& d) {
+  const unsigned char* lut = lut_grayscale_sticky;
   assert(d.grayscaleCapabilities(GrayscaleMode::Overlay).supported());
   assert(d.grayscaleCapabilities(GrayscaleMode::Absolute).supported() && d._cfg.factoryGrayLut == nullptr);
   EpdBus bus;
@@ -52,8 +53,8 @@ static void expectStockGray(Ssd1677Driver& d, const unsigned char* lut) {
   d.displayGray(bus, fb.data(), false, nullptr, false);
   const Bytes* sent = lastLut(bus);
   assert(sent && *sent == Bytes(lut, lut + 105));
-  for (const auto& w : bus.writes) assert(w.command != 0x03 && w.command != 0x04 && w.command != 0x2C);
-  assert(lastRegister(bus, 0x21) == 0x00 && lastRegister(bus, 0x1A) == 0x5A && lastRegister(bus, 0x22) == 0xC4);
+  assert(lastRegister(bus, 0x2C) == lut[109] && lastRegister(bus, 0x3C) == 0x80);
+  assert(lastRegister(bus, 0x22) == 0xCC);
   assert(!d._customLutActive);
   bus.clear();
   d.displayGray(bus, fb.data(), false, nullptr, true);
@@ -120,6 +121,8 @@ int main(int argc, char** argv) {
   }
 
   auto& d = static_cast<Ssd1677Driver&>(ssd1677Driver());
+  // Sleep latches the display pins; the probe must release them before driving RESET.
+  assert(fakeHoldReleased[BoardConfig::ACTIVE.display.rst]);
   // The probe issued Read User ID; an unrecognized ID goes on to CMD 0x70.
   assert(fakePanelCommand == (strcmp(which, "unknown") ? 0x2E : 0x70));
   const uint8_t variant = BoardConfig::ACTIVE.displayControllerVariant;
@@ -132,15 +135,13 @@ int main(int argc, char** argv) {
     expectRefresh(d, RefreshMode::Full, 0xF7, nullptr);
     expectRefresh(d, RefreshMode::Half, 0xD7, nullptr);
     expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_fast);
-    assert(d._cfg.grayLut == lut_picco_gray);
-    expectStockGray(d, lut_picco_gray);
+    expectStickyGray(d);
   } else if (!strcmp(which, "depg")) {
     assert(variant == 2);
     expectRefresh(d, RefreshMode::Full, 0xE4, lut_picco_depg_full);
     expectRefresh(d, RefreshMode::Half, 0xC4, lut_picco_depg_full);
     expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_depg_fast);
-    assert(d._cfg.grayLut == lut_picco_depg_gray);
-    expectStockGray(d, lut_picco_depg_gray);
+    expectStickyGray(d);
   } else {
     assert(variant == 0);
     assert(d._cfg.fullLut == nullptr && d._cfg.fastLut == nullptr && d._cfg.grayLut == lut_grayscale_sticky);

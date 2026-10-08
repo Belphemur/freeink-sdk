@@ -71,15 +71,6 @@ struct Ssd1677Config {
   // halfRefreshTemp written) instead of the OTP sequences; nullptr keeps OTP.
   const unsigned char* fullLut = nullptr;
   const unsigned char* halfLut = nullptr;
-  // Overlay (AA) grayscale activation. 0 keeps the X4 external-LUT sequence
-  // (CTRL2 0xCC). Non-zero: CTRL1 normal, halfRefreshTemp written to 0x1A, then
-  // this CTRL2 value (low disable bits added when turning off) — the Onyx Picco
-  // stock gray refresh uses 0xC4/0xC7.
-  uint8_t grayCtrl2 = 0;
-  // Write the LUT's voltage tail (0x03/0x04/0x2C) with grayscale LUTs. false
-  // uploads only the 105-byte waveform and keeps the B/W voltages, as the Picco
-  // stock gray refresh does.
-  bool grayLutVoltages = true;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
@@ -136,7 +127,6 @@ class Ssd1677Driver : public PanelDriver {
   bool _pendingFrameSync = false;
   bool _needsGrayClear = false;
   bool _absoluteInput = false;
-  bool _grayLutLoading = false;  // setCustomLut() is loading an overlay gray LUT
   void writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t len);
   void initController(EpdBus& bus);
   void setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
