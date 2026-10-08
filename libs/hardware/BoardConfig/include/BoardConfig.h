@@ -361,7 +361,7 @@
 #ifndef FREEINK_SD_SDMMC
 #define FREEINK_SD_SDMMC                                                                            \
   (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || \
-   FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4)
+   FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
 #endif
 
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
@@ -420,7 +420,7 @@ enum class Board : uint8_t {
   OnePage,    // OnePage: ESP32-C61, SSD1677 800x480 SPI panel, 4-key ADC ladder + 3 side keys
   WsEpaper397,  // Waveshare ESP32-S3-ePaper-3.97: SSD1677 800x480, 3 keys + BOOT, AXP2101 PMIC
   MetalioEInk4,  // ESP32-S3, GDEM0397T81, CST816S, TCA9555
-  Picco,        // Onyx Picco / BOOX Tiles: ESP32-S3 (N8R8, 8MB octal PSRAM), SSD1677/2677 800x480 portrait,
+  Picco,        // Onyx Picco / BOOX Tiles: ESP32-S3 (16MB flash, 8MB octal PSRAM), SSD1677/2677 800x480 portrait,
                 // capacitive touch, 2-ch I2C frontlight, 4-bit SDMMC, ADC battery. RE'd from retail
                 // firmware.
 };
@@ -1223,7 +1223,7 @@ constexpr BoardProfile DE_LINK = {Board::DeLink,
                                   800,
                                   480,
                                   {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-                                  0,  // displaySpiHz: SSD1677 default (40 MHz)
+                                  0,  // displaySpiHz: SSD1677 default (20 MHz)
                                   // SD on de-link is 4-bit SDMMC. SdFat can't drive SDIO, so SDCardManager
                                   // mounts an FsVolume on a native esp-idf SDMMC block device (FREEINK_SD_SDMMC);
                                   // the wiring is in the sdmmc field below. These SPI sd pins are unused.
@@ -1505,9 +1505,8 @@ constexpr BoardProfile STICKY = {
     800,
     480,
     {13, 14, 15, 16, 17, 18, 47},  // SCK13 MOSI(SDI)14 CS15 DC16 RST17 BUSY18, EP_PWR_EN47
-    0,  // displaySpiHz: 0 -> SSD1677 driver default (40 MHz), as on X4/de-link (same controller). The
-        // vendor peripheral demo clocks it at a conservative 10 MHz; if the SD-shared bus proves flaky on
-        // hardware, pin this to 10000000.
+    0,  // displaySpiHz: 0 -> SSD1677 driver default (20 MHz). The vendor peripheral demo clocks it
+        // at a conservative 10 MHz; if the SD-shared bus proves flaky on hardware, pin this to 10000000.
     // SD over SPI, sharing the display's SPI bus: SCLK13 / MOSI14 / MISO12 (the
     // vendor demo's pin_config.h confirms these as the EPD bus pins), SD_CS8,
     // SD_PWR_EN10. SD bus-sharing is inferred (the demo doesn't exercise SD) —
@@ -1581,7 +1580,7 @@ constexpr BoardProfile STICKY = {
 // the PMIC rail, NO_FLIP orientation, PCF85063 RTC, 4-bit SDMMC, buttons, and BOOT
 // waking the board out of deep sleep. The 20 MHz SPI clock stays: page-turn time is
 // panel waveform (407 ms) + gray display (226 ms) against 24 ms of SPI, so the
-// 40 MHz default would buy ~10 ms of 910. PENDING: the reused Sticky grayscale LUT.
+// a 40 MHz clock would buy ~10 ms of 910. PENDING: the reused Sticky grayscale LUT.
 constexpr BoardProfile WS_EPAPER_397 = {
     Board::WsEpaper397,
     "ws397",
@@ -1591,7 +1590,7 @@ constexpr BoardProfile WS_EPAPER_397 = {
     480,
     // SCK11 MOSI12 CS10 DC9 RST46 BUSY3; no power-enable GPIO (ALDO3, see above).
     {11, 12, 10, 9, 46, 3, PIN_UNASSIGNED},
-    20000000,  // displaySpiHz: the vendor demo's 20 MHz; 0 would take the 40 MHz default
+    20000000,  // displaySpiHz: the vendor demo's 20 MHz (same as the SSD1677 default)
     // SD is 4-bit SDMMC (sdmmc field below); these SPI pins are unused.
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 0},
     // back=BOOT(0), confirm=OK(5), no left/right, up=4, down=6. BOOT is also the
@@ -1645,7 +1644,7 @@ constexpr BoardProfile METALIO_EINK4 = {
     {41, 42, 400000, 0x51, 0, 0x19, 0, RtcType::Pcf8563, ImuType::Sc7a20h}, 1.25f,
     {}, 0, {}, false, NO_I2C_FRONTLIGHT, {44, true, 20000}};
 
-// --- Onyx Picco / BOOX Tiles — ESP32-S3 (N8R8, 8MB octal PSRAM), SSD1677/2677 ---
+// --- Onyx Picco / BOOX Tiles — ESP32-S3 (16MB flash, 8MB octal PSRAM), SSD1677/2677 ---
 // Ultra-compact 3.97" 800x480 mono e-reader. Everything below was recovered from
 // the retail firmware (build 2621) by reverse-engineering, NOT from vendor sources
 // or a datasheet.
@@ -1654,9 +1653,7 @@ constexpr BoardProfile METALIO_EINK4 = {
 // bus, and the power/wake button.
 //
 // Pending hardware validation / deeper RE (shipped conservatively here):
-//   * Buttons — the nav GPIO set {5,9,21} is confirmed but which is up vs down vs
-//     the warm/cool light toggle is NOT resolved from the binary. Mapped
-//     provisionally (up=5, down=9, confirm=21); expect to correct on hardware.
+//   * Buttons — up=21 / down=9 confirmed on hardware; GPIO5's role is not.
 //   * Touch — controller model is unknown (I2C 0x24 is non-standard) and the INT
 //     pin was not recovered, so touch can't function yet → NO_TOUCH for now
 //     (recovered so far: RST=11, addr=0x24, native 480x800 portrait digitizer).
@@ -1676,17 +1673,23 @@ constexpr BoardProfile PICCO = {
     DisplayController::SSD1677,  // SSD1677/SSD2677 auto-detected by the driver over the bus
     800,
     480,
-    // SCLK48 MOSI/SDA47 CS17 DC18 RST16 BUSY15; no MISO, no panel power-enable GPIO.
-    // Retail firmware bit-bangs these; the SDK drives HW-SPI on the same pins via
-    // the GPIO matrix.
-    {48, 47, 17, 18, 16, 15, PIN_UNASSIGNED},
-    0,  // displaySpiHz: 0 -> SSD1677 driver default (40 MHz)
-    // SD is 4-bit SDMMC (sdmmc field below); these SPI pins are unused.
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 0},
-    // Buttons: power/wake = GPIO2 (active-low, RTC ext0 wake source). Nav set
-    // {5,9,21} confirmed; roles PROVISIONAL (up=5, down=9, confirm=21) — see note.
+    // SCLK48 MOSI/SDA47 CS18 DC17 RST16 BUSY15; no MISO, no panel power-enable GPIO.
+    // From the stock panel constructor (build 2912: CS=0x12, DC=0x11, RST=0x10,
+    // BUSY=0x0F, SCLK=0x30, SDA=0x2F). Retail firmware bit-bangs these; the SDK
+    // drives HW-SPI on the same pins via the GPIO matrix.
+    {48, 47, 18, 17, 16, 15, PIN_UNASSIGNED},
+    20000000,  // displaySpiHz: the stock firmware's SPI2 device clock (0x1312D00)
+    // SD is 4-bit SDMMC (sdmmc field below); these SPI pins are unused. powerEnable =
+    // GPIO0, an ACTIVE-LOW peripheral rail: stock's power-manager begin (FUN_420094f4)
+    // drives it LOW at boot, and its deep-sleep path drives it HIGH (FUN_4200953c).
+    // Carried here so the SDMMC mount power-cycles it (HIGH -> LOW) and holds it LOW,
+    // ahead of the display probe/init.
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, false, 0, false},
+    // Buttons: power/wake = GPIO2 (active-low, RTC ext0 wake source). Up = GPIO21 and
+    // Down = GPIO9 (hardware-confirmed). GPIO5 is the remaining input from the stock
+    // button constructor (2, 5, 21, 9); carried as confirm, physical role unconfirmed.
     // Slide switch on GPIO6.
-    {PIN_UNASSIGNED, 21, PIN_UNASSIGNED, PIN_UNASSIGNED, 5, 9, 2, false, PIN_UNASSIGNED, 6},
+    {PIN_UNASSIGNED, 5, PIN_UNASSIGNED, PIN_UNASSIGNED, 21, 9, 2, false, PIN_UNASSIGNED, 6},
     1,               // batteryAdc: GPIO1 (ADC1, 12 dB attenuation in stock)
     PIN_UNASSIGNED,  // batteryChargeStatus: no STAT pin; charge state comes from the SGM41562
     2.0f,
@@ -1698,7 +1701,8 @@ constexpr BoardProfile PICCO = {
     // but the per-point X/Y byte offsets in the status block are NOT yet recovered,
     // so coordinates are not published until a hardware tap-dump identifies them
     // (build with -DTOUCH_PROBE_DEBUG to log raw frames). flipX/flipY pending HW.
-    {TouchController::PiccoCst, 7, 8, 11, 10, 0x24, 0, 799, 0, 479, false, 0, true, false, PIN_UNASSIGNED, true},
+    {TouchController::PiccoCst, 7, 8, 11, 10, 0x24, 0, 799, 0, 479, false, 0, true, false, PIN_UNASSIGNED, true,
+     false, true},  // swapXY; flipX=false; flipY=true (portrait horizontal was reversed on hardware)
     NO_FRONTLIGHT,   // no LEDC pins; the frontlight is the I2C driver in i2cFrontlight below
     NO_AUDIO,
     NO_LEDS,
@@ -1714,7 +1718,9 @@ constexpr BoardProfile PICCO = {
     // 0x6D, WHO_AM_I reg0==0x05, CTRL init). {sda,scl,hz,rtcAddr,tempHum,imuAddr,bus,rtcType,imuType}
     {7, 8, 400000, 0x51, 0, 0x6A, 0, RtcType::Pcf8563, ImuType::Qmi8658},
     1.2f,   // uiScale: small 3.97" touch device — bump chrome toward finger size
-    {},     // power: no rail-latch GPIO found
+    // power.latch0 = GPIO4: stock drives it HIGH at boot and gpio_hold_en()s it through
+    // deep sleep (FUN_420094f4).
+    {4},
     0,      // displayControllerVariant: not probed
     {},     // viewableInsets: none measured
     false,  // batteryChargeStatusActiveHigh

@@ -56,7 +56,17 @@ bool SDCardManager::begin() {
     return false;
   }
   if (!_vol.begin(_dev)) {
-    if (Serial) Serial.printf("[%lu] [SD] SDMMC volume mount failed\n", millis());
+    if (Serial) {
+      // Which read failed: the MBR, or the first partition's boot sector.
+      static uint8_t sec[512];
+      const bool mbrOk = _dev->readSector(0, sec);
+      const uint32_t lba = mbrOk ? (sec[454] | sec[455] << 8 | sec[456] << 16 | uint32_t(sec[457]) << 24) : 0;
+      const uint8_t type = mbrOk ? sec[450] : 0;
+      const bool sig = mbrOk && sec[510] == 0x55 && sec[511] == 0xAA;
+      const bool bootOk = mbrOk && lba != 0 && _dev->readSector(lba, sec);
+      Serial.printf("[%lu] [SD] SDMMC volume mount failed (mbr read=%d sig=%d p1 type=0x%02X lba=%lu read=%d)\n",
+                    millis(), mbrOk, sig, type, static_cast<unsigned long>(lba), bootOk);
+    }
     initialized = false;
     cachedTotalBytes = 0;
     cachedUsedBytesValid = false;

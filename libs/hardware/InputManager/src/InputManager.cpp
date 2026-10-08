@@ -1983,15 +1983,61 @@ void InputManager::pollGslx680(const unsigned long now) {
 //     The per-point X/Y byte offsets were NOT recovered (handler is in a packed
 //     .irom region). Build -DTOUCH_PROBE_DEBUG, tap a unit, read the dumped bytes
 //     to locate X/Y, then mirror pollFt6336u's publish/slop/press-release logic.
+// --- Onyx Picco: Parade/Cypress TMA525C (PIP protocol) -----------------------
+// Recovered from the stock firmware (build 2912, "TMA525C" driver). Every read is
+// a 2-byte little-endian length followed by a re-read of the whole report from its
+// start; a zero length means nothing pending. Touch reports (report ID 0x01)
+// carry the record count in byte 5 bits 0-4 and 10-byte records from byte 7:
+// rec[1] bits 0-4 = touch ID, bits 5-6 = event (3 = lift-off), rec[2..3] = X,
+// rec[4..5] = Y (LE). Stock inverts both against the native 480x800 portrait
+// digitizer (x = 480 - X, y = 800 - Y).
+namespace {
+constexpr uint16_t PICCO_TOUCH_W = 480;
+constexpr uint16_t PICCO_TOUCH_H = 800;
+constexpr uint8_t PICCO_REPORT_TOUCH = 0x01;
+constexpr uint8_t PICCO_MODE_APP = 0xF7;
+constexpr uint8_t PICCO_MODE_BOOTLOADER = 0xFF;
+
+// One PIP report into buf (at most cap bytes); returns its length, 0 if none.
+uint16_t piccoReadReport(uint8_t addr, uint8_t* buf, uint16_t cap) {
+  if (Wire.requestFrom(addr, static_cast<uint8_t>(2), static_cast<uint8_t>(true)) != 2) return 0;
+  const uint16_t len = Wire.read() | (Wire.read() << 8);
+  if (len < 2 || len > cap) return 0;
+  const uint8_t got = Wire.requestFrom(addr, static_cast<uint8_t>(len), static_cast<uint8_t>(true));
+  for (uint8_t i = 0; i < got; ++i) buf[i] = Wire.read();
+  return got == len ? len : 0;
+}
+
+bool piccoWaitInt(int8_t irq, unsigned long timeoutMs) {
+  const unsigned long start = millis();
+  while (irq >= 0 && digitalRead(irq) != LOW) {
+    if (millis() - start > timeoutMs) return false;
+    delay(1);
+  }
+  return true;
+}
+
+// CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF): the PIP bootloader packet CRC.
+uint16_t piccoCrc(const uint8_t* p, size_t n) {
+  uint16_t crc = 0xFFFF;
+  while (n--) {
+    crc ^= static_cast<uint16_t>(*p++) << 8;
+    for (uint8_t b = 0; b < 8; ++b) crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+  }
+  return crc;
+}
+}  // namespace
+
 void InputManager::beginPiccoTouch() {
   const auto& t = BoardConfig::ACTIVE.touch;
   if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
 
-  if (t.irq >= 0) pinMode(t.irq, INPUT_PULLUP);  // active-low, polled
+  if (t.irq >= 0) pinMode(t.irq, INPUT_PULLUP);  // active-low data-ready
 
   Wire.begin(t.sda, t.scl, 400000);
   Wire.setTimeOut(10);
 
+  // Stock reset: HIGH, 1 ms, LOW 10 ms, HIGH, then 50 ms.
   if (t.reset >= 0) {
     pinMode(t.reset, OUTPUT);
     digitalWrite(t.reset, HIGH);
@@ -2002,39 +2048,112 @@ void InputManager::beginPiccoTouch() {
     delay(50);
   }
 
-  // Presence probe at 0x24, retried while the controller stabilises.
-  for (int attempt = 0; attempt < 3 && !touchDataEnabled; ++attempt) {
-    if (attempt > 0) delay(120);
-    Wire.beginTransmission(t.i2cAddress);
-    touchDataEnabled = (Wire.endTransmission() == 0);
+  uint8_t buf[128];
+  // Drain the reset sentinel / anything queued (stock: up to 4 reads while INT is low).
+  for (int i = 0; i < 4 && t.irq >= 0 && digitalRead(t.irq) == LOW; ++i) {
+    delay(100);
+    piccoReadReport(t.i2cAddress, buf, sizeof(buf));
   }
+
+  // HID descriptor read (register 0x0001): byte 2 of the reply is the mode.
+  uint8_t mode = 0;
+  for (int attempt = 0; attempt < 3 && mode == 0; ++attempt) {
+    Wire.beginTransmission(t.i2cAddress);
+    Wire.write(0x01);
+    Wire.write(0x00);
+    if (Wire.endTransmission() != 0) {
+      delay(120);
+      continue;
+    }
+    if (piccoWaitInt(t.irq, 500) && piccoReadReport(t.i2cAddress, buf, sizeof(buf)) >= 3) mode = buf[2];
+  }
+
+  if (mode == PICCO_MODE_BOOTLOADER) {
+    // Launch the application: output register 0x0004, report 0x40, then the
+    // bootloader packet SOP(01) cmd(3B) len(0000) crc(LE) EOP(17).
+    uint8_t pkt[] = {0x04, 0x00, 0x0B, 0x00, 0x40, 0x00, 0x01, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x17};
+    const uint16_t crc = piccoCrc(&pkt[6], 4);
+    pkt[10] = crc & 0xFF;
+    pkt[11] = crc >> 8;
+    Wire.beginTransmission(t.i2cAddress);
+    Wire.write(pkt, sizeof(pkt));
+    Wire.endTransmission();
+    if (piccoWaitInt(t.irq, 500)) piccoReadReport(t.i2cAddress, buf, sizeof(buf));
+    mode = PICCO_MODE_APP;  // stock proceeds once the launch is acknowledged
+  }
+  touchDataEnabled = (mode == PICCO_MODE_APP);
+#ifdef TOUCH_PROBE_DEBUG
+  touchDebugPrintf("[touch] Picco TMA525C mode=0x%02X enabled=%d\r\n", mode, touchDataEnabled);
+#endif
 }
 
 void InputManager::pollPiccoTouch(const unsigned long now) {
   if (!touchDataEnabled) return;
   const auto& t = BoardConfig::ACTIVE.touch;
 
-  // Gate on INT (active-low); keep polling while pressed to catch the release.
-  if (t.irq >= 0 && digitalRead(t.irq) != LOW && !touchPressed) return;
-  if (now < touchReadAt) return;
-  touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
-
-#ifdef TOUCH_PROBE_DEBUG
-  // Best-effort raw dump for coordinate discovery. The exact framed read command
-  // is not reproduced yet; this uses the simple-register entry (write 0x02, read)
-  // seen in FUN_4200bee0 as a starting point. Adjust on hardware.
-  uint8_t buf[64] = {};
-  Wire.beginTransmission(t.i2cAddress);
-  Wire.write(static_cast<uint8_t>(0x02));
-  if (Wire.endTransmission(false) == 0) {
-    const uint8_t got = Wire.requestFrom(t.i2cAddress, static_cast<uint8_t>(sizeof(buf)), static_cast<uint8_t>(true));
-    for (uint8_t i = 0; i < got && i < sizeof(buf); ++i) buf[i] = Wire.read();
-    touchDebugPrintf("[touch] Picco raw got=%u [%02X %02X %02X %02X %02X %02X %02X %02X]\r\n", got, buf[0], buf[1],
-                     buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+  // INT low = report pending. Reports stream while a finger is down; if they
+  // stop without a lift-off record, release after a short hold-over.
+  if (t.irq >= 0 && digitalRead(t.irq) != LOW) {
+    if (touchPressed && now >= touchReleaseAt) {
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+      touchUpPoint = touchPoint;
+      touchPressed = false;
+      touchPoint.valid = false;
+    }
+    return;
   }
+
+  uint8_t buf[128];
+  const uint16_t len = piccoReadReport(t.i2cAddress, buf, sizeof(buf));
+  if (len < 7 || buf[2] != PICCO_REPORT_TOUCH) return;
+  const uint8_t count = buf[5] & 0x1F;
+  const uint8_t* rec = &buf[7];
+  const bool lifted = count == 0 || len < 17 || ((rec[1] >> 5) & 0x03) == 3;
+#ifdef TOUCH_PROBE_DEBUG
+  if (len >= 17)
+    touchDebugPrintf("[touch] Picco n=%u id=%u ev=%u x=%u y=%u\r\n", count, rec[1] & 0x1F, (rec[1] >> 5) & 0x03,
+                     rec[2] | (rec[3] << 8), rec[4] | (rec[5] << 8));
 #endif
-  // TODO(hardware): decode point count + X/Y from the status block and publish
-  // touchPoint, mirroring pollFt6336u's press/slop/release machinery.
+
+  if (lifted) {
+    if (touchPressed) {
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+      touchUpPoint = touchPoint;
+    }
+    touchPressed = false;
+    touchPoint.valid = false;
+    return;
+  }
+
+  const uint16_t x = static_cast<uint16_t>(rec[2] | (rec[3] << 8));
+  const uint16_t y = static_cast<uint16_t>(rec[4] | (rec[5] << 8));
+  if (x > PICCO_TOUCH_W || y > PICCO_TOUCH_H) return;
+  const uint16_t px = PICCO_TOUCH_W - x;  // stock orientation
+  const uint16_t py = PICCO_TOUCH_H - y;
+  const uint16_t sx = t.swapXY ? py : px;
+  const uint16_t sy = t.swapXY ? px : py;
+  touchPoint.valid = true;
+  touchPoint.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+  touchPoint.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  if (t.flipX) touchPoint.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - touchPoint.x);
+  if (t.flipY) touchPoint.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - touchPoint.y);
+  touchPoint.timestamp = now;
+  if (!touchPressed) {
+    touchPressedEvent = true;
+    touchDownPoint = touchPoint;
+    touchMovedBeyondTapSlop = false;
+    touchMovedBeyondTapReleaseSlop = false;
+  }
+  touchUpPoint = touchPoint;
+  const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+  const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+  if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) touchMovedBeyondTapSlop = true;
+  if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX)
+    touchMovedBeyondTapReleaseSlop = true;
+  touchPressed = true;
+  touchReleaseAt = now + 150;  // hold-over if reports stop without a lift-off
 }
 
 // --- GT911 (LilyGo) ---------------------------------------------------------
