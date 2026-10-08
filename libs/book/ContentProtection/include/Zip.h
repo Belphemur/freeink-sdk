@@ -11,17 +11,15 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <string>
-#include <vector>
 
 #include "ByteSource.h"
 
 namespace freeink {
 namespace content {
 
-// Entry names are held as FNV-1a 64-bit hashes: a fixed 20 bytes per entry
-// instead of a heap string apiece, which for many-hundred-file containers
-// keeps ~tens of KB out of a session-resident index.
+// Entry names are held as FNV-1a 64-bit hashes instead of a heap string apiece.
 struct ZipEntryInfo {
   uint64_t nameHash = 0;
   uint32_t compressedSize = 0;
@@ -44,7 +42,8 @@ class ZipScan {
   bool readRaw(ByteSource& source, const ZipEntryInfo& entry, uint8_t* out) const;
 
  private:
-  std::vector<ZipEntryInfo> entries_;
+  std::unique_ptr<ZipEntryInfo[]> entries_;
+  size_t entryCount_ = 0;
 };
 
 }  // namespace content

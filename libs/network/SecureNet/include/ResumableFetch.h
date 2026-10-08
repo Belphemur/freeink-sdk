@@ -11,8 +11,11 @@
 // Header-only, like SecureHttpClient.
 
 #include <cctype>
+#include <charconv>
 #include <functional>
+#include <limits>
 #include <string>
+#include <string_view>
 
 #include "SecureHttpClient.h"
 
@@ -68,6 +71,24 @@ inline std::string fetchOrigin(const std::string& url) {
   return scheme + "://" + authority;
 }
 
+// A resumable response must identify both its byte interval and resource size.
+inline bool parseFetchContentRange(std::string_view value, size_t& first, size_t& last, size_t& total) {
+  while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.remove_suffix(1);
+  if (value.substr(0, 6) != "bytes ") return false;
+  const char* cursor = value.data() + 6;
+  const char* end = value.data() + value.size();
+  const auto number = [&](size_t& out, const char separator) {
+    const auto parsed = std::from_chars(cursor, end, out);
+    if (parsed.ec != std::errc{}) return false;
+    cursor = parsed.ptr;
+    if (separator == '\0') return cursor == end;
+    if (cursor == end || *cursor != separator) return false;
+    ++cursor;
+    return true;
+  };
+  return number(first, '-') && number(last, '/') && number(total, '\0') && first <= last && last < total;
+}
+
 // GETs url into sink. configure runs on each attempt's client after begin():
 // user agent, timeout, trust, and (only while sameOrigin) credentials and other
 // caller headers. sameOrigin is false once a redirect leaves the starting URL's
@@ -100,21 +121,42 @@ inline FetchResult fetchResumable(const std::string& startUrl, const FetchOption
     if (resuming) http.addHeader("Range", "bytes=" + std::to_string(attemptStart) + "-");
 
     bool firstChunk = true;
+    bool invalidResponse = false;
+    size_t responseEnd = 0;
+    const auto beginResponse = [&] {
+      firstChunk = false;
+      const int status = http.getStatus();
+      if (status == 206) {
+        size_t first, last, total;
+        if (!parseFetchContentRange(http.getHeader("content-range"), first, last, total) || first != attemptStart ||
+            (result.total != 0 && result.total != total) ||
+            (http.hasContentLength() && http.getContentLength() != last - first + 1)) {
+          return false;
+        }
+        responseEnd = last + 1;
+        result.total = total;
+      } else {
+        if (resuming) {
+          if (status != 200) return false;
+          if (!sink.rewind || !sink.rewind()) {
+            result.stopped = true;
+            return false;
+          }
+          result.bytes = attemptStart = 0;
+        }
+        result.total = http.hasContentLength() ? http.getContentLength() : 0;
+        responseEnd = result.total;
+      }
+      return true;
+    };
     result.status = http.GET(
         [&](const uint8_t* data, size_t len) {
           const int status = http.getStatus();
           if (status < 200 || status >= 300) return true;  // error page or redirect body: drain
-          if (firstChunk) {
-            firstChunk = false;
-            if (resuming && status == 200) {
-              if (!sink.rewind || !sink.rewind()) {
-                result.stopped = true;
-                return false;
-              }
-              result.bytes = attemptStart = 0;
-            }
-            // A 206's Content-Length covers only the remainder.
-            if (result.total == 0 && http.hasContentLength()) result.total = attemptStart + http.getContentLength();
+          if ((firstChunk && !beginResponse()) || len > std::numeric_limits<size_t>::max() - result.bytes ||
+              (responseEnd != 0 && (result.bytes > responseEnd || len > responseEnd - result.bytes))) {
+            invalidResponse = true;
+            return false;
           }
           if (!sink.write(data, len)) {
             result.stopped = true;
@@ -133,18 +175,23 @@ inline FetchResult fetchResumable(const std::string& startUrl, const FetchOption
     const int status = result.status;
     if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
       const std::string location = http.getHeader("location");
-      if (redirects++ >= kMaxRedirects || location.empty() ||
-          !SecureHttpClient::resolveUrl(url, location, url)) {
+      if (redirects++ >= kMaxRedirects || location.empty() || !SecureHttpClient::resolveUrl(url, location, url)) {
         return result;
       }
       if (options.redirectToHttp && url.rfind("https://", 0) == 0) url.replace(0, 8, "http://");
       --attempt;  // a hop is not a transfer attempt
       continue;
     }
-    if (result.stopped || status < 200 || status >= 300) return result;  // resume cannot help
+    if (invalidResponse || result.stopped || status < 200 || status >= 300) return result;
+    // Empty bodies never invoke the write callback, but their headers still
+    // need validation (and an ignored Range still needs to rewind the sink).
+    if (firstChunk && !beginResponse()) return result;
     if (http.responseComplete()) {
-      result.complete = true;
-      return result;
+      if (responseEnd != 0 && result.bytes != responseEnd) return result;
+      if (status != 206 || result.bytes == result.total) {
+        result.complete = true;
+        return result;
+      }
     }
     stalled = result.bytes > attemptStart ? 0 : stalled + 1;
   }

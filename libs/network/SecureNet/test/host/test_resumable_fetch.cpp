@@ -74,9 +74,39 @@ bool sentRange(size_t i, const char* range) {
 }  // namespace
 
 int main() {
+  // Borrow a unique header during streaming, with no header collection copies.
+  reset({"HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=Book.epub\r\nContent-Length: 3\r\n\r\nabc"});
+  {
+    freeink::SecureHttpClient http;
+    assert(http.begin("http://a/f"));
+    http.setReuse(false);
+    bool checked = false;
+    assert(http.GET([&](const uint8_t*, size_t) {
+      const auto* value = http.getUniqueHeader("content-disposition");
+      assert(value && *value == "attachment; filename=Book.epub");
+      assert(http.getUniqueHeader("missing") == nullptr);
+      assert(http.getUniqueHeader(nullptr) == nullptr);
+      checked = true;
+      return true;
+    }) == 200);
+    assert(checked);
+    reset({"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"});
+    assert(http.begin("http://a/g"));
+    assert(http.GET() == 200);
+    assert(http.getUniqueHeader("content-disposition") == nullptr);
+  }
+  for (const char* second : {"attachment; filename=Other.epub", "attachment; filename=Book.epub", ""}) {
+    const std::string response = std::string("HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=Book.epub\r\ncOnTeNt-DiSpOsItIoN: ") + second + "\r\nContent-Length: 0\r\n\r\n";
+    reset({response.c_str()});
+    freeink::SecureHttpClient http;
+    assert(http.begin("http://a/f"));
+    assert(http.GET() == 200);
+    assert(http.getUniqueHeader("content-disposition") == nullptr);
+  }
+
   // Drop mid-body, then a 206 continues from the received count.
   reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234",
-         "HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\n\r\n56789"});
+         "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-9/10\r\nContent-Length: 5\r\n\r\n56789"});
   FetchResult r = get("http://a/f", sink());
   assert(r.complete && r.status == 206 && r.bytes == 10 && r.total == 10 && body == "0123456789");
   assert(!sentRange(0, "") && sentRange(1, "bytes=5-") && rewinds == 0);
@@ -94,7 +124,7 @@ int main() {
   assert(r.stopped && !r.complete && body == "01234");
 
   // Continuing an earlier transfer asks for the rest on the first request.
-  reset({"HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\n\r\n456789"});
+  reset({"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/10\r\nContent-Length: 6\r\n\r\n456789"});
   FetchOptions from4;
   from4.startOffset = 4;
   r = get("http://a/f", sink(), from4);
@@ -130,12 +160,59 @@ int main() {
   assert(r.status == 404 && !r.complete && body.empty() && FakeNet::requests().size() == 1);
 
   // Consecutive zero-progress attempts give up after maxStalled.
-  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01", "HTTP/1.1 206 Partial Content\r\nContent-Length: 8\r\n\r\n",
-         "HTTP/1.1 206 Partial Content\r\nContent-Length: 8\r\n\r\n",
-         "HTTP/1.1 206 Partial Content\r\nContent-Length: 8\r\n\r\n",
-         "HTTP/1.1 206 Partial Content\r\nContent-Length: 8\r\n\r\n23456789"});
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01",
+         "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 2-9/10\r\nContent-Length: 8\r\n\r\n",
+         "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 2-9/10\r\nContent-Length: 8\r\n\r\n",
+         "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 2-9/10\r\nContent-Length: 8\r\n\r\n",
+         "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 2-9/10\r\nContent-Length: 8\r\n\r\n23456789"});
   r = get("http://a/f", sink());
   assert(!r.complete && r.bytes == 2 && FakeNet::requests().size() == 4);
+
+  // A complete partial response is not necessarily the whole resource.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234",
+         "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-7/10\r\nContent-Length: 3\r\n\r\n567",
+         "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 8-9/10\r\nContent-Length: 2\r\n\r\n89"});
+  r = get("http://a/f", sink());
+  assert(r.complete && r.bytes == 10 && body == "0123456789" && sentRange(2, "bytes=8-"));
+
+  // Invalid/missing ranges must not append anything or complete the file.
+  for (const char* range :
+       {"", "bytes 0-4/10", "bytes 6-9/10", "bytes 5-9/11", "bytes 5-8/10", "bytes 5-9/*", "bytes 5-9/9",
+        "bytes 9-5/10", "bytes -5-9/10", "bytes 5-9/18446744073709551616", "bytes 5-9/10junk"}) {
+    const std::string response =
+        std::string("HTTP/1.1 206 Partial Content\r\nContent-Range: ") + range + "\r\nContent-Length: 5\r\n\r\n56789";
+    reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234", response.c_str()});
+    r = get("http://a/f", sink());
+    assert(!r.complete && r.bytes == 5 && body == "01234");
+  }
+
+  // Reaching the end of a short range must not hide a later failure.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234",
+         "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-7/10\r\nContent-Length: 3\r\n\r\n567",
+         "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n"});
+  r = get("http://a/f", sink());
+  assert(!r.complete && r.bytes == 8 && r.total == 10);
+
+  // Chunked 206 bodies must agree with the advertised interval too.
+  for (const char* chunked : {"3\r\n567\r\n0\r\n\r\n", "6\r\n567890\r\n0\r\n\r\n"}) {
+    const std::string response = std::string("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 5-9/10\r\n") +
+                                 "Transfer-Encoding: chunked\r\n\r\n" + chunked;
+    reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234", response.c_str()});
+    r = get("http://a/f", sink());
+    assert(!r.complete);
+  }
+
+  // A restarted resource can change size, including becoming empty.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234", "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc"});
+  r = get("http://a/f", sink());
+  assert(r.complete && r.bytes == 3 && r.total == 3 && body == "abc" && rewinds == 1);
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234", "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"});
+  r = get("http://a/f", sink());
+  assert(r.complete && r.bytes == 0 && r.total == 0 && body.empty() && rewinds == 1);
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234",
+         "HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\n\r\n"});
+  r = get("http://a/f", sink());
+  assert(!r.complete && r.bytes == 5);
 
   puts("resumable fetch ok");
 }

@@ -79,8 +79,9 @@ const uint8_t kXtfPreBwMid[5][PREBW_LUT_LEN + 1] = {
 const GrayLut* selectAaLuts() {
   // LUT_VER stored by the boot probe. Stock's panel LUT registry (X4 Pro
   // 260917 build, table @0x3c1adbd4 + hardcoded bank selects in its UC8279
-  // refresh) keys 0x02/0x03 to the QY bank and 0x68/0x69 to the ZHX bank;
-  // anything else unknown keeps the existing fallback to the ZHX bytes. 0x67
+  // refresh) keys 0x02/0x03 to the QY bank and 0x68/0x69 to the ZHX bank; X4C
+  // V7.1.21 points BOE 4.28 D/E (0x41/0x42) at the ZHX bank as well. Anything
+  // else unknown keeps the existing fallback to the ZHX bytes. 0x67
   // never reaches this: grayscaleCapabilities() reports unsupported for it
   // (stock ships no external-LUT tables for that id).
   const uint8_t v = BoardConfig::ACTIVE.displayControllerVariant;

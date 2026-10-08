@@ -43,6 +43,10 @@ class OpdsFeedParser final : public Print {
   // Facet rows, one section heading per facet group.
   std::vector<OpdsEntry> takeFacetEntries();
   const std::string& getFeedTitle() const;
+  // Feed pagination (OPDS 2.0 metadata / OPDS 1.x opensearch); 0 when the
+  // feed does not report it.
+  int currentPage() const;
+  int pageCount() const;
   const std::string& getSearchTemplate() const;
   const std::string& getSearchDescriptionUrl() const;
   const std::string& getNextPageUrl() const;

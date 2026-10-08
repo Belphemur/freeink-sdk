@@ -8,9 +8,9 @@ the X4C-specific pin assignment and peripherals. Its profile is
 `BoardConfig::XTEINK_X4_CLASSIC` (`Board::XteinkX4Classic`).
 
 The panel controller varies by production unit — **SSD1677**, **UC8179**, or
-**UC8279** — all driving the same 800×480 glass on the same X4C pinout. The X4C
-display bus has no MISO, so the SDK reads the factory `hw_calib/screenType` NVS
-value at boot and selects the matching driver.
+**UC8279** — all driving 800×480 glass on the same X4C pinout. The SDK reads the
+controller's VER register at boot (half-duplex on MOSI; the bus has no MISO) and
+selects the matching driver.
 
 Build: `-DFREEINK_DEVICE_X4CLASSIC=1` (see `platformio.sample.ini` `[env:x4c]`).
 `FREEINK_DRIVER_SSD1677`, `FREEINK_DRIVER_UC8179`, `FREEINK_DRIVER_UC8279_X4`,
@@ -23,9 +23,21 @@ defines it).
 
 - Board tag `ESP32S3_X4_CLA` (revision `ESP32S3_X4R2_CLA`), default panel string
   `ESP32S3_X4_CLA_SSD1677`.
-- Panel-controller selection: NVS namespace `hw_calib`, key `screenType` (u8:
-  1 = UC8179, 2 = UC8279, 3/default = SSD1677). Because the bus has no MISO, this
-  NVS value is authoritative — the SDK maps it directly to the driver at boot.
+- Panel-controller selection: reset, command `0x70`, three bytes read back on
+  MOSI; byte 2 identifies the panel:
+
+  | ID | Panel | Driver |
+  |---|---|---|
+  | 0x01 | QY 4.28 | UC8179 |
+  | 0x40 | BOE 4.28 | UC8179 |
+  | 0x02 | QY 4.28 | UC8279 |
+  | 0x68 / 0x69 | ZHX 4.28 / ZHX 4.42 | UC8279 |
+  | 0x41 / 0x42 | BOE 4.28 D / BOE 4.28 E | UC8279 |
+
+  An unrecognized ID falls back to NVS namespace `hw_calib`, key `screenType`
+  (u8: 1 = UC8179, 2 = UC8279, other = SSD1677), then to UC8279 when the key is
+  absent. The boot log prints the ID and, when unrecognized, the controller's MTP
+  block.
 
 ## Display — 800×480
 

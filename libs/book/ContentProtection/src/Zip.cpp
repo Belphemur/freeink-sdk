@@ -18,12 +18,14 @@ constexpr uint32_t LOCAL_SIG = 0x04034b50;
 
 uint16_t rd16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
 uint32_t rd32(const uint8_t* p) {
-  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
 }
 }  // namespace
 
 bool ZipScan::open(ByteSource& source) {
+  entries_.reset();
+  entryCount_ = 0;
   const uint64_t size = source.size();
   if (size < 22) return false;
 
@@ -40,9 +42,11 @@ bool ZipScan::open(ByteSource& source) {
   for (const uint64_t attempt : attempts) {
     window = size < attempt ? size : attempt;
     const uint64_t windowStart = size - window;
+    tail.reset();
     tail.reset(new (std::nothrow) uint8_t[static_cast<size_t>(window)]);
     if (!tail) return false;
-    if (source.readAt(windowStart, tail.get(), static_cast<uint32_t>(window)) < 0) return false;
+    if (source.readAt(windowStart, tail.get(), static_cast<uint32_t>(window)) != static_cast<int32_t>(window))
+      return false;
     for (int64_t i = static_cast<int64_t>(window) - 22; i >= 0; i--) {
       if (rd32(&tail[static_cast<size_t>(i)]) == EOCD_SIG) {
         eocd = i;
@@ -57,12 +61,13 @@ bool ZipScan::open(ByteSource& source) {
   const uint32_t cdOffset = rd32(&tail[static_cast<size_t>(eocd) + 16]);
   tail.reset();  // the entry loop reads from the source; free the window first
 
-  entries_.clear();
-  // Cap the reserve hint: `count` is an untrusted uint16 (up to 65535), so a
-  // crafted EOCD could force an outsized reserve that OOMs a low-heap device.
-  // The loop still handles a genuinely large directory — it just grows as
-  // valid entries are actually read.
-  entries_.reserve(count < 256 ? count : 256);
+  if (cdOffset > size || count > (size - cdOffset) / 46) return false;
+  if (count == 0) return true;
+  // Session-owned index: allocate once, without vector growth or throwing on
+  // low-memory devices. Its size depends on the book and cannot live on stack.
+  std::unique_ptr<ZipEntryInfo[]> entries(new (std::nothrow) ZipEntryInfo[count]);
+  if (!entries) return false;
+  size_t used = 0;
 
   uint8_t header[46];
   uint64_t p = cdOffset;
@@ -82,20 +87,24 @@ bool ZipScan::open(ByteSource& source) {
       char name[512];
       if (source.readAt(p + 46, name, nameLen) != nameLen) return false;
       e.nameHash = fnv1a64(name, nameLen);
-      entries_.push_back(e);
+      entries[used++] = e;
     }
     p += 46 + nameLen + extraLen + commentLen;
   }
-  std::sort(entries_.begin(), entries_.end(),
+  std::sort(entries.get(), entries.get() + used,
             [](const ZipEntryInfo& a, const ZipEntryInfo& b) { return a.nameHash < b.nameHash; });
+  entries_ = std::move(entries);
+  entryCount_ = used;
   return true;
 }
 
 const ZipEntryInfo* ZipScan::find(const std::string& name) const {
+  if (!entries_ || entryCount_ == 0) return nullptr;
   const uint64_t hash = fnv1a64(name.data(), name.size());
-  const auto it = std::lower_bound(entries_.begin(), entries_.end(), hash,
-                                   [](const ZipEntryInfo& e, uint64_t h) { return e.nameHash < h; });
-  return (it != entries_.end() && it->nameHash == hash) ? &*it : nullptr;
+  const auto end = entries_.get() + entryCount_;
+  const auto it =
+      std::lower_bound(entries_.get(), end, hash, [](const ZipEntryInfo& e, uint64_t h) { return e.nameHash < h; });
+  return (it != end && it->nameHash == hash) ? it : nullptr;
 }
 
 bool ZipScan::dataOffset(ByteSource& source, const ZipEntryInfo& entry, uint64_t* out) const {
@@ -113,8 +122,7 @@ bool ZipScan::dataOffset(ByteSource& source, const ZipEntryInfo& entry, uint64_t
 bool ZipScan::readRaw(ByteSource& source, const ZipEntryInfo& entry, uint8_t* out) const {
   uint64_t offset;
   if (!dataOffset(source, entry, &offset)) return false;
-  return source.readAt(offset, out, entry.compressedSize) ==
-         static_cast<int32_t>(entry.compressedSize);
+  return source.readAt(offset, out, entry.compressedSize) == static_cast<int32_t>(entry.compressedSize);
 }
 
 }  // namespace content

@@ -63,6 +63,9 @@ struct Ssd1677Config {
   // Factory absolute 4-level LUT override; nullptr selects lut_factory_quality.
   // Boards with a per-module voltage tail (Metalio) point this at their copy.
   const unsigned char* factoryGrayLut = nullptr;
+  // 110-byte B/W LUT for FAST refreshes, activated with 0xCC instead of the OTP
+  // fastSeqOverride; nullptr keeps the OTP waveform.
+  const unsigned char* fastLut = nullptr;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT

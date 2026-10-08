@@ -88,9 +88,12 @@ void OpdsParser::clear() {
   chosenLinkIsPurchase = false;
   inPrice = false;
   priceCurrency.clear();
+  osTarget = nullptr;
+  osTotalResults = osItemsPerPage = osStartIndex = -1;
   currentEntry = OpdsEntry{};
   currentText.clear();
   inEntry = inTitle = inAuthor = inAuthorName = inId = false;
+  inSummary = summaryIsContent = descInMarkup = false;
   collectCurrentEntry = false;
   feedTruncated = false;
 }
@@ -144,11 +147,22 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
     self->currentEntry = OpdsEntry{};
     self->currentText.clear();
     self->inTitle = self->inAuthor = self->inAuthorName = self->inId = false;
+    self->inSummary = self->summaryIsContent = self->descInMarkup = false;
     self->entryAcqRank = -1;
     self->entryHasPlainEpub = false;
     self->inEntryLink = false;
     self->chosenLinkIsPurchase = false;
     self->inPrice = false;
+    return;
+  }
+
+  if (self->inEntry && self->inSummary) {
+    // Nested xhtml elements (<p>, <br>...) inside the description are word
+    // boundaries; never let their names trip the entry-field handling below.
+    if (!self->currentText.empty() && self->currentText.back() != ' ' &&
+        self->currentText.size() < MAX_DESCRIPTION_CHARS) {
+      self->currentText += ' ';
+    }
     return;
   }
 
@@ -202,17 +216,23 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
         self->inEntryLink = true;
         self->chosenLinkIsPurchase = false;
         const int rank = rel ? opdsAcquisitionRank(rel) : -1;
-        if (rank >= 0 && type && strcmp(type, "application/epub+zip") == 0) {
+        const bool isEpubType = type && strcmp(type, "application/epub+zip") == 0;
+        const bool isLcpType = type && strcmp(type, "application/vnd.readium.lcp.license.v1.0+json") == 0;
+        if (rank >= 0 && (isEpubType || isLcpType)) {
           // Prefer higher-ranked acquisitions (open-access over borrow,
-          // never buy/sample); at equal rank prefer a plain EPUB path over
-          // derived formats.
-          const bool isPlainEpub = strstr(href, ".epub") != nullptr || strstr(href, "/epub/") != nullptr;
-          if (self->currentEntry.type != OpdsEntryType::BOOK || rank > self->entryAcqRank ||
-              (rank == self->entryAcqRank && isPlainEpub && !self->entryHasPlainEpub)) {
+          // never buy/sample); at equal rank prefer a direct EPUB over an
+          // LCP license, and a plain EPUB path over derived formats.
+          const bool isPlainEpub = isEpubType && (strstr(href, ".epub") != nullptr || strstr(href, "/epub/") != nullptr);
+          const bool better =
+              self->currentEntry.type != OpdsEntryType::BOOK || rank > self->entryAcqRank ||
+              (rank == self->entryAcqRank &&
+               ((isEpubType && self->currentEntry.lcpLicense) || (isPlainEpub && !self->entryHasPlainEpub)));
+          if (better) {
             self->currentEntry.type = OpdsEntryType::BOOK;
             assignBounded(self->currentEntry.href, href, MAX_HREF_CHARS);
             self->entryAcqRank = rank;
             self->entryHasPlainEpub = isPlainEpub;
+            self->currentEntry.lcpLicense = isLcpType;
             self->currentEntry.purchase = rank == 0;
             self->currentEntry.detail.clear();
             self->chosenLinkIsPurchase = self->currentEntry.purchase;
@@ -221,6 +241,11 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
           if (self->currentEntry.type != OpdsEntryType::BOOK) {
             self->currentEntry.type = OpdsEntryType::NAVIGATION;
             assignBounded(self->currentEntry.href, href, MAX_HREF_CHARS);
+          }
+        } else if (rel && strstr(rel, "opds-spec.org/image") != nullptr) {
+          // Cover art: prefer the full image; a thumbnail only fills a gap.
+          if (strstr(rel, "/thumbnail") == nullptr || self->currentEntry.coverHref.empty()) {
+            assignBounded(self->currentEntry.coverHref, href, MAX_HREF_CHARS);
           }
         }
       }
@@ -241,6 +266,15 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
     if (strcmp(name, "title") == 0 || strstr(name, ":title") != nullptr) {
       self->inFeedTitle = true;
       self->currentText.clear();
+    } else if (strstr(name, ":totalResults") != nullptr || strcmp(name, "totalResults") == 0) {
+      self->osTarget = &self->osTotalResults;
+      self->currentText.clear();
+    } else if (strstr(name, ":itemsPerPage") != nullptr || strcmp(name, "itemsPerPage") == 0) {
+      self->osTarget = &self->osItemsPerPage;
+      self->currentText.clear();
+    } else if (strstr(name, ":startIndex") != nullptr || strcmp(name, "startIndex") == 0) {
+      self->osTarget = &self->osStartIndex;
+      self->currentText.clear();
     }
     return;
   }
@@ -257,6 +291,12 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
   } else if (strcmp(name, "id") == 0 || strstr(name, ":id") != nullptr) {
     self->inId = true;
     self->currentText.clear();
+  } else if (strcmp(name, "summary") == 0 || strstr(name, ":summary") != nullptr || strcmp(name, "content") == 0 ||
+             strstr(name, ":content") != nullptr) {
+    self->inSummary = true;
+    self->summaryIsContent = strcmp(name, "content") == 0 || strstr(name, ":content") != nullptr;
+    self->descInMarkup = false;
+    self->currentText.clear();
   }
 }
 
@@ -272,7 +312,23 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
   } else if (!self->inEntry && self->inFeedTitle && (strcmp(name, "title") == 0 || strstr(name, ":title") != nullptr)) {
     self->feedTitle = self->currentText;
     self->inFeedTitle = false;
+  } else if (!self->inEntry && self->osTarget) {
+    *self->osTarget = static_cast<int32_t>(strtol(self->currentText.c_str(), nullptr, 10));
+    self->osTarget = nullptr;
   } else if (self->inEntry) {
+    if (self->inSummary) {
+      if (strcmp(name, "summary") == 0 || strstr(name, ":summary") != nullptr || strcmp(name, "content") == 0 ||
+          strstr(name, ":content") != nullptr) {
+        // <content> (the full text) overwrites; <summary> only fills a gap,
+        // so whichever the feed provides wins without depending on order.
+        if (self->collectCurrentEntry && (self->summaryIsContent || self->currentEntry.description.empty())) {
+          while (!self->currentText.empty() && self->currentText.back() == ' ') self->currentText.pop_back();
+          self->currentEntry.description = self->currentText;
+        }
+        self->inSummary = false;
+      }
+      return;
+    }
     if (self->inPrice && (strcmp(name, "price") == 0 || strstr(name, ":price") != nullptr)) {
       if (self->chosenLinkIsPurchase && !self->currentText.empty()) {
         self->currentEntry.detail = self->currentText;
@@ -309,10 +365,31 @@ void XMLCALL OpdsParser::characterData(void* userData, const XML_Char* s, const 
   if (!self->inEntry) {
     if (self->inFeedTitle) {
       appendBounded(self->currentText, s, len, MAX_TITLE_CHARS);
+    } else if (self->osTarget) {
+      appendBounded(self->currentText, s, len, 16);
     }
     return;
   }
   if (!self->collectCurrentEntry) return;
+  if (self->inSummary) {
+    for (int i = 0; i < len && self->currentText.size() < MAX_DESCRIPTION_CHARS; ++i) {
+      const char c = s[i];
+      if (c == '<') {
+        // Literal tag (HTML-escaped content): strip it, keep a word boundary.
+        if (!self->currentText.empty() && self->currentText.back() != ' ') self->currentText += ' ';
+        self->descInMarkup = true;
+        continue;
+      }
+      if (self->descInMarkup) {
+        if (c == '>') self->descInMarkup = false;
+        continue;
+      }
+      const char out = (c == '\n' || c == '\r' || c == '\t') ? ' ' : c;
+      if (out == ' ' && (self->currentText.empty() || self->currentText.back() == ' ')) continue;
+      self->currentText += out;
+    }
+    return;
+  }
   if (self->inPrice) {
     appendBounded(self->currentText, s, len, 16);
     return;

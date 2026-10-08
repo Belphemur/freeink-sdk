@@ -76,51 +76,5 @@ inline std::string base64Decode(const std::string& in) {
   return out;
 }
 
-// Extracts the 16 raw bytes of a UUID from "urn:uuid:xxxxxxxx-xxxx-..." (or a
-// bare/dashed hex form). Returns false if fewer than 32 hex digits.
-inline bool uuidBytes(const std::string& urn, uint8_t out[16]) {
-  uint8_t nibbles[32];
-  size_t n = 0;
-  for (const char c : urn) {
-    int v;
-    if (c >= '0' && c <= '9') v = c - '0';
-    else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
-    else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
-    else continue;
-    if (n < 32) nibbles[n++] = static_cast<uint8_t>(v);
-  }
-  if (n < 32) return false;
-  for (size_t i = 0; i < 16; i++) out[i] = static_cast<uint8_t>((nibbles[2 * i] << 4) | nibbles[2 * i + 1]);
-  return true;
-}
-
-// Parses an ISO-8601 date-time ("2026-08-15T23:59:59-04:00" or "...Z") into
-// epoch seconds. Returns false on malformed input. Date math is civil-days
-// based; no <time.h> dependency (freestanding).
-inline bool isoToEpoch(const std::string& iso, int64_t* epochOut) {
-  int Y, M, D, h, m, s;
-  if (iso.size() < 19) return false;
-  if (sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &Y, &M, &D, &h, &m, &s) != 6) return false;
-  // Days from civil (Howard Hinnant's algorithm).
-  const int y = M <= 2 ? Y - 1 : Y;
-  const int era = (y >= 0 ? y : y - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(y - era * 400);
-  const unsigned doy = (153 * (M + (M > 2 ? -3 : 9)) + 2) / 5 + D - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  const int64_t days = era * 146097ll + static_cast<int64_t>(doe) - 719468ll;
-  int64_t epoch = days * 86400ll + h * 3600ll + m * 60ll + s;
-  // Optional numeric timezone offset (+/-HH:MM); Z or absent means UTC.
-  const size_t tzPos = iso.find_first_of("+-", 19);
-  if (tzPos != std::string::npos && tzPos + 5 < iso.size()) {
-    int th, tm;
-    if (sscanf(iso.c_str() + tzPos + 1, "%d:%d", &th, &tm) == 2) {
-      const int64_t off = th * 3600ll + tm * 60ll;
-      epoch += (iso[tzPos] == '-') ? off : -off;
-    }
-  }
-  *epochOut = epoch;
-  return true;
-}
-
 }  // namespace content
 }  // namespace freeink

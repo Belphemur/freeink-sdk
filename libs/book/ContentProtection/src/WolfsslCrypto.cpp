@@ -19,6 +19,9 @@
 
 #ifdef FREEINK_CONTENT_WOLFSSL
 
+#include <wolfssl/wolfcrypt/curve25519.h>
+#include <wolfssl/wolfcrypt/hmac.h>
+#include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
@@ -378,6 +381,65 @@ bool WolfsslCrypto::aes128CbcDecrypt(const uint8_t key[16], const uint8_t iv[16]
   Aes aes;
   if (wc_AesSetKey(&aes, key, 16, iv, AES_DECRYPTION) != 0) return false;
   return wc_AesCbcDecrypt(&aes, out, in, static_cast<word32>(len)) == 0;
+}
+
+bool WolfsslCrypto::aes256CbcDecrypt(const uint8_t key[32], const uint8_t iv[16], const uint8_t* in,
+                                     size_t len, uint8_t* out) {
+  if (len % 16 != 0) return false;
+  Aes aes;
+  if (wc_AesSetKey(&aes, key, 32, iv, AES_DECRYPTION) != 0) return false;
+  return wc_AesCbcDecrypt(&aes, out, in, static_cast<word32>(len)) == 0;
+}
+
+// RFC 7748 little-endian raw keys (wolfSSL defaults to big-endian).
+bool WolfsslCrypto::x25519MakeKey(uint8_t priv[32], uint8_t pub[32]) {
+  WC_RNG rng;
+  if (wc_InitRng(&rng) != 0) return false;
+  curve25519_key key;
+  word32 privLen = 32;
+  word32 pubLen = 32;
+  const bool ok = wc_curve25519_init(&key) == 0 && wc_curve25519_make_key(&rng, 32, &key) == 0 &&
+                  wc_curve25519_export_private_raw_ex(&key, priv, &privLen, EC25519_LITTLE_ENDIAN) == 0 &&
+                  wc_curve25519_export_public_ex(&key, pub, &pubLen, EC25519_LITTLE_ENDIAN) == 0 &&
+                  privLen == 32 && pubLen == 32;
+  wc_curve25519_free(&key);
+  wc_FreeRng(&rng);
+  return ok;
+}
+
+bool WolfsslCrypto::x25519SharedSecret(const uint8_t priv[32], const uint8_t peerPub[32], uint8_t out[32]) {
+  curve25519_key mine;
+  curve25519_key theirs;
+  word32 outLen = 32;
+  const bool ok = wc_curve25519_init(&mine) == 0 && wc_curve25519_init(&theirs) == 0 &&
+                  wc_curve25519_import_private_ex(priv, 32, &mine, EC25519_LITTLE_ENDIAN) == 0 &&
+                  wc_curve25519_import_public_ex(peerPub, 32, &theirs, EC25519_LITTLE_ENDIAN) == 0 &&
+                  wc_curve25519_shared_secret_ex(&mine, &theirs, out, &outLen, EC25519_LITTLE_ENDIAN) == 0 &&
+                  outLen == 32;
+  wc_curve25519_free(&mine);
+  wc_curve25519_free(&theirs);
+  return ok;
+}
+
+bool WolfsslCrypto::hkdfSha256(const uint8_t* ikm, const size_t ikmLen, const uint8_t* info, const size_t infoLen,
+                               uint8_t* out, const size_t outLen) {
+  return wc_HKDF(WC_SHA256, ikm, static_cast<word32>(ikmLen), nullptr, 0, info, static_cast<word32>(infoLen), out,
+                 static_cast<word32>(outLen)) == 0;
+}
+
+bool WolfsslCrypto::aes256GcmDecrypt(const uint8_t key[32], const uint8_t iv[12], const uint8_t* in, const size_t len,
+                                     const uint8_t tag[16], uint8_t* out) {
+  // wolfSSL's Aes carries the GCM tables (KBs): heap, not the task stack.
+  auto* aes = new (std::nothrow) Aes;
+  if (!aes || wc_AesInit(aes, nullptr, INVALID_DEVID) != 0) {
+    delete aes;
+    return false;
+  }
+  const bool ok = wc_AesGcmSetKey(aes, key, 32) == 0 &&
+                  wc_AesGcmDecrypt(aes, out, in, static_cast<word32>(len), iv, 12, tag, 16, nullptr, 0) == 0;
+  wc_AesFree(aes);
+  delete aes;
+  return ok;
 }
 
 bool WolfsslCrypto::aes128CbcEncrypt(const uint8_t key[16], const uint8_t iv[16], const uint8_t* in,
