@@ -95,6 +95,10 @@ void InputManager::begin() {
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted();
 #endif
+  if (hasToggleSwitch()) {
+    pinMode(BoardConfig::ACTIVE.input.toggleSwitch, INPUT_PULLUP);
+    toggleSwitchOn = toggleSwitchRaw = digitalRead(BoardConfig::ACTIVE.input.toggleSwitch) == LOW;
+  }
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::XteinkAdcLadder) {
     pinMode(BUTTON_ADC_PIN_1, INPUT);
     pinMode(BUTTON_ADC_PIN_2, INPUT);
@@ -563,6 +567,7 @@ void InputManager::update() {
   touchHomeKeyEvent = false;
   touchHomeKeyTapEvent = false;
   touchHomeKeyLongEvent = false;
+  updateToggleSwitch(currentTime);
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
@@ -589,6 +594,19 @@ void InputManager::update() {
     if (state != currentState) {
       applyStateChange(state, currentTime);
     }
+  }
+}
+
+void InputManager::updateToggleSwitch(const unsigned long now) {
+  toggleSwitchChangedEvent = false;
+  if (!hasToggleSwitch()) return;
+  const bool raw = digitalRead(BoardConfig::ACTIVE.input.toggleSwitch) == LOW;
+  if (raw != toggleSwitchRaw) {
+    toggleSwitchRaw = raw;
+    toggleSwitchRawSince = now;
+  } else if (raw != toggleSwitchOn && now - toggleSwitchRawSince > DEBOUNCE_DELAY) {
+    toggleSwitchOn = raw;
+    toggleSwitchChangedEvent = true;
   }
 }
 

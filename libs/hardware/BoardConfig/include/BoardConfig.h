@@ -290,7 +290,7 @@
 #ifndef FREEINK_BATTERY_I2C_GAUGE
 #define FREEINK_BATTERY_I2C_GAUGE                                                            \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || \
-   FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4)
+   FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
 #endif
 #ifndef FREEINK_CAP_COLOR
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
@@ -524,6 +524,11 @@ struct SdmmcPins {
 // (Waveshare ESP32-S3-ePaper-3.97). Its registers live in Axp2101.h.
 enum class GaugeType : uint8_t { Bq27220, Cw2017, Axp2101 };
 
+// The I2C charger IC at batteryGauge.chargerAddr. Both report CHRG_STAT in bits
+// [4:3] of a status register (BQ25896 REG0B, SGM41562 REG08); SGM41562 also
+// reports input power-good in REG08 bit 2 and has a BATFET-off ship mode.
+enum class ChargerType : uint8_t { Bq25896, Sgm41562 };
+
 // I2C fuel-gauge / charger wiring (e.g. BQ27220 + BQ25896 on LilyGo T5 S3). When
 // gaugeAddr != 0 (and FREEINK_BATTERY_I2C_GAUGE is set), BatteryMonitor reads the
 // gauge over I2C instead of an ADC pin. chargerAddr is optional (0 = none) and
@@ -533,7 +538,7 @@ struct BatteryGaugeConfig {
   int8_t i2cScl;
   uint32_t i2cHz;
   uint8_t gaugeAddr;    // BQ27220 = 0x55; CW2017 = 0x63; 0 = no I2C gauge (use ADC)
-  uint8_t chargerAddr;  // BQ25896 = 0x6B; 0 = none
+  uint8_t chargerAddr;  // BQ25896 = 0x6B; SGM41562 = 0x03; 0 = none
   // Arduino I2C controller index: 0 = Wire, 1 = Wire1. Default 0. Set to 1 on
   // boards where the gauge sits on a different physical bus than another I2C
   // peripheral (e.g. Sticky's GT911 touch on Wire/SDA3-SCL2 vs gauge on
@@ -543,6 +548,7 @@ struct BatteryGaugeConfig {
   GaugeType gaugeType = GaugeType::Bq27220;  // register map / init to use
   // BQ27220 cell capacity for BatteryMonitor::loadDesignCapacity(); 0 = leave it alone.
   uint16_t designCapacityMah = 0;
+  ChargerType chargerType = ChargerType::Bq25896;  // register map for chargerAddr
 };
 
 struct InputPins {
@@ -555,6 +561,9 @@ struct InputPins {
   int8_t power;
   bool powerActiveHigh;  // true = pressed reads HIGH (INPUT_PULLDOWN); false = active-LOW (INPUT_PULLUP)
   int8_t adcLadderPin = PIN_UNASSIGNED;  // ADC pin for single resistor ladder (e.g. OnePage GPIO4)
+  // Two-position slide switch, read with INPUT_PULLUP; "on" = the pin reads LOW.
+  // Reported as a level (InputManager::isToggleSwitchOn), not as a button press.
+  int8_t toggleSwitch = PIN_UNASSIGNED;
 };
 
 // Capacitive touch panel description (TouchController::None disables it).
@@ -1654,8 +1663,10 @@ constexpr BoardProfile METALIO_EINK4 = {
 //   * Frontlight — it's a 2-channel warm/cool I2C LED driver @0x38 (not PWM, not
 //     the LM3630A the I2cFrontlight backend supports) → NO_FRONTLIGHT until a
 //     driver is added.
-//   * Battery — ADC (no I2C gauge), but the ADC GPIO was not recovered → left
-//     unassigned; no telemetry until the pin is found or probed.
+//   * Battery — ADC on GPIO1 (x2 divider) plus an SGM41562 charger @0x03 on the
+//     shared I2C bus for charge state / USB power-good / ship mode (build 2912).
+//   * Slide switch — GPIO6, INPUT_PULLUP, "on" = LOW (switch down), 5 ms debounce
+//     in stock (build 2912).
 //   * Orientation — panel is 800x480 native, device is mounted portrait; the
 //     rotation is applied app-side, so the mount transform ships NO_FLIP.
 constexpr BoardProfile PICCO = {
@@ -1674,9 +1685,10 @@ constexpr BoardProfile PICCO = {
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 0},
     // Buttons: power/wake = GPIO2 (active-low, RTC ext0 wake source). Nav set
     // {5,9,21} confirmed; roles PROVISIONAL (up=5, down=9, confirm=21) — see note.
-    {PIN_UNASSIGNED, 21, PIN_UNASSIGNED, PIN_UNASSIGNED, 5, 9, 2, false},
-    PIN_UNASSIGNED,  // batteryAdc: ADC battery, but the GPIO was not recovered
-    PIN_UNASSIGNED,  // batteryChargeStatus: not recovered
+    // Slide switch on GPIO6.
+    {PIN_UNASSIGNED, 21, PIN_UNASSIGNED, PIN_UNASSIGNED, 5, 9, 2, false, PIN_UNASSIGNED, 6},
+    1,               // batteryAdc: GPIO1 (ADC1, 12 dB attenuation in stock)
+    PIN_UNASSIGNED,  // batteryChargeStatus: no STAT pin; charge state comes from the SGM41562
     2.0f,
     PIN_UNASSIGNED,  // usbDetect
     // Capacitive touch (PiccoCst @ I2C 0x24 on the shared bus SDA7/SCL8, RST=10,
@@ -1693,7 +1705,8 @@ constexpr BoardProfile PICCO = {
     NO_FLIP,  // portrait rotation is app-side; mount transform pending validation
     // SDMMC 4-bit: CLK41 CMD42 D0=40 D1=39 D2=44 D3=43 (card-detect CD=38 is board-support).
     {41, 42, 40, 39, 44, 43, 4},
-    NO_GAUGE,   // ADC battery, no I2C fuel gauge
+    // ADC battery (no fuel gauge) + SGM41562 charger @0x03 on the shared I2C bus.
+    {7, 8, 400000, 0, 0x03, 0, GaugeType::Bq27220, 0, ChargerType::Sgm41562},
     NO_MIC,
     // Shared I2C bus SDA7/SCL8 @400k (same bus as touch 0x24 + frontlight 0x38):
     // BM8563/PCF8563-class RTC @0x51 and a QMI8658 6-axis IMU @0x6A. RE-confirmed in
