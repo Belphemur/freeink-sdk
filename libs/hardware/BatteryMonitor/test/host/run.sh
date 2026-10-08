@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds and runs the BQ27220 Design Capacity load against a model gauge.
+# Builds and runs the BQ27220 Design Capacity load against a model gauge, and the
+# SGM41562 charger decode (Picco) against a model charger.
 set -e
 cd "$(dirname "$0")"
 BUILD_DIR="${TMPDIR:-/tmp}/freeink-battery-tests"
@@ -9,3 +10,8 @@ c++ -std=c++17 -Wall -Wextra -Werror \
   -Istubs -I../../include -I../../../BoardConfig/include -I../../../XteinkDetect/test/host/stubs \
   test_bq27220_capacity.cpp -o "$BUILD_DIR/test_bq27220_capacity"
 "$BUILD_DIR/test_bq27220_capacity"
+c++ -std=c++17 -Wall -Wextra -Werror \
+  -DFREEINK_DEVICE_PICCO=1 \
+  -Istubs -I../../include -I../../../BoardConfig/include -I../../../XteinkDetect/test/host/stubs \
+  test_sgm41562.cpp -o "$BUILD_DIR/test_sgm41562"
+"$BUILD_DIR/test_sgm41562"

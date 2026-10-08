@@ -1,7 +1,11 @@
 #include "Ssd1677Driver.h"
 
 #include <BoardConfig.h>
+#if __has_include(<driver/gpio.h>)
+#include <driver/gpio.h>  // gpio_hold_dis (Picco panel probe)
+#endif
 
+#include <cstring>
 #include <vector>
 
 #include "../lut/Ssd1677Luts.h"
@@ -120,6 +124,135 @@ static const Ssd1677Config& ssd1677MetalioConfig() {
 }
 #endif
 
+#if FREEINK_DEVICE_PICCO
+// Onyx Picco / BOOX Tiles. Retail units carry one of three SSD1677 panels, told
+// apart (as the stock firmware does) by the 10-byte user ID from CMD 0x2E:
+//   YRD0426   CA FE 00 16 77 02 10 01 00 91, or 00 AF 00 01 AA 09 12 20 69 00
+//   DEPG0397  any other ID starting CA FE 00 16 77
+//   OPM040B3  "W040B3"
+// None of those -> the stock SSD2677 path, SE0400NQW47 (see Ssd2677Driver).
+// Per-panel values are the stock tables (build 2912): YRD0426 and OPM040B3 run
+// FULL/HALF on OTP (0xF7/0xD7) with a custom FAST LUT; DEPG0397 uses custom LUTs
+// for every mode (its FAST is stock's mode-2 table, which cut boot ghosting). Border at init: 0x01 (YRD0426, DEPG0397), 0x03 (OPM040B3).
+// Grayscale follows the Sticky (see piccoConfig).
+
+// Stock ID read: reset, then the ID command with SDA released for a half-duplex
+// read, bit-banged at ~100 kHz before the SPI bus claims the pins.
+static void piccoReadId(uint8_t cmdByte, uint8_t* id, uint8_t n) {
+  const auto& d = BoardConfig::ACTIVE.display;
+  // The deep-sleep path latches the display pins (RESET) with gpio_hold_en; a held
+  // pad ignores writes, so after a wake the reset pulse would never reach the panel.
+  for (const int8_t pin : {d.cs, d.dc, d.sclk, d.mosi, d.rst, d.busy}) {
+    if (pin >= 0) gpio_hold_dis(static_cast<gpio_num_t>(pin));
+  }
+  pinMode(d.cs, OUTPUT);
+  digitalWrite(d.cs, HIGH);
+  pinMode(d.dc, OUTPUT);
+  digitalWrite(d.dc, HIGH);
+  pinMode(d.sclk, OUTPUT);
+  digitalWrite(d.sclk, LOW);
+  pinMode(d.mosi, OUTPUT);
+  pinMode(d.busy, INPUT_PULLUP);
+  pinMode(d.rst, OUTPUT);
+  digitalWrite(d.rst, LOW);
+  delay(10);
+  digitalWrite(d.rst, HIGH);
+  delay(40);
+
+  const auto clockPulse = [&] {
+    digitalWrite(d.sclk, HIGH);
+    delayMicroseconds(5);
+    digitalWrite(d.sclk, LOW);
+    delayMicroseconds(5);
+  };
+  digitalWrite(d.cs, LOW);
+  digitalWrite(d.dc, LOW);
+  delayMicroseconds(5);
+  for (uint8_t cmd = cmdByte, i = 0; i < 8; i++, cmd <<= 1) {
+    digitalWrite(d.mosi, (cmd & 0x80) ? HIGH : LOW);
+    clockPulse();
+  }
+  pinMode(d.mosi, INPUT_PULLUP);
+  digitalWrite(d.dc, HIGH);
+  delayMicroseconds(5);
+  for (uint8_t k = 0; k < n; k++) {
+    uint8_t b = 0;
+    for (uint8_t i = 0; i < 8; i++) {
+      b = static_cast<uint8_t>((b << 1) | (digitalRead(d.mosi) == HIGH ? 1 : 0));
+      clockPulse();
+    }
+    id[k] = b;
+  }
+  digitalWrite(d.cs, HIGH);
+  pinMode(d.mosi, OUTPUT);
+}
+
+static uint8_t piccoClassify(const uint8_t id[10]) {
+  static const uint8_t yrdA[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
+  static const uint8_t yrdB[10] = {0x00, 0xAF, 0x00, 0x01, 0xAA, 0x09, 0x12, 0x20, 0x69, 0x00};
+  static const uint8_t opm[10] = {'W', '0', '4', '0', 'B', '3', 0, 0, 0, 0};
+  if (memcmp(id, yrdA, 10) == 0 || memcmp(id, yrdB, 10) == 0) return PiccoYrd0426;
+  if (memcmp(id, yrdA, 5) == 0) return PiccoDepg0397;
+  if (memcmp(id, opm, 10) == 0) return PiccoOpm040b3;
+  return PiccoUnknown;
+}
+
+static Ssd1677Config piccoConfig(uint8_t border, const unsigned char* fast, const unsigned char* full) {
+  Ssd1677Config c = {{0xAE, 0xC7, 0xC3, 0xC0, 0x80}, DRIVER_OUTPUT_SCAN, border, 0x5A, lut_grayscale_sticky,
+                     0xF7, 0xDC, 0xD7};
+  // AA grayscale is the Sticky's overlay path (same 3.97" glass class): its LUT
+  // and voltages, power up first, 0xCC, border held at VCOM. Stock's own slot-5
+  // waveform (CTRL2 0xC4, B/W voltages left loaded) gave poor AA on DEPG0397,
+  // while this path looked right on hardware. Absolute (images, sleep screens)
+  // uses the SDK's X4 factory LUT, also as on the Sticky.
+  c.grayPowerUpFirst = true;
+  c.borderWaveformGray = 0x80;
+  c.overlayGrayscale = true;
+  c.absoluteGrayscale = true;
+  c.fastLut = fast;
+  c.fullLut = full;
+  c.halfLut = full;  // DEPG0397 slot 0 (FULL) and slot 3 (HALF) are the same table
+  return c;
+}
+
+uint8_t piccoProbePanel() {
+  static bool probed = false;
+  if (probed) return BoardConfig::ACTIVE.displayControllerVariant;
+  probed = true;
+  uint8_t id[10] = {};
+  piccoReadId(0x2E, id, 10);
+  uint8_t panel = piccoClassify(id);
+  static const char* const names[] = {"unknown", "YRD0426", "DEPG0397", "OPM040B3", "SE0400NQW47"};
+  if (panel == PiccoUnknown) {
+    // Stock falls back to its SSD2677 driver, which identifies SE0400NQW47 by
+    // the 3-byte CMD 0x70 reply 07 01 01.
+    uint8_t rev[3] = {};
+    piccoReadId(0x70, rev, 3);
+    if (rev[0] == 0x07 && rev[1] == 0x01 && rev[2] == 0x01) panel = PiccoSe0400nqw47;
+    if (Serial) Serial.printf("[%lu] [EPD] Picco CMD 0x70 reply %02X %02X %02X\n", millis(), rev[0], rev[1], rev[2]);
+  }
+  BoardConfig::ACTIVE.displayControllerVariant = panel;
+  if (Serial) {
+    Serial.printf("[%lu] [EPD] Picco panel %s, ID %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n", millis(),
+                  names[panel], id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7], id[8], id[9]);
+  }
+  return panel;
+}
+
+static const Ssd1677Config& ssd1677PiccoConfig() {
+  static const Ssd1677Config yrd = piccoConfig(0x01, lut_picco_fast, nullptr);
+  static const Ssd1677Config depg = piccoConfig(0x01, lut_picco_depg_fast, lut_picco_depg_full);
+  static const Ssd1677Config opm = piccoConfig(0x03, lut_picco_fast, nullptr);
+
+  switch (piccoProbePanel()) {
+    case PiccoYrd0426: return yrd;
+    case PiccoDepg0397: return depg;
+    case PiccoOpm040b3: return opm;
+    default: return ssd1677StickyConfig();  // unrecognized ID: previous generic config
+  }
+}
+#endif
+
 // ── Reusable per-board waveform shortcuts ────────────────────────────────────
 // Opt-in optimizations a board can layer onto a base Ssd1677Config when its
 // specific panel is known to tolerate them. Each is a pure copy-and-tweak so a
@@ -184,7 +317,7 @@ Ssd1677Driver::Ssd1677Driver(const Ssd1677Config& cfg)
 #endif
 
 uint32_t Ssd1677Driver::spiHz() const {
-  return BoardConfig::ACTIVE.displaySpiHz != 0 ? BoardConfig::ACTIVE.displaySpiHz : 40000000;
+  return BoardConfig::ACTIVE.displaySpiHz != 0 ? BoardConfig::ACTIVE.displaySpiHz : 20000000;
 }
 
 PanelGeometry Ssd1677Driver::geometry() const { return {_w, _h, _wb, _bufferSize}; }
@@ -296,12 +429,15 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     bus.cmd(CMD_TEMP_SENSOR_CONTROL);
     bus.data(0x80);
   }
-  // Board B/W fast LUT: load it so the custom-LUT branch below activates 0xCC.
-  // Not while a grayscale LUT is already loaded.
-  const bool fastLut = mode == RefreshMode::Fast && _cfg.fastLut != nullptr && !_customLutActive;
-  if (fastLut) {
-    setCustomLut(bus, true, _cfg.fastLut);
-    if (_cfg.borderWaveformFast != 0) {
+  // Board B/W LUT for this mode: load it so the custom-LUT branch below activates
+  // it without the OTP reload. Not while a grayscale LUT is already loaded.
+  const unsigned char* modeLut = (mode == RefreshMode::Fast)   ? _cfg.fastLut
+                                 : (mode == RefreshMode::Half) ? _cfg.halfLut
+                                                               : _cfg.fullLut;
+  const bool boardLut = modeLut != nullptr && !_customLutActive;
+  if (boardLut) {
+    setCustomLut(bus, true, modeLut);
+    if (mode == RefreshMode::Fast && _cfg.borderWaveformFast != 0) {
       bus.cmd(CMD_BORDER_WAVEFORM);
       bus.data(_cfg.borderWaveformFast);
     }
@@ -355,6 +491,25 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     return;
   }
 
+  if (boardLut && mode != RefreshMode::Fast) {
+    // Board FULL/HALF LUT: clock/analog on + display mode 1 without the OTP LUT
+    // load (0x10 clear); FULL loads the temperature (0xE4), HALF writes it (0xC4).
+    uint8_t ctrl2 = 0xE4;
+    if (mode == RefreshMode::Half) {
+      bus.cmd(CMD_WRITE_TEMP);
+      bus.data(_cfg.halfRefreshTemp);
+      ctrl2 = 0xC4;
+    }
+    if (turnOff) ctrl2 |= 0x03;
+    _isScreenOn = !turnOff;
+    bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
+    bus.data(ctrl2);
+    bus.cmd(CMD_MASTER_ACTIVATION);
+    if (!async) bus.waitRefreshComplete("refresh");
+    setCustomLut(bus, false, nullptr);
+    return;
+  }
+
   uint8_t displayMode = 0x00;
   if (!_isScreenOn) {
     _isScreenOn = true;
@@ -389,7 +544,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   bus.data(displayMode);
   bus.cmd(CMD_MASTER_ACTIVATION);
   if (!async) bus.waitRefreshComplete("refresh");
-  if (fastLut) setCustomLut(bus, false, nullptr);
+  if (boardLut) setCustomLut(bus, false, nullptr);
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   // esp_rom_printf hits the always-on IDF console; Serial (HWCDC) drops on S3.
   esp_rom_printf("[SSD1677] %s refresh %ums (ctrl2=0x%x)\n", dbgMode, (unsigned)(millis() - dbgStart), displayMode);
@@ -725,7 +880,6 @@ void Ssd1677Driver::setCustomLut(EpdBus& bus, bool enabled, const unsigned char*
   for (uint16_t i = 0; i < 105; i++) {
     bus.data(pgm_read_byte(&data[i]));
   }
-
   bus.cmd(CMD_GATE_VOLTAGE);  // VGH
   bus.data(pgm_read_byte(&data[105]));
 
@@ -784,6 +938,11 @@ static const Ssd1677Config& ssd1677ActiveConfig() {
     // D7 fast), so it runs the same config. Grayscale LUT is Sticky's — same panel
     // class, but tune here if a unit shows banding.
     case BoardConfig::Board::WsEpaper397: return ssd1677StickyConfig();
+#if FREEINK_DEVICE_PICCO
+    // Onyx Picco / BOOX Tiles: per-panel config picked from the panel's user ID
+    // (see ssd1677PiccoConfig).
+    case BoardConfig::Board::Picco: return ssd1677PiccoConfig();
+#endif
     // X4 Pro runs on the stock X4/GDEQ0426T82 config — same controller and panel
     // class, confirmed painting on hardware. No custom LUT or drive voltages needed.
     // Layers the fast-DU shortcut only when the build opts in (ssd1677X4ProConfig).

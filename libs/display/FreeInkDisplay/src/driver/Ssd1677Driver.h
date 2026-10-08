@@ -66,6 +66,11 @@ struct Ssd1677Config {
   // 110-byte B/W LUT for FAST refreshes, activated with 0xCC instead of the OTP
   // fastSeqOverride; nullptr keeps the OTP waveform.
   const unsigned char* fastLut = nullptr;
+  // 110-byte B/W LUTs for FULL / HALF refreshes, for panels whose OTP waveforms
+  // are not used. Activated with 0xE4 (FULL, loads temperature) / 0xC4 (HALF,
+  // halfRefreshTemp written) instead of the OTP sequences; nullptr keeps OTP.
+  const unsigned char* fullLut = nullptr;
+  const unsigned char* halfLut = nullptr;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
@@ -162,5 +167,18 @@ class Ssd1677Driver : public PanelDriver {
 
 // Singleton accessor (Meyers, zero-heap). Selects the config for the active board.
 PanelDriver& ssd1677Driver();
+
+#if FREEINK_DEVICE_PICCO
+// Onyx Picco panel probe (cached): reads the panel ID over the display pins
+// before the SPI bus starts and records it in ACTIVE.displayControllerVariant.
+enum PiccoPanel : uint8_t {
+  PiccoUnknown = 0,
+  PiccoYrd0426 = 1,
+  PiccoDepg0397 = 2,
+  PiccoOpm040b3 = 3,
+  PiccoSe0400nqw47 = 4,  // the stock "SSD2677" driver path (Ssd2677Driver)
+};
+uint8_t piccoProbePanel();
+#endif
 
 }  // namespace freeink
