@@ -41,12 +41,21 @@ int main() {
   in.update();
   assert(!in.isTouchPressed() && in.wasTouchReleased());
 
-  // A press whose reports stop without a lift-off releases after the hold-over.
+  // A still finger may stop producing reports: the touch stays down and long
+  // press fires; only a missed lift-off is released, after the safety net.
   Wire.push(touchReport(240, 400, 0));
   fakeNow += 20;
   in.update();
   assert(in.isTouchPressed());
-  fakeNow += 200;
+  bool longPress = false;
+  for (int i = 0; i < 30; ++i) {
+    fakeNow += 20;
+    in.update();
+    float nx, ny;
+    longPress |= in.wasTouchLongPress(nx, ny);
+  }
+  assert(in.isTouchPressed() && longPress);
+  fakeNow += 3100;
   in.update();
   assert(!in.isTouchPressed());
   std::puts("Picco TMA525C touch passed");

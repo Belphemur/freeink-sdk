@@ -1997,6 +1997,7 @@ constexpr uint16_t PICCO_TOUCH_H = 800;
 constexpr uint8_t PICCO_REPORT_TOUCH = 0x01;
 constexpr uint8_t PICCO_MODE_APP = 0xF7;
 constexpr uint8_t PICCO_MODE_BOOTLOADER = 0xFF;
+constexpr unsigned long PICCO_TOUCH_STALE_MS = 3000;
 
 // One PIP report into buf (at most cap bytes); returns its length, 0 if none.
 uint16_t piccoReadReport(uint8_t addr, uint8_t* buf, uint16_t cap) {
@@ -2091,8 +2092,9 @@ void InputManager::pollPiccoTouch(const unsigned long now) {
   if (!touchDataEnabled) return;
   const auto& t = BoardConfig::ACTIVE.touch;
 
-  // INT low = report pending. Reports stream while a finger is down; if they
-  // stop without a lift-off record, release after a short hold-over.
+  // INT low = report pending. Release comes from the lift-off record; the
+  // controller can go quiet while a finger rests still, so the hold-over is only
+  // a long safety net for a missed lift-off (it must outlast a long press).
   if (t.irq >= 0 && digitalRead(t.irq) != LOW) {
     if (touchPressed && now >= touchReleaseAt) {
       touchReleasedEvent = true;
@@ -2153,7 +2155,7 @@ void InputManager::pollPiccoTouch(const unsigned long now) {
   if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX)
     touchMovedBeyondTapReleaseSlop = true;
   touchPressed = true;
-  touchReleaseAt = now + 150;  // hold-over if reports stop without a lift-off
+  touchReleaseAt = now + PICCO_TOUCH_STALE_MS;
 }
 
 // --- GT911 (LilyGo) ---------------------------------------------------------
