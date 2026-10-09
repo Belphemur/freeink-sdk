@@ -156,4 +156,22 @@ c++ -std=c++17 -O1 -Wall -Wextra -Werror $INCLUDES \
   -o "$BUILD_DIR/ftfont-advance-parity-test"
 "$BUILD_DIR/ftfont-advance-parity-test" "$FONT_FIXTURE" ../fixtures/fonts/AtkinsonHyperlegibleNext-Regular.otf
 
+
+# An optional real CFF fixture verifies inspection and rendering without
+# committing a font whose redistribution terms are unknown. The default
+# compile_ft pass already carries CFF (the fork's unconditional ft_ftcff.c
+# wrapper), so the fixture test links against those objects; FtFontCffTest
+# exercises the FtFont inspection/rasterize APIs on CFF-outline faces.
+if [ -n "${FREEINK_FONT_CFF_FIXTURE_DIR:-}" ]; then
+  # shellcheck disable=SC2086
+  c++ -std=c++17 -O1 -Wall -Wextra -Werror $INCLUDES \
+    ../../src/FtFont.cpp ../../src/FontAlloc.c $GSUB_SOURCE \
+    FtFontCffTest.cpp "$BUILD_DIR"/obj_*.o \
+    -o "$BUILD_DIR/ftfont-cff-test"
+  for font in "$FREEINK_FONT_CFF_FIXTURE_DIR"/*.ttf "$FREEINK_FONT_CFF_FIXTURE_DIR"/*.otf; do
+    [ -f "$font" ] || continue
+    "$BUILD_DIR/ftfont-cff-test" "$font"
+  done
+fi
+
 echo "FreeInkFont host tests: OK"

@@ -48,6 +48,9 @@ preserve it either way. The cache is flushed by `setRenderOptions()`, by
 is keyed per size, so size changes need no flush. Default budget 512 KB per
 face (`kDefaultGlyphCacheBudget`), capped at 2 MB; `setGlyphCacheBudget(0)`
 disables it. One `FtFont` per task — faces must not be shared across tasks.
+Define `FREEINK_FONT_ENABLE_CFF=1` to include the OpenType CFF driver and its
+PostScript helpers. It is opt-in so TrueType-only builds keep their existing
+code and memory budget.
 
 Cache sizes are tunable via `-DFREEINK_FONT_ADVANCE_SLOTS` /
 `-DFREEINK_FONT_GLYPH_SLOTS` (defaults 512 / 128).

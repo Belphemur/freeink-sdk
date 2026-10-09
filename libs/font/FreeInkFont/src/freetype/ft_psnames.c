@@ -4,6 +4,6 @@
 #define FT2_BUILD_LIBRARY
 #include "../../freetype-config/include/freetype/config/ftoption.h"  /* resolves the
                         * FREEINK_FONT_ENABLE_* default before the gate below. */
-#if FREEINK_FONT_ENABLE_PSNAMES
+#if FREEINK_FONT_ENABLE_PSNAMES || FREEINK_FONT_ENABLE_CFF
 #include "../../third_party/freetype/src/psnames/psnames.c"
 #endif
