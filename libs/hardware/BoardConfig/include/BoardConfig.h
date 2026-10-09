@@ -502,6 +502,10 @@ struct SdPins {
   // GPIO5, which gates the card while held LOW); the sleep path must then drive it
   // HIGH to power the card down. Defaulted so existing initializers stay valid.
   bool powerActiveHigh = true;
+  // SDMMC mount power-cycles powerEnable (off 80 ms, on 120 ms) before each
+  // attempt, as the X4 Pro's stock mountSD does. false just holds it on — for
+  // boards whose enable also feeds other already-running peripherals (Picco).
+  bool powerCycleOnMount = true;
 };
 
 // 4-bit SDMMC/SDIO wiring (e.g. de-link). SdFat can't drive SDIO, so a board with
@@ -526,7 +530,7 @@ enum class GaugeType : uint8_t { Bq27220, Cw2017, Axp2101 };
 
 // The I2C charger IC at batteryGauge.chargerAddr. Both report CHRG_STAT in bits
 // [4:3] of a status register (BQ25896 REG0B, SGM41562 REG08); SGM41562 also
-// reports input power-good in REG08 bit 2 and has a BATFET-off ship mode.
+// reports input present in REG08 bit 1 and has a BATFET-off ship mode.
 enum class ChargerType : uint8_t { Bq25896, Sgm41562 };
 
 // I2C fuel-gauge / charger wiring (e.g. BQ27220 + BQ25896 on LilyGo T5 S3). When
@@ -1682,9 +1686,9 @@ constexpr BoardProfile PICCO = {
     // SD is 4-bit SDMMC (sdmmc field below); these SPI pins are unused. powerEnable =
     // GPIO0, an ACTIVE-LOW peripheral rail: stock's power-manager begin (FUN_420094f4)
     // drives it LOW at boot, and its deep-sleep path drives it HIGH (FUN_4200953c).
-    // Carried here so the SDMMC mount power-cycles it (HIGH -> LOW) and holds it LOW,
-    // ahead of the display probe/init.
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, false, 0, false},
+    // holdPowerRails() turns it on first thing (stock order: before RTC/IMU); the
+    // SDMMC mount keeps it on without the X4 Pro-style power cycle, as stock does.
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, false, 0, false, false},
     // Buttons: power/wake = GPIO2 (active-low, RTC ext0 wake source). Up = GPIO21 and
     // Down = GPIO9 (hardware-confirmed). GPIO5 is the remaining input from the stock
     // button constructor (2, 5, 21, 9); carried as confirm, physical role unconfirmed.
@@ -2070,6 +2074,7 @@ constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X4;
 inline BoardProfile ACTIVE = DEFAULT_DEVICE;
 
 inline void holdPowerRails();  // defined below; used by selectDevice()
+inline void releaseSdRail();   // defined below; used by holdPowerRails()
 
 // Set ACTIVE to one of the devices compiled into this build. Returns false (and
 // leaves ACTIVE unchanged) if `which` was not included via -DFREEINK_DEVICE_*.
@@ -2259,6 +2264,13 @@ inline void holdPowerRails() {
     digitalWrite(ce, ACTIVE.power.chargeEnableActiveHigh ? HIGH : LOW);
     gpio_hold_en(g);
   }
+#if FREEINK_DEVICE_PICCO
+  // Picco: the GPIO0 enable carried as sd.powerEnable also feeds peripherals the
+  // sensor bus needs. Stock turns it on in its power-manager begin, before the
+  // RTC/IMU init (FUN_42011a00 -> FUN_420094f4); waiting for the SD mount left
+  // the RTC unpowered (NACK) at probe time.
+  if (isPicco()) releaseSdRail();
+#endif
 }
 
 // Rescue the SD power rail before first display use. A previous firmware's

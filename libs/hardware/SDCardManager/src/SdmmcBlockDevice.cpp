@@ -107,11 +107,13 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // block I/O works, and the gate is left in the exact LOW state that read succeeded under.
   esp_err_t mountErr = ESP_FAIL;
   for (int attempt = 0; attempt < 4; attempt++) {
-    if (sdPwr >= 0) {
+    if (sdPwr >= 0 && BoardConfig::ACTIVE.sd.powerCycleOnMount) {
       digitalWrite(sdPwr, HIGH);
       delay(80);
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
       delay(120);
+    } else if (sdPwr >= 0) {
+      digitalWrite(sdPwr, BoardConfig::ACTIVE.sd.powerActiveHigh ? HIGH : LOW);  // keep the rail on
     }
     esp_err_t e = sdmmc_card_init(&host, card);
     if (e != ESP_OK && card->csd.capacity == 0) {

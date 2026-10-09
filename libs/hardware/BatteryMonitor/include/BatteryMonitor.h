@@ -78,7 +78,7 @@ public:
     // plugged in, so isCharging() goes false with the cable still attached.
     // Only a source that reports the input rail itself can answer this: the
     // BQ25896's REG0B (VBUS_STAT[7:5] plus PG_STAT), the SGM41562's REG08
-    // PG_STAT, or the M5 PMIC. Boards without one of those cannot observe it.
+    // input-present bit, or the M5 PMIC. Boards without one of those cannot observe it.
     //
     // `known` (optional, out) is set false when the board has no way to tell,
     // or the read failed. Callers MUST branch on it: a bare false means "no
@@ -110,6 +110,13 @@ public:
     // back on is up to the charger. SGM41562 only (REG06 bit 5). Returns false
     // when the board has no such charger or the I2C write failed.
     static bool enterShipMode();
+
+    // One-time charger setup at boot. SGM41562 (Onyx Picco): replays the stock
+    // firmware's init (FUN_4200a2d0) — including the 4.35 V charge voltage for the
+    // Picco's high-voltage cell — and only when REG0B reads 0, as stock does.
+    // Returns false (and changes nothing) on other boards, or if the charger
+    // can't be reached.
+    static bool configureCharger();
 
 private:
     bool hasAdcBackend() const;
