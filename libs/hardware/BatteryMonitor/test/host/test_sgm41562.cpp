@@ -1,4 +1,4 @@
-// Picco: ADC battery + SGM41562 charger @0x03 (CHRG_STAT REG08[4:3], PG_STAT REG08[2],
+// Picco: ADC battery + SGM41562 charger @0x03 (CHRG_STAT REG08[4:3], input present REG08[1],
 // ship mode REG06 bit 5) against a register-file model of the charger.
 #include <cstdio>
 #include <vector>
@@ -40,7 +40,7 @@ int main() {
     uint8_t reg08;
     bool charging;
     bool usb;
-  } cases[] = {{0x00, false, false}, {0x0C, true, true}, {0x14, true, true}, {0x1C, false, true}, {0x18, false, false}};
+  } cases[] = {{0x00, false, false}, {0x0A, true, true}, {0x12, true, true}, {0x1A, false, true}, {0x18, false, false}};
   for (const Case& c : cases) {
     regs[0x08] = c.reg08;
     CHECK(bm.isCharging() == c.charging);
@@ -49,6 +49,40 @@ int main() {
     CHECK(s.supported && s.chargingKnown && s.charging == c.charging);
     CHECK(s.externalPowerKnown && s.externalPower == c.usb);
   }
+
+  // LiHV curve (stock tables), x2 divider: 4200 mV discharging = 92% -> 90 notch;
+  // the generic Li-ion curve would say 100. Charging uses the charging table.
+  regs[0x08] = 0x00;
+  hostAdcMv = 2100;
+  CHECK(bm.readPercentage() == 90);
+  hostAdcMv = 2050;  // 4100 mV -> 83% -> 80
+  CHECK(bm.readPercentage() == 80);
+  regs[0x08] = 0x12;  // fast charging
+  hostAdcMv = 2152;   // 4304 mV under charge -> 94% -> 90
+  CHECK(bm.readPercentage() == 90);
+  hostAdcMv = 2170;   // above 4305 -> full
+  CHECK(bm.readPercentage() == 100);
+  hostAdcMv = 0;      // failed read never reads full
+  CHECK(bm.readPercentage() == 0);
+  regs[0x08] = 0x00;
+
+  // Stock charger init: gated on REG0B == 0, then read-modify-write per step.
+  regs[0x0B] = 0x01;
+  CHECK(!BatteryMonitor::configureCharger());
+  CHECK(regs[0x04] == 0x00);  // nothing written
+  regs[0x0B] = 0x00;
+  regs[0x01] = 0xFF;  // other bits must survive
+  regs[0x04] = 0x01;
+  regs[0x05] = 0xFF;
+  regs[0x0D] = 0x07;
+  regs[0x06] = 0x00;
+  CHECK(BatteryMonitor::configureCharger());
+  CHECK(regs[0x04] == 0xAB);  // 4.35 V code in [7:1], bit 0 kept
+  CHECK(regs[0x02] == 0x3E && regs[0x06] == 0x80);
+  CHECK(regs[0x05] == 0x9F);  // bits 6:5 cleared
+  CHECK(regs[0x0D] == 0x4F);  // [7:3] = 0x48, [2:0] kept
+  CHECK(regs[0x01] == 0x17);  // bits 7:5 and 3 cleared
+  CHECK(regs[0x0C] == 0x00);
 
   regs[0x06] = 0x81;
   CHECK(BatteryMonitor::enterShipMode());

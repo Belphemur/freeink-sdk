@@ -86,6 +86,17 @@ bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
   return true;
 }
 
+// Presence read for begin(). A single failed transaction is not proof of a
+// missing chip: on a shared bus the I2C driver can fail the first transfer after
+// another device's NACK (e.g. an IMU address probe) with ESP_ERR_INVALID_STATE.
+bool readRegsRetry(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    if (readRegs(addr, reg, dst, len)) return true;
+    delay(10);
+  }
+  return false;
+}
+
 }  // namespace
 
 bool Rtc::begin() {
@@ -97,20 +108,20 @@ bool Rtc::begin() {
   uint8_t status = 0;
   switch (s.rtcType) {
     case BoardConfig::RtcType::Pcf8563:
-      if (!readRegs(addr, PCF8563_REG_CONTROL_STATUS1, &status, 1)) return false;
+      if (!readRegsRetry(addr, PCF8563_REG_CONTROL_STATUS1, &status, 1)) return false;
       writeReg(addr, PCF8563_REG_CLKOUT, PCF8563_CLKOUT_DISABLED);  // we don't use the 32 kHz CLKOUT
       break;
     case BoardConfig::RtcType::Pcf85063:
       // No CLKOUT write: the PCF85063's CLKOUT lives in Control_2 alongside bits
       // this driver has no business touching, and it boots disabled.
-      if (!readRegs(addr, PCF85063_REG_CONTROL1, &status, 1)) return false;
+      if (!readRegsRetry(addr, PCF85063_REG_CONTROL1, &status, 1)) return false;
       break;
     case BoardConfig::RtcType::Ds3231:
-      if (!readRegs(addr, DS3231_REG_STATUS, &status, 1)) return false;
+      if (!readRegsRetry(addr, DS3231_REG_STATUS, &status, 1)) return false;
       writeReg(addr, DS3231_REG_CONTROL, DS3231_CONTROL_INTCN);  // disable square-wave output
       break;
     case BoardConfig::RtcType::Rx8130:
-      if (!readRegs(addr, RX8130_REG_CONTROL0, &status, 1)) return false;
+      if (!readRegsRetry(addr, RX8130_REG_CONTROL0, &status, 1)) return false;
       break;
     case BoardConfig::RtcType::None:
       return false;

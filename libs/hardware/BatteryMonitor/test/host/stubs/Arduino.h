@@ -8,7 +8,8 @@ inline void delayMicroseconds(unsigned int) {}
 inline void pinMode(int, int) {}
 inline void digitalWrite(int, int) {}
 inline int digitalRead(int) { return 0; }
-inline uint32_t analogReadMilliVolts(int) { return 0; }
+inline uint32_t hostAdcMv = 0;  // the test's battery pin reading
+inline uint32_t analogReadMilliVolts(int) { return hostAdcMv; }
 struct SerialStub {
   explicit operator bool() const { return false; }
   template <typename... Args>
