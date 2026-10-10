@@ -6,6 +6,9 @@
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <soc/soc_caps.h>
+#if SOC_PM_SUPPORT_EXT1_WAKEUP
+#include <driver/rtc_io.h>
+#endif
 #if FREEINK_DEVICE_WS397
 #include <Axp2101.h>
 #endif
@@ -45,6 +48,24 @@ void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
   const esp_sleep_ext1_wakeup_mode_t lowMode = ESP_EXT1_WAKEUP_ANY_LOW;
 #endif
   esp_sleep_enable_ext1_wakeup(gpioMask, wakeLow ? lowMode : ESP_EXT1_WAKEUP_ANY_HIGH);
+  // ext1 hands each pad to the RTC domain for sleep, where the digital pull from
+  // pinMode() does not apply and esp_sleep_config_gpio_isolate() floats the pad.
+  // Set the idle-level pull in the RTC domain and keep that domain powered so it
+  // holds; a pin without an external resistor otherwise floats and wakes at random.
+#if SOC_PM_SUPPORT_RTC_PERIPH_PD
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+#endif
+  for (int pin = 0; pin < 64; ++pin) {
+    if (((gpioMask >> pin) & 1) == 0) continue;
+    const auto g = static_cast<gpio_num_t>(pin);
+    if (wakeLow) {
+      rtc_gpio_pulldown_dis(g);
+      rtc_gpio_pullup_en(g);
+    } else {
+      rtc_gpio_pullup_dis(g);
+      rtc_gpio_pulldown_en(g);
+    }
+  }
 #elif SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
   // RISC-V (C3/C6/H2): the deep-sleep "gpio" wakeup source.
   esp_deep_sleep_enable_gpio_wakeup(gpioMask, wakeLow ? ESP_GPIO_WAKEUP_GPIO_LOW : ESP_GPIO_WAKEUP_GPIO_HIGH);
