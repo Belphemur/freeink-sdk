@@ -103,10 +103,14 @@ For hardware power-off, call `HapticManager::getInstance().end()` if using hapti
 finish all display work, call `display.deepSleep()`,
 close/unmount storage, then call `freeink::metalio::powerOff()` from your hardware
 task. Call `AudioManager::powerDown()` and `Microphone::end()` before sleeping
-or pulsing hardware power-off. This disables the amp, waits 280 ms, and issues one high/low/high shutdown
-pulse with 100 ms intervals. The caller may repeat the pulse if USB keeps the
-device powered. Do not cut P0.5 first: it is shared by the screen and card, and
-the sample explicitly keeps it powered during panel shutdown. `powerOff()` does
+or pulsing hardware power-off. Following the vendor firmware, it disables the amp,
+holds the main and screen/card rails on, and toggles the power key (P1.3) every
+100 ms until the power-switch chip cuts power. A single pulse, or a few spaced
+ones, does not switch it off: measured on hardware, the board then stays powered
+in deep sleep. On battery the call does not return; it returns after `maxMs`
+(default 5 s) when USB keeps the device powered. Do not cut P0.5 first: it is
+shared by the screen and card, and the sample explicitly keeps it powered during
+panel shutdown. `powerOff()` does
 not replace application-level display/storage shutdown. Board helpers use the
 shared Wire bus; serialize board-control calls with your input/hardware task.
 
