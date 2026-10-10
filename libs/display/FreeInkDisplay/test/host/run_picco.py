@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix="freeink-picco-test-") as directory:
     shutil.copy2(LIB / "include/GrayscaleCapabilities.h", root / "include/GrayscaleCapabilities.h")
     for name in ("Ssd1677Luts.h", "Ssd2677Luts.h"):
         shutil.copy2(LIB / f"src/lut/{name}", root / f"src/lut/{name}")
-    for name in ("SPI.h", "esp_heap_caps.h"):
+    for name in ("SPI.h", "esp_heap_caps.h", "sdkconfig.h"):
         shutil.copy2(HERE / "pro_stubs" / name, root / name)
     shutil.copy2(HERE / "pro_stubs/EpdBus.h", root / "src/bus/EpdBus.h")
     board = (HERE / "pro_stubs/BoardConfig.h").read_text().replace("MetalioEInk4 };", "MetalioEInk4, Picco };")

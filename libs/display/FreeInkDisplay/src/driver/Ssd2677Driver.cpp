@@ -90,7 +90,7 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
   const uint32_t size = geometry().bufferSize;
   static uint8_t chunk[1024];
   bus.cmd(CMD_DATA);
-  bus.beginTxn();
+  auto txn = bus.beginTxn();
   for (uint32_t i = 0; i < size;) {
     uint16_t n = 0;
     while (n < sizeof(chunk) && i < size) {
@@ -98,9 +98,8 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
       n += 2;
       ++i;
     }
-    bus.rawWriteBytes(chunk, n);
+    txn.writeBytes(chunk, n);
   }
-  bus.endTxn();
 }
 
 void Ssd2677Driver::refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff) {
