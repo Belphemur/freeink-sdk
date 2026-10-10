@@ -102,16 +102,20 @@ inline void vibrate(uint16_t durationMs = 35) {
   digitalWrite(VIBRATION_GPIO, LOW);
 }
 
-// Call only after display.deepSleep() and storage shutdown. Keep the shared
-// screen/card rail on while the panel's high-voltage supplies discharge.
-// One pulse per call; firmware may repeat if USB keeps the power controller alive.
-inline bool powerOff() {
+// Call only after display.deepSleep() and storage shutdown. The vendor firmware's sequence
+// (power_hw.cc PwrOffTask): amplifier off, main and screen/card rails held on, then the power key
+// toggled every 100 ms until the power-switch chip cuts power. A few spaced pulses do not switch
+// it off. On battery this does not return; it returns once maxMs have passed with power still
+// present (USB can hold it up), so the caller can fall back to deep sleep.
+inline bool powerOff(uint32_t maxMs = 5000) {
   if (!ensureBooted() || !setAmplifier(false)) return false;
-  delay(280);
-  if (!setOutput(PIN_POWER_PULSE, true)) return false;
-  delay(100);
-  if (!setOutput(PIN_POWER_PULSE, false)) return false;
-  delay(100);
+  if (!setOutput(PIN_MAIN_POWER, true) || !setOutput(PIN_SCREEN_SD_POWER, true)) return false;
+  for (uint32_t elapsed = 0; elapsed < maxMs; elapsed += 200) {
+    setOutput(PIN_POWER_PULSE, true);
+    delay(100);
+    setOutput(PIN_POWER_PULSE, false);
+    delay(100);
+  }
   return setOutput(PIN_POWER_PULSE, true);
 }
 }  // namespace metalio
