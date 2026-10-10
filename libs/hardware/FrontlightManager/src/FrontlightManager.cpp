@@ -371,10 +371,11 @@ bool FrontlightManager::configurePicco() {
 
 void FrontlightManager::applyPicco() {
   if (_brightness == 0) {
-    // Off (FUN_42008c80(0)): clear standby + both channel-enable bits.
-    piccoUpdate(0x00, 0x80, 0x00);
+    // Off: clear both channel-enable bits, then set reg0 bit 7 (standby), as
+    // stock's sleep path FUN_42008f64 does. The on path clears it again.
     piccoUpdate(0x00, 0x14, 0x00);
     piccoUpdate(0x00, 0x0b, 0x00);
+    piccoUpdate(0x00, 0x80, 0x80);
     _i2cConfigured = false;
     return;
   }

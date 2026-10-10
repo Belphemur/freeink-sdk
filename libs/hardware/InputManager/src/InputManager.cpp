@@ -7,6 +7,9 @@
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
 #include <driver/gpio.h>
+#if FREEINK_DEVICE_PICCO
+#include <driver/rtc_io.h>
+#endif
 #if FREEINK_DEVICE_MURPHY_M4
 #include <driver/i2c_master.h>
 #include <esp_rom_sys.h>
@@ -229,6 +232,13 @@ uint8_t InputManager::getState() {
 
 InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
 
+#if FREEINK_DEVICE_PICCO
+namespace {
+uint16_t piccoReadReport(uint8_t addr, uint8_t* buf, uint16_t cap);
+bool piccoWaitInt(int8_t irq, unsigned long timeoutMs);
+}  // namespace
+#endif
+
 bool InputManager::prepareForDeepSleep() {
 #if FREEINK_DEVICE_EEGO_A4
   const auto& t = BoardConfig::ACTIVE.touch;
@@ -245,6 +255,31 @@ bool InputManager::prepareForDeepSleep() {
       pinMode(t.reset, OUTPUT);
       digitalWrite(t.reset, LOW);
       gpio_hold_en(reset);
+    }
+    touchDataEnabled = false;
+    return ok;
+  }
+#endif
+#if FREEINK_DEVICE_PICCO
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.controller == BoardConfig::TouchController::PiccoCst && t.i2cAddress != 0) {
+    // Stock FUN_4200c730: SET_POWER(SLEEP) to command register 0x0005, wait
+    // for the response, then pull RST/INT/GPIO12 down. deepSleep() floats the
+    // digital pad config, so the pulldowns are set in the RTC domain.
+    static const uint8_t sleepCmd[] = {0x05, 0x00, 0x01, 0x08};
+    Wire.beginTransmission(t.i2cAddress);
+    Wire.write(sleepCmd, sizeof(sleepCmd));
+    const bool ok = Wire.endTransmission() == 0;
+    uint8_t buf[16];
+    if (ok && piccoWaitInt(t.irq, 500)) piccoReadReport(t.i2cAddress, buf, sizeof(buf));
+    if (t.irq >= 0) detachInterrupt(t.irq);
+    for (const int8_t pin : {t.reset, t.irq, int8_t(12)}) {
+      if (pin < 0) continue;
+      const auto g = static_cast<gpio_num_t>(pin);
+      rtc_gpio_init(g);
+      rtc_gpio_set_direction(g, RTC_GPIO_MODE_INPUT_ONLY);
+      rtc_gpio_pullup_dis(g);
+      rtc_gpio_pulldown_en(g);
     }
     touchDataEnabled = false;
     return ok;
