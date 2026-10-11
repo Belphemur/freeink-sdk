@@ -28,6 +28,17 @@
 namespace freeink {
 namespace papermono {
 
+struct WakeState {
+  uint8_t source = 0;
+  uint8_t enabledPins = 0;
+  bool valid = false;
+};
+
+inline WakeState& bootWakeState() {
+  static WakeState state;
+  return state;
+}
+
 // One-time boot bring-up (idempotent, cheap after the first call): PMIC bus up
 // with watchdog off, wake source cleared, power button taken over (the PMIC's
 // single-click reset is disabled so clicks reach the firmware; its hardware
@@ -39,6 +50,8 @@ inline bool ensureBooted() {
   if (booted) return ok;
   booted = true;
   m5pm1::beginBus();
+  auto& wake = bootWakeState();
+  wake.valid = m5pm1::readWakeSource(&wake.source) && m5pm1::readReg(m5pm1::REG_GPIO_WAKE_EN, &wake.enabledPins);
   m5pm1::clearWakeSource();
   m5pm1::configureAppPowerButton();
   // The red RGB leg lives in the PM1's PWR_CFG, which the PMIC retains across
@@ -47,6 +60,31 @@ inline bool ensureBooted() {
   m5pm1::updateReg(m5pm1::REG_PWR_CFG, m5pm1::LED_R_EN, 0);
   ok = m5ioe1::configureOutputs();
   return ok;
+}
+
+// RTC /IRQ is PM1 GPIO0, separate from the ESP's GPIO wake sources.
+inline bool setRtcWake(bool enabled) {
+  if (!ensureBooted()) return false;
+  using namespace m5pm1;
+  if (!enabled) {
+    uint8_t owners = 0;
+    const bool read = readReg(REG_GPIO_WAKE_EN, &owners);
+    const bool disabled = updateRegChecked(REG_GPIO_WAKE_EN, GPIO0, 0);
+    const bool released = !read || (owners & GPIO_WAKE_MASK) != GPIO0 || updateRegChecked(REG_HOLD_CFG, LDO_HOLD, 0);
+    return read && disabled && released;
+  }
+  uint8_t owners = 0;
+  if (!readReg(REG_GPIO_WAKE_EN, &owners) || (owners & (GPIO_WAKE_MASK & ~GPIO0))) return false;
+  const bool configured = updateRegChecked(REG_GPIO_FUNC0, 0x03, 0) && updateRegChecked(REG_GPIO_MODE, GPIO0, 0) &&
+                          updateRegChecked(REG_GPIO_PULL0, 0x03, 0x01) && updateRegChecked(REG_GPIO_DRV, 0, GPIO0) &&
+                          updateRegChecked(REG_GPIO_WAKE_CFG, GPIO0, 0) && updateRegChecked(REG_PWR_CFG, 0, LDO_EN) &&
+                          updateRegChecked(REG_HOLD_CFG, 0, LDO_HOLD) && updateRegChecked(REG_GPIO_WAKE_EN, 0, GPIO0) &&
+                          clearWakeSource();
+  if (!configured) {
+    updateRegChecked(REG_GPIO_WAKE_EN, GPIO0, 0);
+    updateRegChecked(REG_HOLD_CFG, LDO_HOLD, 0);
+  }
+  return configured;
 }
 
 // EPD rail (IOE1 IO3 -> EPD_3V3_L3B LDO). Power-on settle is EpdBus's own

@@ -1,8 +1,7 @@
 #include "Rtc.h"
 
-#include <time.h>
-
 #include <BoardConfig.h>
+#include <time.h>
 
 #if FREEINK_CAP_RTC
 
@@ -35,9 +34,19 @@ constexpr uint8_t DS3231_STATUS_OSF = 0x80;
 
 // RX8130CE register map (Paper Mono / PaperS3).
 constexpr uint8_t RX8130_REG_TIME = 0x10;
-constexpr uint8_t RX8130_REG_CONTROL0 = 0x1D;
-constexpr uint8_t RX8130_POR_FLAG = 0x80;
-constexpr uint8_t RX8130_STOP = 0x01;
+constexpr uint8_t RX8130_REG_COUNTER = 0x1A;
+constexpr uint8_t RX8130_REG_EXTENSION = 0x1C;
+constexpr uint8_t RX8130_REG_FLAGS = 0x1D;
+constexpr uint8_t RX8130_REG_CONTROL0 = 0x1E;
+constexpr uint8_t RX8130_VLF = 0x02;
+constexpr uint8_t RX8130_STOP = 0x40;
+constexpr uint8_t RX8130_TIMER = 0x10;  // TE, TF and TIE occupy bit 4.
+constexpr uint8_t RX8130_OTHER_IRQS = 0x28;
+constexpr uint8_t RX8130_TEST = 0x80;
+constexpr uint8_t RX8130_TIMER_STOP = 0x04;
+constexpr uint8_t RX8130_BACKUP_ONLY = 0x01;
+constexpr uint8_t RX8130_CLEAR_VLF = 0xBD;
+constexpr uint8_t RX8130_CLEAR_TF = 0xAF;  // W0C: preserve the other flags.
 
 bool g_wireReady[2] = {false, false};
 TwoWire& sensorWire() {
@@ -181,8 +190,9 @@ bool Rtc::now(DateTime& out) {
       return true;
     }
     case BoardConfig::RtcType::Rx8130: {
+      uint8_t flags = 0;
+      if (!readRegs(addr, RX8130_REG_FLAGS, &flags, 1) || (flags & RX8130_VLF)) return false;
       if (!readRegs(addr, RX8130_REG_TIME, raw, sizeof(raw))) return false;
-      if (raw[0] & RX8130_POR_FLAG) return false;
       out.second = bcdToDec(raw[0] & 0x7FU);
       out.minute = bcdToDec(raw[1] & 0x7FU);
       out.hour = bcdToDec(raw[2] & 0x3FU);
@@ -229,7 +239,8 @@ bool Rtc::set(const DateTime& dt) {
     wire.write(decToBcd(static_cast<uint8_t>(dt.year % 100)));
     const bool written = wire.endTransmission() == 0;
     const bool restarted = writeReg(addr, RX8130_REG_CONTROL0, static_cast<uint8_t>(control & ~RX8130_STOP));
-    return written && restarted;
+    return written && restarted &&
+           writeReg(addr, RX8130_REG_FLAGS, RX8130_CLEAR_VLF);  // W0C: clear VLF after setting time.
   }
   if (s.rtcType == BoardConfig::RtcType::Pcf85063) {
     wire.beginTransmission(addr);
@@ -268,6 +279,73 @@ bool Rtc::set(const DateTime& dt) {
   return true;
 }
 
+bool Rtc::cancelWakeTimer() {
+  if (!begun_ || BoardConfig::ACTIVE.sensors.rtcType != BoardConfig::RtcType::Rx8130) return false;
+  const uint8_t addr = BoardConfig::ACTIVE.sensors.rtcAddr;
+  uint8_t extension = 0, control = 0;
+  bool stopped = readRegs(addr, RX8130_REG_EXTENSION, &extension, 1);
+  if (stopped) stopped = writeReg(addr, RX8130_REG_EXTENSION, extension & ~RX8130_TIMER);
+  bool disabled = readRegs(addr, RX8130_REG_CONTROL0, &control, 1);
+  if (disabled) disabled = writeReg(addr, RX8130_REG_CONTROL0, control & ~RX8130_TIMER);
+  const bool cleared = writeReg(addr, RX8130_REG_FLAGS, RX8130_CLEAR_TF);
+  const bool readExtension = readRegs(addr, RX8130_REG_EXTENSION, &extension, 1);
+  const bool readControl = readRegs(addr, RX8130_REG_CONTROL0, &control, 1);
+  return stopped && disabled && cleared && readExtension && readControl && !(extension & RX8130_TIMER) &&
+         !(control & RX8130_TIMER);
+}
+
+bool Rtc::armWakeTimer(const uint32_t seconds) {
+  if (!begun_ || BoardConfig::ACTIVE.sensors.rtcType != BoardConfig::RtcType::Rx8130 || seconds == 0 ||
+      seconds > 65535UL * 60UL)
+    return false;
+  if (!cancelWakeTimer()) return false;
+  const uint8_t addr = BoardConfig::ACTIVE.sensors.rtcAddr;
+  uint8_t extension = 0, control = 0, flags = 0;
+  if (!readRegs(addr, RX8130_REG_EXTENSION, &extension, 1) || !readRegs(addr, RX8130_REG_CONTROL0, &control, 1) ||
+      !readRegs(addr, RX8130_REG_FLAGS, &flags, 1))
+    return false;
+  // Do not borrow a stopped clock or replace another interrupt owner.
+  if ((control & (RX8130_TEST | RX8130_STOP | RX8130_OTHER_IRQS)) || (flags & RX8130_VLF)) return false;
+  const bool minutes = seconds > 65535UL;
+  const uint16_t count = static_cast<uint16_t>(minutes ? (seconds + 59UL) / 60UL : seconds);
+  extension = static_cast<uint8_t>((extension & ~0x17U) | (minutes ? 0x03U : 0x02U));
+  // Count in both main and backup supply modes; the caller consumes each event.
+  control = static_cast<uint8_t>((control & ~(RX8130_TIMER_STOP | RX8130_BACKUP_ONLY)) | RX8130_TIMER);
+  bool ok = writeReg(addr, RX8130_REG_EXTENSION, extension) && writeReg(addr, RX8130_REG_FLAGS, RX8130_CLEAR_TF) &&
+            writeReg(addr, RX8130_REG_CONTROL0, control);
+  if (ok) {
+    auto& wire = sensorWire();
+    wire.beginTransmission(addr);
+    wire.write(RX8130_REG_COUNTER);
+    wire.write(static_cast<uint8_t>(count));
+    wire.write(static_cast<uint8_t>(count >> 8));
+    ok = wire.endTransmission() == 0;
+    uint8_t readback[2] = {};
+    ok = ok && readRegs(addr, RX8130_REG_COUNTER, readback, sizeof(readback)) &&
+         readback[0] == static_cast<uint8_t>(count) && readback[1] == static_cast<uint8_t>(count >> 8);
+  }
+  if (ok) ok = writeReg(addr, RX8130_REG_EXTENSION, extension | RX8130_TIMER);
+  uint8_t finalExtension = 0, finalControl = 0;
+  ok = ok && readRegs(addr, RX8130_REG_EXTENSION, &finalExtension, 1) &&
+       readRegs(addr, RX8130_REG_CONTROL0, &finalControl, 1) &&
+       finalExtension == static_cast<uint8_t>(extension | RX8130_TIMER) && finalControl == control;
+  if (!ok) cancelWakeTimer();  // Caller must also disarm the external wake route on failure.
+  return ok;
+}
+
+bool Rtc::readWakeTimer(bool& fired) {
+  fired = false;
+  if (!begun_ || BoardConfig::ACTIVE.sensors.rtcType != BoardConfig::RtcType::Rx8130) return false;
+  const uint8_t addr = BoardConfig::ACTIVE.sensors.rtcAddr;
+  uint8_t flags = 0, extension = 0, control = 0;
+  if (!readRegs(addr, RX8130_REG_FLAGS, &flags, 1) || !readRegs(addr, RX8130_REG_EXTENSION, &extension, 1) ||
+      !readRegs(addr, RX8130_REG_CONTROL0, &control, 1))
+    return false;
+  fired = (flags & (RX8130_TIMER | RX8130_VLF)) == RX8130_TIMER && (extension & RX8130_TIMER) &&
+          (control & (RX8130_TEST | RX8130_STOP | RX8130_OTHER_IRQS | RX8130_TIMER)) == RX8130_TIMER;
+  return true;
+}
+
 bool Rtc::adjust(const int32_t seconds, DateTime* out) {
   DateTime now{};
   if (!this->now(now)) return false;
@@ -299,6 +377,12 @@ namespace freeink {
 bool Rtc::begin() { return false; }
 bool Rtc::now(DateTime&) { return false; }
 bool Rtc::set(const DateTime&) { return false; }
+bool Rtc::armWakeTimer(uint32_t) { return false; }
+bool Rtc::cancelWakeTimer() { return false; }
+bool Rtc::readWakeTimer(bool& fired) {
+  fired = false;
+  return false;
+}
 bool Rtc::adjust(int32_t, DateTime*) { return false; }
 }  // namespace freeink
 
