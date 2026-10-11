@@ -431,6 +431,31 @@ BookStatus PageCacheWriter::readPage(uint32_t pageIndex, Arena& scratch, Page* o
   return decodePageBlob(blob, blobLen, pageIndex, scratch, out);
 }
 
+// Batch size for the reader's index/anchor region reads: one readAt per KB
+// keeps the stack buffer small while capping the SD open/close cycles at a
+// few per cache open.
+constexpr uint32_t kRegionReadBytes = 1024;
+
+// Reads a contiguous 8-byte (u32,u32) record region in kRegionReadBytes
+// chunks, deinterleaving each record into the first/second u32 arrays.
+// Returns false on I/O error (same classification the per-record loop had).
+bool readRegionPairs(CacheStorage& storage, const char* name, uint32_t offset, uint32_t* firsts, uint32_t* seconds,
+                     uint32_t recordCount) {
+  uint8_t chunk[kRegionReadBytes];
+  uint32_t done = 0;
+  while (done < recordCount) {
+    const uint32_t records =
+        (recordCount - done) * 8 > kRegionReadBytes ? kRegionReadBytes / 8 : (recordCount - done);
+    if (!readFully(storage, name, offset + done * 8, chunk, records * 8)) return false;
+    for (uint32_t r = 0; r < records; ++r) {
+      firsts[done + r] = getU32(chunk + r * 8);
+      seconds[done + r] = getU32(chunk + r * 8 + 4);
+    }
+    done += records;
+  }
+  return true;
+}
+
 // --- reader ------------------------------------------------------------------
 
 BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32_t expectedHash, Arena& arena) {
@@ -491,27 +516,22 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
   if ((offsets_ == nullptr || charStarts_ == nullptr) && pageCount != 0) {
     return BookStatus::OutOfMemory;
   }
-  for (uint32_t i = 0; i < pageCount; ++i) {
-    uint8_t rec[8];
-    if (!readFully(storage, name, indexOffset_ + i * 8, rec, sizeof(rec))) {
-      return BookStatus::IoError;
-    }
-    offsets_[i] = getU32(rec);
-    charStarts_[i] = getU32(rec + 4);
-  }
+  // Both trailing regions are contiguous 8-byte (u32,u32) record arrays, so
+  // they read as chunked batches: on device every readAt is a full SD
+  // open+seek+close cycle, and per-record reads cost seconds on long
+  // chapters. Endianness/packing of each record is unchanged.
+  const bool indexOk =
+      readRegionPairs(storage, name, indexOffset_, offsets_, charStarts_, pageCount);
   anchorHashes_ = arena.allocArray<uint32_t>(anchorCount);
   anchorChars_ = arena.allocArray<uint32_t>(anchorCount);
   if ((anchorHashes_ == nullptr || anchorChars_ == nullptr) && anchorCount != 0) {
     return BookStatus::OutOfMemory;
   }
-  for (uint32_t a = 0; a < anchorCount; ++a) {
-    uint8_t rec[8];
-    if (!readFully(storage, name, anchorOffset + a * 8, rec, sizeof(rec))) {
-      return BookStatus::IoError;
-    }
-    anchorHashes_[a] = getU32(rec);
-    anchorChars_[a] = getU32(rec + 4);
+  if (indexOk &&
+      !readRegionPairs(storage, name, anchorOffset, anchorHashes_, anchorChars_, anchorCount)) {
+    return BookStatus::IoError;
   }
+  if (!indexOk) return BookStatus::IoError;
   anchorCount_ = anchorCount;
   pageCount_ = pageCount;
   return BookStatus::Ok;
