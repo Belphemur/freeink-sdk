@@ -126,6 +126,34 @@ class HostCacheStorage : public CacheStorage {
   FILE* writeFile_ = nullptr;
 };
 
+// Counts readAt calls: on device each call is a full SD open+seek+close, so
+// the cache-open cost is dominated by the call count, not the bytes moved.
+class CountingCacheStorage : public CacheStorage {
+ public:
+  explicit CountingCacheStorage(CacheStorage& inner) : inner_(inner) {}
+
+  bool exists(const char* name) override { return inner_.exists(name); }
+  bool remove(const char* name) override { return inner_.remove(name); }
+  int64_t fileSize(const char* name) override { return inner_.fileSize(name); }
+  int32_t readAt(const char* name, uint32_t offset, void* dst, uint32_t len) override {
+    ++readAtCalls;
+    readAtBytes += len;
+    return inner_.readAt(name, offset, dst, len);
+  }
+  bool beginWrite(const char* name) override { return inner_.beginWrite(name); }
+  bool write(const void* data, uint32_t len) override { return inner_.write(data, len); }
+  bool endWrite() override { return inner_.endWrite(); }
+  int32_t readBackAt(uint32_t offset, void* dst, uint32_t len) override {
+    return inner_.readBackAt(offset, dst, len);
+  }
+
+  uint32_t readAtCalls = 0;
+  uint64_t readAtBytes = 0;
+
+ private:
+  CacheStorage& inner_;
+};
+
 class FakeFont : public BookFont {
  public:
   int16_t advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) override {
@@ -295,6 +323,47 @@ void testRoundtripAndStaleness(HostCacheStorage& cache) {
   Arena tornArena(cacheBuf, sizeof(cacheBuf));
   const BookStatus tornStatus = torn.open(cache, "torn.fibp", hash, tornArena);
   CHECK(tornStatus == BookStatus::Stale || tornStatus == BookStatus::NotFound);
+}
+
+// Cache open must not scale with the page count: on device every readAt is
+// a full SD open/close cycle (~8-10 ms), so the per-record index/anchor reads
+// cost ~2 s on a 200-page chapter. open() must batch the two contiguous
+// regions instead.
+void testOpenReadCallCount(HostCacheStorage& cache) {
+  HostFileSource source;
+  CHECK(source.open(fixture("minimal.epub")));
+  Arena bookArena(bookBuf, sizeof(bookBuf));
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  Book book;
+  CHECK_EQ(static_cast<int>(book.open(source, bookArena, scratch)), static_cast<int>(BookStatus::Ok));
+
+  FakeFont font;
+  const LayoutParams params = makeParams(font, 16);
+  uint32_t pages = 0;
+  const uint32_t hash = buildCache(source, book, cache, params, scratch, &pages);
+  CHECK(pages > 10);
+
+  char name[64];
+  CHECK(pageCacheName(1, hash, name, sizeof(name)));
+
+  CountingCacheStorage counting(cache);
+  Arena cacheArena(cacheBuf, sizeof(cacheBuf));
+  PageCacheReader reader;
+  CHECK_EQ(static_cast<int>(reader.open(counting, name, hash, cacheArena)), static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(reader.pageCount(), pages);
+
+  std::printf("  open readAt calls %u (%u B) for %u pages\n", counting.readAtCalls,
+              static_cast<unsigned>(counting.readAtBytes), pages);
+  // Bounded: header + magic + footer + a few region chunks, not O(pageCount).
+  CHECK(counting.readAtCalls <= 10);
+  CHECK(counting.readAtCalls < pages);
+
+  // Same data must still come out: charStarts are the reader's page map.
+  CHECK_EQ(reader.charStart(0), 0u);
+  for (uint32_t p = 1; p < reader.pageCount(); ++p) {
+    CHECK(reader.charStart(p) >= reader.charStart(p - 1));
+  }
+  cache.remove(name);
 }
 
 // The position-restore promise: pick a spot on a page at 16 px, relayout the
@@ -795,6 +864,7 @@ int main(int argc, char** argv) {
   }
 
   testRoundtripAndStaleness(cache);
+  testOpenReadCallCount(cache);
   testPositionMigration(cache);
   testPartialCacheAndMidBuildRead(cache);
   testHyphenFlagRoundtrip(cache, hyphenator);
