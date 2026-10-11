@@ -19,7 +19,7 @@ constexpr uint16_t kFormatVersion = 7;  // v7: per-page wordCount added to the b
 constexpr uint32_t kHeaderSize = 12;
 constexpr uint32_t kBlobHeaderSize = 16;  // per-page blob: charStart u32 + run/image/link/rule/ruby counts u16
                                           // + wordCount u16
-constexpr uint32_t kFooterSize = 24;  // v3: + anchors + totalChars
+constexpr uint32_t kFooterSize = 24;      // v3: + anchors + totalChars
 // Partial (suspended-build) footer: the final footer's five u32 fields plus
 // bytesConsumed + bytesTotal, sealed with "FIBx" instead of "FIBX". Old
 // readers see a magic mismatch and treat the file as Stale — safe.
@@ -444,8 +444,7 @@ bool readRegionPairs(CacheStorage& storage, const char* name, uint32_t offset, u
   uint8_t chunk[kRegionReadBytes];
   uint32_t done = 0;
   while (done < recordCount) {
-    const uint32_t records =
-        (recordCount - done) * 8 > kRegionReadBytes ? kRegionReadBytes / 8 : (recordCount - done);
+    const uint32_t records = (recordCount - done) * 8 > kRegionReadBytes ? kRegionReadBytes / 8 : (recordCount - done);
     if (!readFully(storage, name, offset + done * 8, chunk, records * 8)) return false;
     for (uint32_t r = 0; r < records; ++r) {
       firsts[done + r] = getU32(chunk + r * 8);
@@ -583,8 +582,7 @@ BookStatus PageCacheReader::readPage(uint32_t pageIndex, Arena& scratch, Page* o
 // Decodes one serialized page blob into a Page whose records/strings live in
 // `scratch`. Shared by PageCacheReader::readPage (final files) and
 // PageCacheWriter::readPage (mid-build read-back of the open write stream).
-static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex,
-                                 Arena& scratch, Page* out) {
+static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex, Arena& scratch, Page* out) {
   if (blobLen < kBlobHeaderSize) return BookStatus::Stale;
   const uint32_t charStart = getU32(blob);
   const uint16_t runCount = getU16(blob + 4);
