@@ -132,6 +132,14 @@ void PowerManager::powerDownRailsForSleep() {
   // whose panel rail remains powered (X4 Pro) keep RESET HIGH so a UC8179 cannot
   // drift out of DSLP and restart its analog booster. EpdBus and XteinkDetect
   // release the hold before issuing a reset pulse on wake.
+#if FREEINK_DEVICE_PICCO
+  // Park the SD bus LOW before the GPIO0 rail drops, as stock does
+  // (FUN_420098f0), so the bus cannot back-feed the unpowered card.
+  // SdmmcBlockDevice::begin() releases the holds on wake.
+  for (const int8_t pin : {b.sdmmc.clk, b.sdmmc.cmd, b.sdmmc.d0, b.sdmmc.d1, b.sdmmc.d2, b.sdmmc.d3}) {
+    holdRailOff(pin, LOW);
+  }
+#endif
   const uint8_t resetSleepLevel = b.display.powerEnable >= 0 ? LOW : HIGH;
   holdRailOff(b.display.rst, resetSleepLevel);
   holdRailOff(b.display.powerEnable, LOW);

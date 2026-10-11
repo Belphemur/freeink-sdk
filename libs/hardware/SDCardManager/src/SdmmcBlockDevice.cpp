@@ -16,6 +16,10 @@ namespace freeink {
 
 bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   if (pins.busWidth == 0) return false;
+  // The sleep path may hold the bus pads (Picco); a held pad ignores the slot setup.
+  for (const int8_t pin : {pins.clk, pins.cmd, pins.d0, pins.d1, pins.d2, pins.d3}) {
+    if (pin >= 0) gpio_hold_dis(static_cast<gpio_num_t>(pin));
+  }
 
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4()) {
