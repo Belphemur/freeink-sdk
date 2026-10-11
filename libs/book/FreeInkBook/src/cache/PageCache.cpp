@@ -520,18 +520,20 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
   // they read as chunked batches: on device every readAt is a full SD
   // open+seek+close cycle, and per-record reads cost seconds on long
   // chapters. Endianness/packing of each record is unchanged.
-  const bool indexOk =
-      readRegionPairs(storage, name, indexOffset_, offsets_, charStarts_, pageCount);
+  // A failed index read reports IoError BEFORE the anchor allocation, so a
+  // dual failure (I/O error + no arena room) cannot surface as OutOfMemory —
+  // the same classification order the per-record loops had.
+  if (!readRegionPairs(storage, name, indexOffset_, offsets_, charStarts_, pageCount)) {
+    return BookStatus::IoError;
+  }
   anchorHashes_ = arena.allocArray<uint32_t>(anchorCount);
   anchorChars_ = arena.allocArray<uint32_t>(anchorCount);
   if ((anchorHashes_ == nullptr || anchorChars_ == nullptr) && anchorCount != 0) {
     return BookStatus::OutOfMemory;
   }
-  if (indexOk &&
-      !readRegionPairs(storage, name, anchorOffset, anchorHashes_, anchorChars_, anchorCount)) {
+  if (!readRegionPairs(storage, name, anchorOffset, anchorHashes_, anchorChars_, anchorCount)) {
     return BookStatus::IoError;
   }
-  if (!indexOk) return BookStatus::IoError;
   anchorCount_ = anchorCount;
   pageCount_ = pageCount;
   return BookStatus::Ok;
