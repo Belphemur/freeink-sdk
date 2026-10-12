@@ -308,6 +308,7 @@ void Uc8279Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const 
   for (int r = static_cast<int>(numRows) - 1; r >= 0; r--) {
     txn.writeBytes(rows + static_cast<uint32_t>(r) * _wb, _wb);
   }
+  txn.end();
   bus.cmd(CMD_PARTIAL_OUT);
   if (plane == GrayPlane::Lsb) {
     _lsbValid = true;
