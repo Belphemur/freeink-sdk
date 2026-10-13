@@ -148,7 +148,8 @@ inline const unsigned char lut_factory_quality[] PROGMEM = {
 
 // Metalio copy of the factory 4-level LUT with the same VSH1 bump as
 // lut_grayscale_metalio (0x41 -> 0x46) so sleep-screen/cover darks track the
-// reading-AA tuning.
+// reading-AA tuning. VCOM (byte 109) tuned for sleep-cover ghosting:
+// X4 0x30 ghosted, 0x10 less, leaving the OTP-loaded VCOM was worse.
 inline const unsigned char lut_factory_quality_metalio[] PROGMEM = {
     0x00, 0x4A, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x80, 0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -166,7 +167,7 @@ inline const unsigned char lut_factory_quality_metalio[] PROGMEM = {
     0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x01,
     0x22, 0x22, 0x22, 0x22, 0x22,
-    0x17, 0x46, 0xA8, 0x32, 0x30};
+    0x17, 0x46, 0xA8, 0x32, 0x08};
 
 // Metalio B/W fast refresh: vendor-supplied kEpdLutPartial (docs/metalio-waveform-
 // source.md), first 110 of its 112 bytes. Single-pass differential waveform in
