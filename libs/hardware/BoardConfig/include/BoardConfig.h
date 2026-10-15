@@ -820,6 +820,21 @@ struct BoardProfile {
   // a board with one sets it (EEGO A4).
   I2cFrontlightConfig i2cFrontlight = NO_I2C_FRONTLIGHT;
   HapticConfig haptic = {};
+  // Pixels the firmware lowers its header band's top edge (status line, title)
+  // from the theme's fixed position; the band's bottom edge stays put.
+  // Defaulted so existing profiles need no change.
+  int8_t headerOffsetY = 0;
+  // Radius of the panel's rounded viewable corners. Chrome placed in a corner
+  // (header status line, footer readouts) keeps at least this far from the
+  // side edges; viewableInsets stays the straight-edge clearance.
+  uint8_t cornerRadius = 0;
+  // Bottom tab bar fit to the panel: pixels it moves down, its drawn height as
+  // a percent of the theme's (bottom-aligned in the theme's slot, so the layout
+  // above keeps its size), and the share of the row its tabs spread across
+  // (centered). Defaults keep the theme's layout.
+  int8_t tabBarOffsetY = 0;
+  uint8_t tabBarHeightPct = 100;
+  uint8_t tabBarWidthPct = 100;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -1454,8 +1469,10 @@ constexpr BoardProfile EEGO_A4 = {
     1.559f,  // divider
     PIN_UNASSIGNED,
     // GSLX680: pollGslx680 applies the 1.2.7 calibration and returns panel-native
-    // x=0..767, y=0..551, so no raw-range/swap/flip mapping is needed here.
-    {TouchController::Gslx680, 2, 1, PIN_UNASSIGNED, 3, 0x40, 0, 767, 0, 551, false, 0, false, false,
+    // x=0..767, y=0..551; this range then trims and rescales it, least-squares
+    // fitted from hardware taps on known targets: x landed ~12px past them, y
+    // was compressed toward the middle (residuals within ~7px).
+    {TouchController::Gslx680, 2, 1, PIN_UNASSIGNED, 3, 0x40, 12, 779, 28, 553, false, 0, false, false,
      PIN_UNASSIGNED, false, false, false, true, true},  // powerEnable, swapXY, flipX, flipY, hasHomeKey, pwrEnActiveHigh
     // The frontlight is an LM3630A driven via the i2cFrontlight field below, not
     // this LEDC/PWM FrontlightConfig — the frontlit variant's light is I2C only.
@@ -1470,17 +1487,22 @@ constexpr BoardProfile EEGO_A4 = {
     1.2f,
     {4},  // power latch GPIO4
     0,    // displayControllerVariant (UC8279C, not probed)
-    // Rounded-corner panel: pull the sides (left/right in the portrait frame) in a
-    // lot so text/status icons aren't clipped by the curved bezel. Tune on hardware.
+    // Straight-edge clearance; the rounded corners are cornerRadius below.
     // {top, right, bottom, left}
-    {24, 24, 8, 24},
+    {24, 8, 16, 8},
     // Charger STAT GPIO11 is driven HIGH while charging, like the X4 Pro
     // (hardware verified: with the active-low default the charging indicator
     // lit only when USB was unplugged).
     true,
     // LM3630A on the shared I2C bus (SDA2/SCL1), enable GPIO12.
     // Probed at runtime: some retail A4 units have no frontlight.
-    {I2cFrontlightController::Lm3630a, 2, 1, 400000, 0x36, 12}};
+    {I2cFrontlightController::Lm3630a, 2, 1, 400000, 0x36, 12},
+    {},  // haptic: none
+    6,    // headerOffsetY: header band top edge 6px lower
+    24,   // cornerRadius
+    18,   // tabBarOffsetY
+    80,   // tabBarHeightPct
+    80};  // tabBarWidthPct
 
 static_assert(EEGO_A4.displayWidth / 8 * EEGO_A4.displayHeight == 52992,
               "EEGO A4 framebuffer must be 52,992 bytes (768/8 x 552)");

@@ -80,8 +80,10 @@ int main() {
 
   driver.deepSleep(bus);
   driver.begin(bus);
+  const auto wakeStart = bus.refreshes;
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.interval == 0x97 && bus.lutBytes == 49);
+  assert(bus.refreshes == wakeStart + 2 && "first paint after wake must drive inverse, then target");
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.interval == 0xd7 && bus.lutBytes == 42);
   std::cout << "PASS: A4 FAST cadence, post-AA pixel transitions, retained baseline, explicit cleanup and wake\n";

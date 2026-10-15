@@ -48,8 +48,8 @@ class Uc8279cA4Driver : public PanelDriver {
   bool _redriveAfterGray = false;  // re-drive all target pixels after AA, using the requested waveform
   // begin() seeds DTM1 white, but after a reflash/reset the glass holds the
   // previous UI, so a white-assumed diff leaves it ghosting through the first
-  // paint. Seed DTM1 with the inverse of the first frame instead: every pixel
-  // transitions, so the full LUT drives the whole panel to a clean baseline.
+  // paint. The first frame is driven to its inverse, then to the target with
+  // DTM1 = inverse, so every pixel swings both ways under the full LUT.
   bool _firstRefreshPending = false;
   uint8_t* _grayLsb = nullptr;
   uint8_t* _grayMsb = nullptr;

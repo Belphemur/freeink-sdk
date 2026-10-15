@@ -2259,9 +2259,12 @@ void InputManager::pollGslx680(const unsigned long now) {
   const uint16_t portraitX = static_cast<uint32_t>(limitedY) * 551 / 680;
   const uint16_t portraitY = static_cast<uint32_t>(920 - limitedX) * 767 / 920;
 
+  // The profile's raw range trims these panel coords: a nonzero rawMin shifts
+  // the touch frame onto the drawn image.
+  const auto& t = BoardConfig::ACTIVE.touch;
   touchPoint.valid = true;
-  touchPoint.x = portraitY;
-  touchPoint.y = static_cast<uint16_t>(551 - portraitX);
+  touchPoint.x = mapTouchAxis(portraitY, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+  touchPoint.y = mapTouchAxis(static_cast<uint16_t>(551 - portraitX), t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
   touchPoint.timestamp = now;
 
   if (!touchPressed) {

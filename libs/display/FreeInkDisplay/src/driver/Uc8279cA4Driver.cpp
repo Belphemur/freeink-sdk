@@ -188,6 +188,13 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
     // Treat it as a complete refresh.
     loadFullLut(bus);
   }
+  if (_firstRefreshPending) {
+    // One full pass leaves the image held through sleep ghosting through the
+    // first frame. Drive every pixel to the inverse first, then to the target.
+    writeFrame(bus, CMD_DTM1, fb);
+    writeFrame(bus, CMD_DTM2, fb, /*invert=*/true);
+    refresh(bus, false);
+  }
   if (_firstRefreshPending || _redriveAfterGray) {
     // Inverse OLD makes every target pixel transition, clearing unknown startup
     // state or residual AA charge even with the fast waveform.
