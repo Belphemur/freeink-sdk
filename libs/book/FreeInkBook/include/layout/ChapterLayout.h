@@ -62,6 +62,29 @@ struct LayoutParams {
   bool focusReading = false;                  // bold each word's first ~45% (fixation aid)
   const CssStylesheet* stylesheet = nullptr;  // book CSS (optional)
   const Hyphenator* hyphenator = nullptr;     // soft hyphenation (optional)
+
+  // Transient window layout (page-local preview): 0 = lay the whole chapter
+  // (default). When set, paragraphs that END at or before this chapter char
+  // offset are counted for char anchors but never measured or placed (the
+  // O(pages-before-window) layout cost disappears), and the parse stops
+  // after the FIRST delivered page — the page containing the offset. That
+  // page starts at the paragraph boundary containing the offset (the engine
+  // cannot start mid-paragraph), so its line breaks approximate a full
+  // reflow; the transient preview's close reindex computes the truth.
+  //
+  // Window-mode contract:
+  // - The delivered Page's index is window-relative (0, unless pre-window
+  //   images/rules forced breaks) — never a chapter page number. Re-anchor
+  //   on Page::charStart, not the index.
+  // - Windowed output is transient: never commit it through PageCacheWriter
+  //   (layoutGenerationHash() still mixes windowStartChar when set, so a
+  //   stray windowed cache cannot collide with the full chapter's name).
+  // - If the offset falls in a char gap between placed runs (trimmed
+  //   trailing whitespace — real layout anchors are run positions, so this
+  //   needs a hand-built offset), the first page past it is delivered:
+  //   forward progress, never a blank preview. Past the chapter's end,
+  //   nothing is delivered.
+  uint32_t windowStartChar = 0;
 };
 
 // One horizontal run of same-styled text. `text` points into layout scratch

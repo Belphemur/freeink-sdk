@@ -114,6 +114,10 @@ uint32_t layoutGenerationHash(const LayoutParams& params, uint32_t fontFingerpri
   for (const char* p = params.language; p != nullptr && *p != '\0'; ++p) {
     hash = hashMix(hash, static_cast<uint8_t>(*p));
   }
+  // A window layout delivers one page and must never share a full chapter's
+  // cache name. Mixed only when set, so the default (0) chain — and every
+  // existing full-chapter cache name — stays byte-identical.
+  if (params.windowStartChar != 0) hash = hashMix(hash, params.windowStartChar);
   return hash;
 }
 

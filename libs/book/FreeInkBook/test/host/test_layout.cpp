@@ -14,6 +14,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -532,6 +533,133 @@ void testEarlyStop() {
                                                   opened.scratch, sink, &pages)),
            static_cast<int>(BookStatus::Ok));
   CHECK_EQ(pages, 1u);  // sink declined more — layout stopped promptly
+}
+
+// Window layout (params.windowStartChar > 0): the transient page-local
+// preview's contract. Exactly one page is delivered — the page containing the
+// window start (which begins at its paragraph boundary) — and pages before it
+// are never laid, so the delivered text is a contiguous slice of the chapter
+// text starting at that paragraph boundary.
+void testWindowLayout() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+  CHECK(entry != nullptr);
+
+  // Full reference pass: per-page char anchors and text.
+  struct FullSink : PageSink {
+    bool onPage(const Page& page) override {
+      if (charStarts.size() < 4096) charStarts.push_back(page.charStart);
+      for (uint16_t r = 0; r < page.runCount; ++r) {
+        if (textLen + page.runs[r].len + 1 >= sizeof(texts)) break;
+        std::memcpy(texts + textLen, page.runs[r].text, page.runs[r].len);
+        textLen += page.runs[r].len;
+      }
+      texts[textLen++] = '\n';
+      return true;
+    }
+    std::vector<uint32_t> charStarts;
+    char texts[512 * 1024];
+    uint32_t textLen = 0;
+  } full;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, full, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  full.texts[full.textLen] = '\0';  // strstr needs a terminated haystack
+  CHECK(full.charStarts.size() > 3);  // multi-page chapter so the window is meaningful
+  opened.scratch.reset();
+
+  // Window at the char anchor of reference page 2: one page delivered, the
+  // page containing the anchor (its paragraph boundary precedes the anchor,
+  // its content reaches past it).
+  const uint32_t anchor = full.charStarts[2];
+  CHECK(anchor > 0);
+  struct WindowSink : PageSink {
+    bool onPage(const Page& page) override {
+      if (textLen == 0) {
+        charStart = page.charStart;
+        charEnd = 0;
+        for (uint16_t r = 0; r < page.runCount; ++r) {
+          if (textLen + page.runs[r].len + 1 >= sizeof(text)) break;
+          std::memcpy(text + textLen, page.runs[r].text, page.runs[r].len);
+          textLen += page.runs[r].len;
+          charEnd = page.runs[r].charStart + page.runs[r].charLen;
+        }
+      }
+      ++pages;
+      return false;
+    }
+    uint32_t pages = 0;
+    uint32_t charStart = 0;
+    uint32_t charEnd = 0;
+    char text[128 * 1024];
+    uint32_t textLen = 0;
+  } win;
+  const LayoutParams plainParams = params;  // full-layout generation reference
+  params.windowStartChar = anchor;
+  // Windowed layouts must not share the full chapter's cache generation.
+  CHECK(layoutGenerationHash(params, 1) != layoutGenerationHash(plainParams, 1));
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, win, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  win.text[win.textLen] = '\0';  // strstr needs a terminated needle
+  opened.scratch.reset();
+  CHECK_EQ(win.pages, 1u);                     // exactly the window page
+  CHECK(win.charStart <= anchor);              // starts at the paragraph boundary
+  CHECK(win.charEnd > anchor);                 // the page contains the anchor
+  CHECK(std::strstr(full.texts, win.text) != nullptr);  // contiguous chapter slice
+
+  // Window at 0 = the chapter's first page, byte-identical to the full pass.
+  struct FirstSink : PageSink {
+    bool onPage(const Page& page) override {
+      ++pages;
+      firstCharStart = page.charStart;
+      for (uint16_t r = 0; r < page.runCount; ++r) {
+        if (textLen + page.runs[r].len + 1 >= sizeof(text)) break;
+        std::memcpy(text + textLen, page.runs[r].text, page.runs[r].len);
+        textLen += page.runs[r].len;
+      }
+      return false;
+    }
+    uint32_t pages = 0;
+    uint32_t firstCharStart = 0;
+    char text[64 * 1024];
+    uint32_t textLen = 0;
+  } first;
+  params.windowStartChar = 1;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, first, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  opened.scratch.reset();
+  CHECK_EQ(first.pages, 1u);
+  CHECK_EQ(first.firstCharStart, full.charStarts[0]);
+  // Page 0's text (up to its newline) matches the full pass byte for byte.
+  const char* nl = std::strchr(full.texts, '\n');
+  CHECK(nl != nullptr);
+  if (nl != nullptr) {
+    const size_t firstPageLen = static_cast<size_t>(nl - full.texts);
+    CHECK(first.textLen == firstPageLen || first.textLen == firstPageLen + 1);
+    CHECK(std::memcmp(first.text, full.texts, firstPageLen) == 0);
+  }
+
+  // A window past the chapter's last char delivers nothing (and does not
+  // hang or fail).
+  struct NoneSink : PageSink {
+    bool onPage(const Page&) override {
+      ++pages;
+      return true;
+    }
+    uint32_t pages = 0;
+  } none;
+  params.windowStartChar = 0xFFFFFFFF;
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                  opened.scratch, none, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  opened.scratch.reset();
+  CHECK_EQ(none.pages, 0u);
 }
 
 // --- Phase 4: CSS, justification, hyphenation, kerning, widow/orphan --------
@@ -2549,6 +2677,7 @@ int main(int argc, char** argv) {
   testStylesEntitiesAndBreaks();
   testMemoryIndependence();
   testEarlyStop();
+  testWindowLayout();
   testSplitParseArena();
   testChapterLayoutSession();
   testResumableSessionOwnsBeginLocals();
