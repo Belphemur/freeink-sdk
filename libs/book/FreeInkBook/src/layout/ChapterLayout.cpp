@@ -1719,6 +1719,24 @@ class LayoutEngine : public XmlHandler {
       continued_ = false;
       return;
     }
+    // Window layout (params_.windowStartChar > 0): a paragraph that ends at or
+    // before the window start is retired without measuring or placing lines —
+    // the transient preview only pays for the window page. Char anchors stay
+    // exact (parCharBase_ advances over the full text).
+    if (params_.windowStartChar > 0) {
+      const uint32_t parEnd = parCharBase_ + countChars(parText_, parLen_);
+      if (parEnd <= params_.windowStartChar) {
+        parCharBase_ = parEnd;
+        parByteBase_ += parLen_;
+        parLen_ = 0;
+        spanCount_ = 0;
+        annCount_ = 0;
+        pendingMarginRootPct_ = 0;
+        pendingSpace_ = false;
+        continued_ = false;
+        return;
+      }
+    }
     const uint16_t sizePx = paragraphSizePx();
     // One line height for the whole paragraph, from the paragraph font size.
     // Inline spans render at their own size on this shared grid — larger
@@ -2237,7 +2255,26 @@ class LayoutEngine : public XmlHandler {
     Page page{runs_,  runCount_,  images_, imageCount_, links_,     linkCount_,
               rules_, ruleCount_, rubies_, rubyCount_,  pageCount_, pageWords_, pageCharStart_};
     ++pageCount_;
-    if (!sink_.onPage(page)) stopParse = true;
+    // Window layout: the one delivered page is the first whose content reaches
+    // past the window start (the page containing it). Pages entirely before it
+    // (images/rules only, since pre-window paragraphs are never placed) are
+    // suppressed, and the parse stops once the window page is delivered. The
+    // page char end is the furthest run end — runs are contiguous in char
+    // space, but bidi placement can order them visually.
+    if (params_.windowStartChar > 0) {
+      uint32_t pageEnd = pageCharStart_;
+      for (uint16_t i = 0; i < runCount_; ++i) {
+        const uint32_t end = runs_[i].charStart + runs_[i].charLen;
+        if (end > pageEnd) pageEnd = end;
+      }
+      if (pageEnd > params_.windowStartChar) {
+        stopParse = true;  // window complete: first page break after the start
+        sink_.onPage(page);
+      }
+      // else: suppressed page — the reset tail below retires its records.
+    } else if (!sink_.onPage(page)) {
+      stopParse = true;
+    }
     runCount_ = 0;
     imageCount_ = 0;
     linkCount_ = 0;

@@ -62,6 +62,16 @@ struct LayoutParams {
   bool focusReading = false;                  // bold each word's first ~45% (fixation aid)
   const CssStylesheet* stylesheet = nullptr;  // book CSS (optional)
   const Hyphenator* hyphenator = nullptr;     // soft hyphenation (optional)
+
+  // Transient window layout (page-local preview): 0 = lay the whole chapter
+  // (default). When set, paragraphs that END at or before this chapter char
+  // offset are counted for char anchors but never measured or placed (the
+  // O(pages-before-window) layout cost disappears), and the parse stops
+  // after the FIRST delivered page — the page containing the offset. That
+  // page starts at the paragraph boundary containing the offset (the engine
+  // cannot start mid-paragraph), so its line breaks approximate a full
+  // reflow; the transient preview's close reindex computes the truth.
+  uint32_t windowStartChar = 0;
 };
 
 // One horizontal run of same-styled text. `text` points into layout scratch
