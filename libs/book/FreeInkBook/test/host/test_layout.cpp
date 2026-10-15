@@ -568,6 +568,7 @@ void testWindowLayout() {
   CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                   opened.scratch, full, nullptr)),
            static_cast<int>(BookStatus::Ok));
+  full.texts[full.textLen] = '\0';  // strstr needs a terminated haystack
   CHECK(full.charStarts.size() > 3);  // multi-page chapter so the window is meaningful
   opened.scratch.reset();
 
@@ -597,10 +598,14 @@ void testWindowLayout() {
     char text[128 * 1024];
     uint32_t textLen = 0;
   } win;
+  const LayoutParams plainParams = params;  // full-layout generation reference
   params.windowStartChar = anchor;
+  // Windowed layouts must not share the full chapter's cache generation.
+  CHECK(layoutGenerationHash(params, 1) != layoutGenerationHash(plainParams, 1));
   CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
                                                   opened.scratch, win, nullptr)),
            static_cast<int>(BookStatus::Ok));
+  win.text[win.textLen] = '\0';  // strstr needs a terminated needle
   opened.scratch.reset();
   CHECK_EQ(win.pages, 1u);                     // exactly the window page
   CHECK(win.charStart <= anchor);              // starts at the paragraph boundary
