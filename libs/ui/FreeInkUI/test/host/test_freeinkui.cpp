@@ -4,6 +4,7 @@
 
 #include <FreeInkUI.h>
 #include <FreeInkApp.h>
+#include <FreeInkUILayout.h>
 #include <FreeInkUIDisplayTarget.h>
 
 #include <cstdio>
@@ -5834,7 +5835,138 @@ void testPublicationPage() {
   }
 }
 
+void testPublicationPageDescriptionPainter() {
+  struct Painted {
+    Rect rect{};
+    bool claim = true;
+  };
+  FakeDrawTarget draw;
+  DeviceContext device;
+  device.width = 480;
+  device.height = 800;
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  PublicationPageProps props;
+  props.book.title = "Title";
+  props.description = "must-not-measure";
+  props.primary.label = "Install";
+  props.primary.action = 91;
+  Painted painted;
+  props.descriptionPainterUserData = &painted;
+  props.descriptionPainter = [](DrawTarget&, Rect rect, const PublicationPageProps&, void* user) {
+    auto* p = static_cast<Painted*>(user);
+    p->rect = rect;
+    return p->claim;
+  };
+  publicationPage(frame, device.screen(), props);
+  CHECK(!draw.drewForbiddenLabel);
+  CHECK(painted.rect.height > 0 && painted.rect.width > 0);
+  CHECK(painted.rect.bottom() <= hits.data()[0].rect.y);  // never under the action button
+
+  // Declining falls back to the plain-text description.
+  painted.claim = false;
+  hits.clear();
+  publicationPage(frame, device.screen(), props);
+  CHECK(draw.drewForbiddenLabel);
+
+  // A painter alone (no text description) still gets the area.
+  props.description = nullptr;
+  painted = Painted{};
+  hits.clear();
+  publicationPage(frame, device.screen(), props);
+  CHECK(painted.rect.height > 0);
+}
+
+void testComponentStyleOverrides() {
+  ComponentStyle style;
+  style.text.fields = TextStyleOverride::Bold | TextStyleOverride::Alignment;
+  style.text.value.bold = false;
+  style.text.value.align = TextAlign::Center;
+  style.selected.fields =
+      BoxStyleOverride::Background | BoxStyleOverride::BorderWidth;
+  style.selected.background = Color::Transparent;
+  style.selected.borderWidth = 0;
+  TextStyle text;
+  text.bold = true;
+  text.maxLines = 3;
+  style.text.apply(text);
+  CHECK(!text.bold);
+  CHECK_EQ(text.maxLines, 3);
+  CHECK(text.align == TextAlign::Center);
+  StyleSet styles = defaultListRowStyles();
+  styles.selected.borderWidth = 3;
+  style.apply(styles);
+  CHECK(styles.normal.background.color == Color::White);
+  CHECK(styles.selected.background.kind == PaintKind::None);
+  CHECK_EQ(styles.selected.borderWidth, 0);
+  style.contentAlign = Align::Center;
+  CHECK_EQ(style.alignContent(Rect{0, 10, 100, 200}, 60).y, 80);
+  CHECK_EQ(style.alignContent(Rect{0, 10, 100, 200}, 300).height, 200);
+
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  ThemeTokens theme = defaultThemeTokens();
+  Screen<16> screen(frame, theme);
+  screen.setComponentStyle(&style);
+  ListProps props;
+  auto resolved = screen.resolveListProps(props);
+  CHECK(resolved.labelText.align == TextAlign::Center);
+  CHECK(resolved.rowStyles.selected.background.kind == PaintKind::None);
+  screen.setComponentStyle(nullptr);
+  resolved = screen.resolveListProps(props);
+  CHECK(resolved.labelText.align == theme.bodyText.align);
+  CHECK(resolved.rowStyles.selected.background.kind == PaintKind::Solid);
+  ListItem item{};
+  item.label = "title";
+  item.subtitle = "aaaaaaaaa aaaaaaaaa aaaaaaaaa aaaaaaaaa aaaaaaaaa aaaaaaaaa";
+  props.items = &item;
+  props.count = 1;
+  props.rowHeight = 30;
+  props.subtitleText.maxLines = 2;
+  props.sidePadding = 0;
+  props.scrollIndicator = false;
+  CHECK_EQ(listContentHeight(draw, nullptr, Rect{0, 0, 180, 200}, props), 42);
+  CHECK(listContentHeight(draw, nullptr, Rect{0, 0, 180, 40}, props) >= 40);
+}
+
+void testRuntimeGridSpans() {
+  LayoutNode children[2];
+  children[0].id = "wide";
+  children[0].columnSpan = 2;
+  children[1].id = "side";
+  children[1].column = 2;
+  children[1].rowSpan = 2;
+  LayoutNode grid;
+  grid.kind = LayoutKind::Grid;
+  grid.columns = 3;
+  grid.rows = 2;
+  grid.gap = 4;
+  grid.children = children;
+  grid.childCount = 2;
+  int emitted = 0;
+  layoutTree(grid, LayoutRect{10, 20, 308, 204},
+             [&](const char *id, LayoutRect rect) {
+               ++emitted;
+               if (std::strcmp(id, "wide") == 0) {
+                 CHECK_EQ(rect.x, 10);
+                 CHECK_EQ(rect.width, 204);
+                 CHECK_EQ(rect.height, 100);
+               } else {
+                 CHECK_EQ(rect.x, 218);
+                 CHECK_EQ(rect.width, 100);
+                 CHECK_EQ(rect.height, 204);
+               }
+             });
+  CHECK_EQ(emitted, 2);
+}
+
 int main() {
+  testComponentStyleOverrides();
+  testRuntimeGridSpans();
   testRect();
   testDisplayTarget();
   testDisplayTargetAlphaFont();
@@ -5948,6 +6080,7 @@ int main() {
   testCapsuleSlider();
   testSliderRow();
   testPublicationPage();
+  testPublicationPageDescriptionPainter();
   testCatalogShelves();
   testPublicationStylingAndButtons();
   testTileGrid();

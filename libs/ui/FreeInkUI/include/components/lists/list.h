@@ -506,6 +506,35 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   return result;
 }
 
+// Measure only until the viewport is full; virtualized windows that omit rows cannot be centered.
+inline int listContentHeight(const DrawTarget& target, AssetResolver* assets, Rect rect, const ListProps& props) {
+  const int gap = props.rowGap > 0 ? props.rowGap : 0;
+  const int inset = props.rowInset > 0 ? props.rowInset : 0;
+  int width = rect.width - 2 * inset;
+  if (props.scrollIndicator && props.scrollIndicatorWidth > 0) {
+    const int strip = props.scrollIndicatorWidth + (props.scrollIndicatorInset > 0 ? props.scrollIndicatorInset : 0) + 2;
+    if (inset < strip) width -= strip - inset;
+  }
+  if (width <= 0) return rect.height;
+  const int headerH = props.headerRowHeight > 0 ? props.headerRowHeight : target.lineHeight(props.headerText.font) + 4;
+  int height = 0;
+  for (uint16_t i = 0; i < props.count && height < rect.height; ++i) {
+    if (!props.rowProvider && (!props.items || i < props.itemsWindowFirst ||
+        (props.itemsWindowCount && i - props.itemsWindowFirst >= props.itemsWindowCount))) return rect.height;
+    ListItem scratch;
+    if (props.rowProvider) props.rowProvider(props.rowProviderCtx, i, scratch);
+    const ListItem& item = props.rowProvider ? scratch : props.items[i - props.itemsWindowFirst];
+    if (i) height += gap;
+    if (item.isHeader) {
+      height += headerH + (i ? props.sectionGap : 0);
+    } else {
+      if (item.sectionHeading && item.sectionHeading[0]) height += headerH + gap + (i ? props.sectionGap : 0);
+      height += measureListRow(target, assets, static_cast<int16_t>(width), props, item).height;
+    }
+  }
+  return height;
+}
+
 template <size_t MaxInteractions>
 void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
   if ((!props.items && !props.rowProvider) || props.count == 0)

@@ -613,6 +613,7 @@ class InputManager {
   void pollFt6336u(unsigned long now);
   void beginGslx680();
   void pollGslx680(unsigned long now);
+  static void gslCalibrate(uint16_t rawX, uint16_t rawY, int16_t& screenX, int16_t& screenY);
   bool gslWrite(uint8_t reg, const uint8_t* data, uint8_t len);
   bool gslRead(uint8_t reg, uint8_t* buf, uint8_t len);
   void beginPiccoTouch();               // Onyx Picco PiccoCst (I2C 0x24) init/reset

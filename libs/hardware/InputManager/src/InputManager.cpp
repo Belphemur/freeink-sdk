@@ -2193,6 +2193,58 @@ void InputManager::beginGslx680() {
 #endif
 }
 
+// EEGO A4 stock factory touch calibration: four corner points fanned around a
+// centre point, each mapping a raw GSLX680 sample to a portrait screen pixel.
+// A sample is interpolated barycentrically inside the centre/corner/corner
+// triangle that contains it, then clamped to the 552x768 portrait screen.
+namespace {
+struct GslCalPoint {
+  int32_t rawX, rawY, screenX, screenY;
+};
+constexpr GslCalPoint GSL_CAL_CENTRE = {549, 337, 276, 306};
+constexpr GslCalPoint GSL_CAL_CORNERS[4] = {
+    {720, 94, 80, 168}, {694, 560, 472, 168}, {392, 558, 472, 444}, {374, 97, 80, 444}};
+
+int32_t roundedDiv(int64_t num, int64_t den) {
+  if (den < 0) {
+    num = -num;
+    den = -den;
+  }
+  return static_cast<int32_t>(num >= 0 ? (num + den / 2) / den : -((-num + den / 2) / den));
+}
+}  // namespace
+
+void InputManager::gslCalibrate(const uint16_t rawX, const uint16_t rawY, int16_t& screenX, int16_t& screenY) {
+  const auto& c = GSL_CAL_CENTRE;
+  const int64_t dx = static_cast<int32_t>(rawX) - c.rawX;
+  const int64_t dy = static_cast<int32_t>(rawY) - c.rawY;
+  // The triangle whose two corners bracket the sample; the last one otherwise.
+  int a = 3;
+  int b = 0;
+  for (int i = 0; i < 4; ++i) {
+    const auto& p = GSL_CAL_CORNERS[i];
+    const auto& q = GSL_CAL_CORNERS[(i + 1) % 4];
+    const int64_t px = p.rawX - c.rawX, py = p.rawY - c.rawY;
+    const int64_t qx = q.rawX - c.rawX, qy = q.rawY - c.rawY;
+    if (px * dy - py * dx >= 0 && qy * dx - qx * dy >= 0) {
+      a = i;
+      b = (i + 1) % 4;
+      break;
+    }
+  }
+  const auto& p = GSL_CAL_CORNERS[a];
+  const auto& q = GSL_CAL_CORNERS[b];
+  const int64_t px = p.rawX - c.rawX, py = p.rawY - c.rawY;
+  const int64_t qx = q.rawX - c.rawX, qy = q.rawY - c.rawY;
+  const int64_t den = px * qy - qx * py;
+  const int64_t wp = dx * qy - qx * dy;  // weight of p, times den
+  const int64_t wq = px * dy - dx * py;  // weight of q, times den
+  const int32_t x = c.screenX + roundedDiv(wp * (p.screenX - c.screenX) + wq * (q.screenX - c.screenX), den);
+  const int32_t y = c.screenY + roundedDiv(wp * (p.screenY - c.screenY) + wq * (q.screenY - c.screenY), den);
+  screenX = static_cast<int16_t>(x < 0 ? 0 : (x > 551 ? 551 : x));
+  screenY = static_cast<int16_t>(y < 0 ? 0 : (y > 767 ? 767 : y));
+}
+
 void InputManager::pollGslx680(const unsigned long now) {
   if (now < touchReadAt) return;
   touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
@@ -2228,12 +2280,16 @@ void InputManager::pollGslx680(const unsigned long now) {
   const uint16_t rawYWord = static_cast<uint16_t>(frame[5]) << 8 | frame[4];
   const uint16_t rawXWord = static_cast<uint16_t>(frame[7]) << 8 | frame[6];
 
-  // The capacitive home key below the panel reports a fixed sentinel (not a
-  // coordinate). Route it to the home-key events instead of a screen tap. The
-  // words' top nibble is the contact's track id, which varies between presses,
-  // so only the 12-bit coordinates identify the key.
-  const bool homeKeyDown = count == 1 && (rawXWord & 0x0fff) == 0x03a0 && (rawYWord & 0x0fff) == 0x0020;
-  if (homeKeyDown) {
+  // Classified as the stock firmware does (the words' top nibble is the
+  // contact's track id, so only the 12-bit coordinates count):
+  //  - (0x3a0, 0x20) is the capacitive home key, ignored while a screen touch
+  //    is in progress;
+  //  - any other sample at X >= 920 is past the glass and dropped, leaving all
+  //    touch and key state alone (clamped, it would land on the top edge);
+  //  - an on-glass touch cancels a pending key press without firing it.
+  const uint16_t sampleX = rawXWord & 0x0fff;
+  if (sampleX == 0x03a0 && (rawYWord & 0x0fff) == 0x0020) {
+    if (touchPressed) return;
     if (!touchHomeKeyDown) {
       touchHomeKeyEvent = true;
       touchOneShots_.fetch_or(kEvTouchHomeKey, std::memory_order_relaxed);
@@ -2245,28 +2301,22 @@ void InputManager::pollGslx680(const unsigned long now) {
       touchOneShots_.fetch_or(kEvTouchHomeKeyLong, std::memory_order_relaxed);
       touchHomeKeyLongFired = true;
     }
-    touchPressed = false;
-    touchPoint.valid = false;
     return;
   }
-  finishHomeKey();
+  if (sampleX >= 920) return;
+  touchHomeKeyDown = false;
+  touchHomeKeyLongFired = false;
 
-  // GSLX680 1.2.7 calibration: the digitizer is portrait (raw ~0..920 x 0..680)
-  // over a landscape 768x552 framebuffer. Map, swap the axes, then mirror the
-  // short axis for GfxRenderer's Portrait transform. Returns panel-native coords.
-  const uint16_t rawY = rawYWord & 0x0fff;
-  const uint16_t rawX = rawXWord & 0x0fff;
-  const uint16_t limitedY = rawY > 680 ? 680 : rawY;
-  const uint16_t limitedX = rawX > 920 ? 920 : rawX;
-  const uint16_t portraitX = static_cast<uint32_t>(limitedY) * 551 / 680;
-  const uint16_t portraitY = static_cast<uint32_t>(920 - limitedX) * 767 / 920;
-
-  // The profile's raw range trims these panel coords: a nonzero rawMin shifts
-  // the touch frame onto the drawn image.
+  // Stock factory calibration to portrait screen pixels, then into the
+  // panel-native frame (x = portrait y, y = 551 - portrait x). The profile's
+  // raw range can still trim the result.
+  int16_t screenX = 0;
+  int16_t screenY = 0;
+  gslCalibrate(sampleX, rawYWord & 0x0fff, screenX, screenY);
   const auto& t = BoardConfig::ACTIVE.touch;
   touchPoint.valid = true;
-  touchPoint.x = mapTouchAxis(portraitY, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
-  touchPoint.y = mapTouchAxis(static_cast<uint16_t>(551 - portraitX), t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  touchPoint.x = mapTouchAxis(static_cast<uint16_t>(screenY), t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+  touchPoint.y = mapTouchAxis(static_cast<uint16_t>(551 - screenX), t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
   touchPoint.timestamp = now;
 
   if (!touchPressed) {
