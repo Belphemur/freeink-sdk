@@ -9,6 +9,7 @@
 #include <initializer_list>
 #include <vector>
 
+#include "BleRemoteProfiles.h"
 #include "fake_ble.h"
 
 namespace {
@@ -604,7 +605,35 @@ void testNextLinkStartsWithNoButtonHeld() {
 
 }  // namespace
 
+void testRemoteButtonProfiles() {
+  using namespace freeink;
+  CHECK(remoteButtonProfileIndex(nullptr) == -1);
+  CHECK(remoteButtonProfileIndex("") == -1);
+  CHECK(remoteButtonProfileIndex("Other") == -1);
+  const int free3 = remoteButtonProfileIndex("Free3-R");
+  CHECK(free3 >= 0);
+  const auto &third = kRemoteButtonProfiles[free3];
+  CHECK(third.count == 2);
+  CHECK(third.buttons[0].code == 0x000102 &&
+        third.buttons[0].key == RemoteKey::PageDown);
+  CHECK(third.buttons[1].code == 0x000008 &&
+        third.buttons[1].key == RemoteKey::PageUp);
+  CHECK(third.buttons[0].anyReport && third.buttons[1].anyReport);
+  const int boox = remoteButtonProfileIndex("BOOX Keypage");
+  CHECK(boox >= 0);
+  const auto &keys = kRemoteButtonProfiles[boox];
+  CHECK(keys.count == 4);
+  const uint32_t codes[] = {0x030002, 0x030001, 0x030004, 0x030008};
+  for (size_t i = 0; i < 4; ++i) {
+    CHECK(keys.buttons[i].code == codes[i]);
+    CHECK(keys.buttons[i].key ==
+          (i % 2 == 0 ? RemoteKey::Right : RemoteKey::Left));
+    CHECK(!keys.buttons[i].anyReport);
+  }
+}
+
 int main() {
+  testRemoteButtonProfiles();
   testKeyboardPressIsOneKeyEvent();
   testEndDuringPairingDoesNotDeleteTaskInsideNimble(fakeble::Stage::Security);
   testEndDuringPairingDoesNotDeleteTaskInsideNimble(fakeble::Stage::Discovery);

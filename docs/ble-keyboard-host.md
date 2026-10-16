@@ -129,3 +129,17 @@ All storage is fixed-capacity: discovered devices (`kMaxDiscovered` = 24), bonds
 (`kRawQueueLen` = 17, eight taps). One active connection.
 No `std::vector`/heap in the hot path. Configure NimBLE for a single connection,
 central-only, to keep its static footprint small on the C3.
+
+### Known remote button profiles
+
+`BleRemoteProfiles.h` provides allocation-free report profiles for Free3 and
+BOOX Keypage remotes. `remoteButtonProfileIndex(name)` returns an index into
+`kRemoteButtonProfiles`, or `-1` for an unknown remote. Each entry associates a
+`RawButtonEvent::code()` with a logical key; `anyReport` ignores the report ID
+when matching that entry. Free3's separate third-button tap/hold reports map to
+PageDown/PageUp; BOOX's two code sets map to Right/Left. Applications decide
+whether those keys navigate pages, chapters, or another UI.
+
+These profiles are opt-in metadata. They do not rewrite `popKey()` or
+`popRawButton()` events, and raw identities remain stable for saved bindings.
+Applications should let user bindings override profile defaults.
