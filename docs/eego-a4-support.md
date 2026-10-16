@@ -54,9 +54,14 @@ B/W paint after initialization uses the full waveform to clear unknown glass sta
 After grayscale, the next B/W paint seeds the old plane with the inverse of the
 target so every pixel is driven with the requested waveform. Each B/W paint then
 copies the displayed frame into the old plane for the next differential update.
-Grayscale is rendered from two lazily-allocated PSRAM planes (LSB/MSB); if
-allocation fails the driver leaves the existing B/W image up and never falls back
-to internal DRAM.
+Grayscale uses the stock four-gray waveform (five 42-byte records), which
+drives absolute levels from any prior screen state. The driver advertises
+absolute planes for images (no B/W base pass) and folds overlay masks onto a
+snapshot of their B/W base into the same planes. Planes go out uninverted as
+MSB to DTM1 and LSB to DTM2, so black/dark/light/white are 00/01/10/11, with
+the gray power settings PWR 0x03 00 72 72 and VCOM_DC 0x32. The planes are
+lazily allocated, PSRAM first; if allocation fails the driver leaves the
+existing B/W image up.
 
 ## SDK integration
 

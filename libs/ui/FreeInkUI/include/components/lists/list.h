@@ -162,6 +162,7 @@ struct ListProps {
   Paint markerPaint = Paint::solid(Color::Black);
   int16_t markerInset = 0;     // x offset of the marker / underline start
   int16_t markerThickness = 2; // underline thickness
+  bool underlineFitsText = false; // label width plus 4px on each side
   // Glyph for SelectionMarker::Bitmap, drawn vertically centered at the
   // selected row's left edge (markerInset offset). Direct bitmap wins;
   // otherwise the asset resolves through the frame's AssetResolver.
@@ -888,14 +889,23 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       if (props.selectionMarker == SelectionMarker::Underline) {
         // RTL mirrors which edge carries markerInset's extra gap, matching
         // the label's own trailing/leading swap above.
-        const int16_t underlineX = props.rtl
+        int16_t underlineX = props.rtl
             ? static_cast<int16_t>(row.x + sidePad)
             : static_cast<int16_t>(row.x + sidePad + props.markerInset);
+        int16_t underlineWidth = static_cast<int16_t>(row.width - sidePad * 2 - props.markerInset);
+        if (props.underlineFitsText && item.label && availW > 0) {
+          const int16_t textWidth = measureWrappedText(frame.target(), item.label, labelStyle, availW).width;
+          int textX = labelX;
+          if (labelStyle.align == TextAlign::Center) textX += (availW - textWidth) / 2;
+          else if (labelStyle.align == TextAlign::Right) textX += availW - textWidth;
+          underlineX = static_cast<int16_t>(textX - 4 > row.x ? textX - 4 : row.x);
+          const int right = textX + textWidth + 4 < row.right() ? textX + textWidth + 4 : row.right();
+          underlineWidth = static_cast<int16_t>(right - underlineX);
+        }
         frame.target().fill(
             Rect{underlineX,
                  static_cast<int16_t>(row.bottom() - props.markerThickness),
-                 static_cast<int16_t>(row.width - sidePad * 2 -
-                                      props.markerInset),
+                 underlineWidth,
                  props.markerThickness},
             props.markerPaint);
       } else if (props.selectionMarker == SelectionMarker::Bitmap) {

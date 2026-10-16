@@ -2229,8 +2229,10 @@ void InputManager::pollGslx680(const unsigned long now) {
   const uint16_t rawXWord = static_cast<uint16_t>(frame[7]) << 8 | frame[6];
 
   // The capacitive home key below the panel reports a fixed sentinel (not a
-  // coordinate). Route it to the home-key events instead of a screen tap.
-  const bool homeKeyDown = count == 1 && rawXWord == 0x03a0 && rawYWord == 0x1020;
+  // coordinate). Route it to the home-key events instead of a screen tap. The
+  // words' top nibble is the contact's track id, which varies between presses,
+  // so only the 12-bit coordinates identify the key.
+  const bool homeKeyDown = count == 1 && (rawXWord & 0x0fff) == 0x03a0 && (rawYWord & 0x0fff) == 0x0020;
   if (homeKeyDown) {
     if (!touchHomeKeyDown) {
       touchHomeKeyEvent = true;

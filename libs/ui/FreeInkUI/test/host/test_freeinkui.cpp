@@ -2554,6 +2554,25 @@ void testThemePrimitiveParity() {
   }
   CHECK(sawUnderline);
 
+  menu.underlineFitsText = true;
+  for (const auto align : {TextAlign::Left, TextAlign::Center, TextAlign::Right}) {
+    FakeDrawTarget fitted;
+    Frame<16> fittedFrame(fitted, device, input, interactions);
+    menu.labelText.align = align;
+    list(fittedFrame, Rect{0, 0, 480, 100}, menu);
+    bool sawFitted = false;
+    for (size_t i = 0; i < fitted.opCount; ++i) {
+      const auto& op = fitted.ops[i];
+      if (op.kind != FakeDrawTarget::Op::Fill || op.rect.height != 3 || op.rect.bottom() != 80) continue;
+      CHECK_EQ(op.rect.width, 56);
+      CHECK_EQ(op.rect.x, align == TextAlign::Left ? 6 : align == TextAlign::Center ? 212 : 418);
+      sawFitted = true;
+    }
+    CHECK(sawFitted);
+  }
+  menu.underlineFitsText = false;
+  menu.labelText.align = TextAlign::Left;
+
   // Triangle selection marker (v1 Triangle style: 12x18 at the row edge).
   FakeDrawTarget draw2;
   Frame<16> frame2(draw2, device, input, interactions);
@@ -2851,6 +2870,37 @@ void testListWrappedLabelHeights() {
       if (op.kind == FakeDrawTarget::Op::Fill && op.rect.width == 480 && op.rect.y == 0) row0H = op.rect.height;
     }
     CHECK_EQ(row0H, 52);  // 12 label + 24 wrapped subtitle + 16 base padding
+  }
+
+  // File Transfer: the icon centers beside the title and wrapped description.
+  {
+    FakeDrawTarget draw;
+    draw.lineH = 27;
+    Frame<16> frame(draw, device, input, interactions);
+    static const uint8_t pixels[128]{};
+    ListItem item{};
+    item.label = "File Transfer";
+    item.subtitle = longLabel;
+    item.icon = {pixels, 32, 32, BitmapFormat::BW1, false};
+    ListProps props;
+    props.items = &item;
+    props.count = 1;
+    props.rowHeight = 64;
+    props.iconSize = 32;
+    props.subtitleText.maxLines = 2;
+    list(frame, Rect{0, 0, 480, 400}, props);
+    Rect icon{}, title{}, description{};
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const auto& op = draw.ops[i];
+      if (op.kind == FakeDrawTarget::Op::Bitmap) icon = op.rect;
+      if (op.kind == FakeDrawTarget::Op::Text) {
+        if (title.empty()) title = op.rect;
+        else description = op.rect;
+      }
+    }
+    CHECK_EQ(description.height, 54);
+    CHECK_EQ(icon.y, title.y + (title.height + description.height - icon.height) / 2);
+    CHECK_EQ(title.x, description.x);
   }
 
   // Touch-sized gate: without a subtitle, a 44px row already fits two 12px

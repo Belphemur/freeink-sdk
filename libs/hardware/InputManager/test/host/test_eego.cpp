@@ -71,5 +71,17 @@ int main() {
     input.beginGslx680();
     assert(!gpioHeld[3] && gpioLevels[3] == HIGH && input.hasTouch());
   }
-  std::puts("A4 firmware bytes, batching, failure handling, touch sleep and wake passed");
+  // The home key is a fixed sentinel whatever track id the controller assigns:
+  // a second press (id 2) must not fall through as a touch at the top edge.
+  for (const uint8_t trackId : {1, 2, 0xf}) {
+    Wire = {};
+    input.touchReadAt = 0;
+    input.touchPressed = false;
+    input.touchHomeKeyDown = false;
+    input.touchHomeKeyEvent = false;
+    Wire.touchFrame = {1, 0, 0, 0, 0x20, static_cast<uint8_t>(trackId << 4), 0xa0, 0x03};
+    input.pollGslx680(1000);
+    assert(input.touchHomeKeyEvent && !input.touchPressed && "home key read as a screen touch");
+  }
+  std::puts("A4 firmware bytes, batching, failure handling, touch sleep and wake, home key track ids passed");
 }

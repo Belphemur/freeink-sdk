@@ -19,10 +19,14 @@ class Uc8279cA4Driver : public PanelDriver {
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  // The stock gray waveform drives absolute levels from any prior state, so
+  // image planes need no B/W base. Overlay masks are folded onto a snapshot of
+  // their B/W base into the same absolute planes.
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
-    if (mode != GrayscaleMode::Overlay) return {};
-    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
+    if (mode == GrayscaleMode::Overlay) return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
+    return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Combined, false, false, false};
   }
+  void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
@@ -39,6 +43,7 @@ class Uc8279cA4Driver : public PanelDriver {
   void fillControllerRam(EpdBus& bus, uint8_t command, uint8_t fill);
   void refresh(EpdBus& bus, bool turnOff, const uint8_t* bwBaseline = nullptr);
   uint8_t* allocateGrayBuffer();
+  void foldOverlayMasks();
 
   uint16_t _width;
   uint16_t _height;
@@ -53,6 +58,8 @@ class Uc8279cA4Driver : public PanelDriver {
   bool _firstRefreshPending = false;
   uint8_t* _grayLsb = nullptr;
   uint8_t* _grayMsb = nullptr;
+  uint8_t* _grayBase = nullptr;  // B/W base of an overlay pass (bit 1 = white)
+  bool _overlayPass = false;
 };
 
 PanelDriver& uc8279cA4Driver();

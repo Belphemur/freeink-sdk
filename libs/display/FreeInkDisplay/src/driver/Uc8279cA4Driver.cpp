@@ -58,22 +58,24 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
 
 void Uc8279cA4Driver::initController(EpdBus& bus, const bool grayMode) {
   const uint8_t panel[] = {0x3f, 0x4a};
-  // Full drive for both B/W and gray (PWR byte0 0x43, VCOM_DC 0x24). The OEM gray
-  // path uses these same strong settings; the fork's reduced gray values
-  // (0x03 / 0x20) were the cause of washed-out grays. grayMode still selects the
-  // PON/white-seed ordering below.
-  const uint8_t power[] = {0x43, 0x00, 0x78, 0x78, 0x17};
+  // B/W drive: PWR 0x43 00 78 78 17, VCOM_DC 0x24. Gray drive uses the stock
+  // V1.0.3 gray session values: PWR 0x03 00 72 72, VCOM_DC 0x32.
+  const uint8_t bwPower[] = {0x43, 0x00, 0x78, 0x78, 0x17};
+  const uint8_t grayPower[] = {0x03, 0x00, 0x72, 0x72};
   const uint8_t booster[] = {0x25, 0x25, 0x3c};
   const uint8_t resolution[] = {0x03, 0x00, 0x02, 0x58};  // 768x600
   const uint8_t interval[] = {0x00, 0x00, 0x20, 0x00};
   const uint8_t powerOffSequence = 0x20;
-  const uint8_t vcom = 0x24;
+  const uint8_t vcom = grayMode ? 0x32 : 0x24;
   const uint8_t pll = 0x0f;
   const uint8_t tcon = 0x02;
 
   bus.cmdData(CMD_PANEL_SETTING, panel, sizeof(panel));
   bus.cmdData(CMD_POWER_OFF_SEQUENCE, &powerOffSequence, 1);
-  bus.cmdData(CMD_POWER_SETTING, power, sizeof(power));
+  if (grayMode)
+    bus.cmdData(CMD_POWER_SETTING, grayPower, sizeof(grayPower));
+  else
+    bus.cmdData(CMD_POWER_SETTING, bwPower, sizeof(bwPower));
   bus.cmdData(CMD_BOOSTER_SOFT_START, booster, sizeof(booster));
   bus.cmdData(CMD_VCOM_DC, &vcom, 1);
   bus.cmdData(CMD_PLL_CONTROL, &pll, 1);
@@ -213,27 +215,40 @@ uint8_t* Uc8279cA4Driver::allocateGrayBuffer() {
   return result;
 }
 
+void Uc8279cA4Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, const GrayscaleMode mode,
+                                     const RefreshMode fallback, const bool turnOff) {
+  _overlayPass = mode == GrayscaleMode::Overlay;
+  if (!_overlayPass) return;  // absolute planes carry every pixel: no base pass
+  if (!_grayBase) _grayBase = allocateGrayBuffer();
+  if (_grayBase && fb) memcpy(_grayBase, fb, static_cast<size_t>(_widthBytes) * _height);
+  displayGrayscaleBase(bus, fb, fallback, turnOff);
+}
+
 void Uc8279cA4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
   if (!lsb) return;
   if (!_grayLsb) _grayLsb = allocateGrayBuffer();
-  if (_grayLsb) {
-    // The A4 gray LUT maps a set bit to the lighter level (keeps the 0xff seed)
-    // while a cleared bit drives the pixel darker. The BW framebuffer uses the
-    // opposite polarity (set bit == dark text), so complement before storing to
-    // render black text on a light background instead of an inverted black page.
-    const size_t n = static_cast<size_t>(_widthBytes) * _height;
-    for (size_t i = 0; i < n; ++i) _grayLsb[i] = static_cast<uint8_t>(~lsb[i]);
-  }
+  if (_grayLsb) memcpy(_grayLsb, lsb, static_cast<size_t>(_widthBytes) * _height);
 }
 
 void Uc8279cA4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   (void)bus;
   if (!msb) return;
   if (!_grayMsb) _grayMsb = allocateGrayBuffer();
-  if (_grayMsb) {
-    const size_t n = static_cast<size_t>(_widthBytes) * _height;
-    for (size_t i = 0; i < n; ++i) _grayMsb[i] = static_cast<uint8_t>(~msb[i]);
+  if (_grayMsb) memcpy(_grayMsb, msb, static_cast<size_t>(_widthBytes) * _height);
+}
+
+void Uc8279cA4Driver::foldOverlayMasks() {
+  // Overlay masks (LSB = dark, MSB = dark | light) become absolute planes
+  // (LSB = level bit 0, MSB = level bit 1): gray pixels take their level, the
+  // rest keep the base's black/white (bit 1 = white).
+  const size_t n = static_cast<size_t>(_widthBytes) * _height;
+  for (size_t i = 0; i < n; ++i) {
+    const uint8_t dark = _grayLsb[i];
+    const uint8_t gray = _grayMsb[i];
+    const uint8_t bw = static_cast<uint8_t>(_grayBase[i] & ~gray);
+    _grayLsb[i] = static_cast<uint8_t>(bw | dark);
+    _grayMsb[i] = static_cast<uint8_t>(bw | (gray & ~dark));
   }
 }
 
@@ -245,14 +260,18 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   // Allocation failure means the already-painted BW page remains visible;
   // never substitute the last rendered bit-plane as a black/white frame.
   if (!_grayLsb || !_grayMsb) return;
+  if (_overlayPass) {
+    if (!_grayBase) return;
+    foldOverlayMasks();
+  }
+  _overlayPass = false;
 
   hardwareReset(bus);
   initController(bus, true);
-  // LSB -> DTM1 (old, 0x10), MSB -> DTM2 (new, 0x13) — the plane order both proven
-  // UC8279 drivers (Uc8279Driver / Uc8279X4Driver) use with the standard 0x21-0x24
-  // transition LUT. The fork had these swapped, scrambling the four gray levels.
-  writeFrame(bus, CMD_DTM1, _grayLsb);
-  writeFrame(bus, CMD_DTM2, _grayMsb);
+  // Stock wire order: MSB -> DTM1 (0x10), LSB -> DTM2 (0x13), uninverted, so
+  // black/dark/light/white = 00/01/10/11 in (DTM1, DTM2).
+  writeFrame(bus, CMD_DTM1, _grayMsb);
+  writeFrame(bus, CMD_DTM2, _grayLsb);
   // Both gray planes are fully written, replacing the unknown startup state.
   _firstRefreshPending = false;
   loadGrayLut(bus);

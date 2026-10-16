@@ -835,6 +835,9 @@ struct BoardProfile {
   int8_t tabBarOffsetY = 0;
   uint8_t tabBarHeightPct = 100;
   uint8_t tabBarWidthPct = 100;
+  // WiFi transmit-power ceiling in 0.25 dBm units (esp_wifi_set_max_tx_power),
+  // applied whenever WiFi starts. 0 = the radio's default.
+  uint8_t wifiMaxTxPower = 0;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -1502,7 +1505,8 @@ constexpr BoardProfile EEGO_A4 = {
     24,   // cornerRadius
     18,   // tabBarOffsetY
     80,   // tabBarHeightPct
-    80};  // tabBarWidthPct
+    80,   // tabBarWidthPct
+    60};  // wifiMaxTxPower: 15 dBm, the cap stock V1.0.3 applies
 
 static_assert(EEGO_A4.displayWidth / 8 * EEGO_A4.displayHeight == 52992,
               "EEGO A4 framebuffer must be 52,992 bytes (768/8 x 552)");

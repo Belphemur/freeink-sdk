@@ -13,6 +13,8 @@ struct WireStub {
   int failAt = -1;
   bool magicValid = true;
   bool ended = false;
+  std::vector<uint8_t> touchFrame;  // served for reads of data register 0x80
+  size_t readIndex = 0;
 
   bool begin(int, int, uint32_t) {
     ended = false;
@@ -40,11 +42,13 @@ struct WireStub {
   }
   uint8_t requestFrom(uint8_t, uint8_t length, uint8_t) {
     remaining = length;
+    readIndex = 0;
     return length;
   }
   unsigned available() const { return remaining; }
   uint8_t read() {
     --remaining;
+    if (reg == 0x80) return readIndex < touchFrame.size() ? touchFrame[readIndex++] : 0;
     return reg == 0xB0 && magicValid ? 0x5A : 0;
   }
 };
