@@ -838,6 +838,11 @@ struct BoardProfile {
   // WiFi transmit-power ceiling in 0.25 dBm units (esp_wifi_set_max_tx_power),
   // applied whenever WiFi starts. 0 = the radio's default.
   uint8_t wifiMaxTxPower = 0;
+  // Polarity of `usbDetect`. Default matches the documented "HIGH = USB present".
+  // False = the pin is driven LOW while a cable is attached (M5Stack PaperS3:
+  // measured floating/pull-up/pull-down all read 0 with USB connected), so
+  // consumers must read it with a pull-up and invert.
+  bool usbDetectActiveHigh = true;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -1424,7 +1429,7 @@ constexpr BoardProfile M5PAPER_S3 = {
     3,     // batteryAdc GPIO3 (ADC1_CH2)
     4,     // batteryChargeStatus GPIO4, LOW = charging (LGS4056H STAT)
     2.0f,  // divider 2:1 (M5Unified's _adc_ratio; pending hardware validation)
-    5,     // usbDetect GPIO5, HIGH = USB present
+    5,     // usbDetect GPIO5, active-LOW: driven low while a cable is attached
     // GT911 on the internal I2C bus SDA41/SCL42 (shared with the BM8563 RTC +
     // BMI270 IMU), INT=GPIO48, no reset wired (self-loads its config), 0x5D alt
     // 0x14. Portrait digitizer (540x960) on the landscape panel -> swapXY, rawMax
@@ -1447,7 +1452,19 @@ constexpr BoardProfile M5PAPER_S3 = {
     // via Rtc alarm), not an ESP32 GPIO. BMI270 IMU (0x68) unsupported — omitted.
     {41, 42, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},
     1.2f,  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like LilyGo/M5Paper
-    {}};   // no power latch: the PMS150G self-latches; off = GPIO44 pulse (BoardPaperS3::powerOff)
+    {},     // power: no latch (PMS150G self-latches; off = GPIO44 pulse via BoardPaperS3)
+    0,      // displayControllerVariant
+    {},     // viewableInsets
+    false,  // batteryChargeStatusActiveHigh: GPIO4 STAT is LOW = charging (LGS4056H)
+    NO_I2C_FRONTLIGHT,
+    {},     // haptic: none
+    0,      // headerOffsetY
+    0,      // cornerRadius: flat panel
+    0,      // tabBarOffsetY
+    100,    // tabBarHeightPct
+    100,    // tabBarWidthPct
+    0,      // wifiMaxTxPower: radio default
+    false};  // usbDetectActiveHigh: GPIO5 is driven LOW while a cable is attached
 
 // --- EEGO Reader A4 — ESP32-S3 N16R8, UC8279C (768x552) + GSLX680 touch -------
 // CrossPoint fork device; pins/resolution/calibration from stock-firmware RE,

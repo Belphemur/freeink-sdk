@@ -1,6 +1,7 @@
 #include "BatteryMonitor.h"
 
 #include <Arduino.h>
+#include <initializer_list>  // BoardConfig.h range-for over the latch pins
 #include <BoardConfig.h>
 #include <M5Pm1.h>
 #include <esp_idf_version.h>
@@ -802,6 +803,19 @@ bool BatteryMonitor::isExternalPowerPresent(bool* known) const {
       return status.externalPower;
     }
   }
+  // Boards with a dedicated detect pin but no charger IC can still answer: the
+  // pin is the input rail's presence signal. Read it with the pull that puts a
+  // disconnected pin in the "absent" state, so a floating line cannot report a
+  // cable that is not there.
+  const int8_t pin = BoardConfig::ACTIVE.usbDetect;
+  if (pin >= 0) {
+    const bool activeHigh = BoardConfig::ACTIVE.usbDetectActiveHigh;
+    pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+    const bool level = digitalRead(pin) == HIGH;
+    if (known) *known = true;
+    return activeHigh ? level : !level;
+  }
+
   if (known) *known = false;
   return false;
 }
