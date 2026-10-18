@@ -140,7 +140,18 @@ void PowerManager::powerDownRailsForSleep() {
     holdRailOff(pin, LOW);
   }
 #endif
+#if FREEINK_DEVICE_PICCO
+  // Picco's panel rail is the gated GPIO0 (carried as sd.powerEnable, not
+  // display.powerEnable), so the panel IS unpowered in deep sleep — hold RESET
+  // LOW. The heuristic below would otherwise pick HIGH (no display.powerEnable)
+  // and back-power the off SSD1677 through its RESET diode — a mA-level deep-sleep
+  // drain. Stock never holds the display pins (they go high-Z); LOW is the SDK's
+  // gated-rail equivalent, and the wake path (piccoReadId) releases the hold
+  // before the reset pulse.
+  const uint8_t resetSleepLevel = LOW;
+#else
   const uint8_t resetSleepLevel = b.display.powerEnable >= 0 ? LOW : HIGH;
+#endif
   holdRailOff(b.display.rst, resetSleepLevel);
   holdRailOff(b.display.powerEnable, LOW);
   // SD enable OFF = the inactive level: LOW for active-high enables, HIGH for the
