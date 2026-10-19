@@ -98,6 +98,24 @@ int main(int argc, char** argv) {
     for (const auto& w : bus.writes) if (w.command == 0x20) lut = &w.bytes;
     assert(*lut == Bytes(lut_picco_se0400_fast, lut_picco_se0400_fast + 535));
     assert(lastRegister(bus, 0x02) == 0x00);
+
+    // Regression (single-buffer ghosting): the host builds with
+    // EINK_DISPLAY_SINGLE_BUFFER_MODE, so `prev` is ALWAYS null. The driver must
+    // use its OWN retained old plane — seeded white in begin (stock's 0xFF
+    // obj+0x1020 fill, FUN_4200b07c), then updated to each displayed frame — or
+    // every incremental update sees old==new and moves nothing (the whole screen
+    // ghosts). Paint black (full), then white (fast), both with prev=null: the
+    // fast frame's old plane must be the RETAINED black, giving (old=0,new=1)=0b01
+    // => 0x55 bytes. The old==new bug produced 0xFF.
+    s.begin(bus);  // re-seeds _old = white, arms the forced initial full
+    Bytes black(48000, 0x00), white(48000, 0xFF);
+    s.display(bus, black.data(), nullptr, RefreshMode::Full, false);  // _old := black
+    bus.clear();
+    s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);  // old must = retained black
+    data = nullptr;
+    for (const auto& w : bus.writes) if (w.command == 0x10) data = &w.bytes;
+    assert(data && data->size() == 96000);
+    assert((*data)[0] == 0x55 && (*data)[100] == 0x55 && (*data)[95999] == 0x55);
     // Overlay AA: LSB mask -> low bit, MSB mask -> high bit, slot-5 LUT.
     assert(s.grayscaleCapabilities(GrayscaleMode::Overlay).supported());
     assert(!s.grayscaleCapabilities(GrayscaleMode::Absolute).supported());

@@ -16,7 +16,12 @@ int main() {
   Wire.mode = 0xFF;
   Wire.sync();
   InputManager in;
+  // A held wake button with a stale level interrupt must be disarmed before pinMode.
+  gpioLevels[2] = 0;
+  powerInterruptEnabled = true;
   in.begin();
+  assert(!powerInterruptEnabled);
+  gpioLevels[2] = 1;
   assert(in.hasTouch());
   bool launched = false;
   for (const auto& w : Wire.writes)

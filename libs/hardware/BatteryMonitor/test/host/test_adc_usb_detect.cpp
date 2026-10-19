@@ -9,7 +9,6 @@
 // line in the absent state.
 
 #include <Arduino.h>  // the host stub (hostDigitalPin)
-
 #include <cstddef>
 #include <cstdio>
 #include <initializer_list>
@@ -64,6 +63,25 @@ int main() {
   known = true;
   check(!monitor.isExternalPowerPresent(&known), "no detect pin -> false");
   check(!known, "no detect pin -> unknown");
+
+  // Both X3 panels share SDA20/SCL0. SDA must never become a USB input.
+  for (const auto& profile : {BoardConfig::XTEINK_X3, BoardConfig::XTEINK_X3_UC8279}) {
+    BoardConfig::ACTIVE = profile;
+    BatteryMonitor x3Monitor;
+    std::printf("  profile: %s\n", profile.name);
+    check(profile.usbDetect == BoardConfig::PIN_UNASSIGNED, "X3: no dedicated USB-detect pin");
+    check(profile.batteryGauge.i2cSda == 20 && profile.batteryGauge.i2cScl == 0, "X3: gauge keeps SDA20/SCL0");
+    for (int level : {LOW, HIGH}) {
+      hostDigitalPin = level;
+      hostPinModeCalls = 0;
+      hostDigitalReadCalls = 0;
+      known = true;
+      check(!x3Monitor.isExternalPowerPresent(&known), "X3: no external-power observation");
+      check(!known, "X3: caller must fall back to gauge charging status");
+      check(hostPinModeCalls == 0, "X3: USB check does not configure GPIO");
+      check(hostDigitalReadCalls == 0, "X3: USB check does not read GPIO");
+    }
+  }
 
   std::printf(failures == 0 ? "all usb-detect checks passed\n" : "%d check(s) FAILED\n", failures);
   return failures == 0 ? 0 : 1;

@@ -75,14 +75,30 @@ void Ssd2677Driver::begin(EpdBus& bus) {
   bus.waitBusy(" SSD2677 init");
   _needsPowerOn = true;
   _needsInitialFull = true;
+  // Retained old-plane: this panel takes old+new as one 2bpp burst, so the old
+  // plane must exactly equal what is physically on the glass. The host can't
+  // supply it — CrossPoint builds single-buffer (EINK_DISPLAY_SINGLE_BUFFER_MODE),
+  // so `prev` is always null — so the driver keeps its own, exactly like stock
+  // (its old buffer at obj+0x1020). Seed it white (0xFF), matching stock's
+  // FUN_4200b07c(obj, 0xFF) in panel begin, so the first full clears any image.
+  const uint32_t size = geometry().bufferSize;
+  if (!_old) _old = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (_old) memset(_old, 0xFF, size);
 }
 
 void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  (void)prev;  // unused: single-buffer host passes null; we track our own old plane
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
   if (_needsInitialFull) mode = RefreshMode::Full;
-  sendPacked(bus, prev ? prev : fb, fb);
+  // Old plane = our retained last-displayed frame (seeded white in begin). A
+  // differential refresh needs old to match the glass; without this the panel
+  // would see old==new on every incremental update and move nothing (the whole
+  // reason non-full frames ghosted). _old == nullptr (alloc failed) falls back to
+  // an all-white old plane in sendPacked.
+  sendPacked(bus, _old, fb);
   refreshWith(bus, mode == RefreshMode::Fast ? lut_picco_se0400_fast : lut_picco_se0400_full, turnOff);
+  if (_old) memcpy(_old, fb, geometry().bufferSize);  // new becomes old for the next frame
   _needsInitialFull = false;
 }
 
@@ -94,7 +110,8 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
   for (uint32_t i = 0; i < size;) {
     uint16_t n = 0;
     while (n < sizeof(chunk) && i < size) {
-      packPixels(hi[i], lo[i], &chunk[n]);
+      // hi == nullptr → an all-white (0xFF) old plane (stock's begin-time seed).
+      packPixels(hi ? hi[i] : 0xFF, lo[i], &chunk[n]);
       n += 2;
       ++i;
     }
@@ -144,8 +161,12 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     return;
   }
   refreshWith(bus, lut_picco_se0400_gray, turnOff);
-  // The panel now shows gray content the previous B/W frame doesn't describe.
-  _needsInitialFull = true;
+  // NB: do NOT force the next frame to a full refresh here. Every reader page in
+  // AA mode is a gray frame, so forcing a full on the following page flashed the
+  // whole screen black on every page turn. The retained `_old` still holds the
+  // B/W base drawn before this overlay, so the next page diffs against it
+  // correctly; CrossPoint schedules its own periodic full refreshes to clean any
+  // AA-edge residual (stock does the same — its gray present sets no full flag).
 }
 
 void Ssd2677Driver::deepSleep(EpdBus& bus) {

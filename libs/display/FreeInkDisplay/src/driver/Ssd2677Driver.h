@@ -44,6 +44,8 @@ class Ssd2677Driver : public PanelDriver {
   bool _needsPowerOn = true;
   bool _needsInitialFull = true;
   uint8_t* _lsb = nullptr;  // retained LSB mask: the renderer reuses its buffer for the MSB pass
+  uint8_t* _old = nullptr;  // retained old plane (last displayed frame); host is single-buffer
+                            // so `prev` is always null — mirror stock's obj+0x1020, seeded white
 };
 
 PanelDriver& ssd2677Driver();

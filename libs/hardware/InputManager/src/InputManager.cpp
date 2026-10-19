@@ -110,6 +110,12 @@ InputManager::InputManager()
       twoButtonLongPressActive(false) {}
 
 void InputManager::begin() {
+#if FREEINK_DEVICE_PICCO
+  // pinMode preserves wake interrupt types; a held polled button must not trigger a level ISR.
+  if (BoardConfig::isPicco() && BoardConfig::ACTIVE.input.power >= 0) {
+    detachInterrupt(BoardConfig::ACTIVE.input.power);
+  }
+#endif
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted();
 #endif

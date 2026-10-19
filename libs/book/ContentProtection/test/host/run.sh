@@ -22,3 +22,11 @@ c++ -std=c++17 -fno-exceptions -Wall -Wextra -Werror -I../../include -I../../thi
   ../../src/ProtectedBook.cpp ../../src/Zip.cpp "$BUILD_DIR/miniz.o" test_protected.cpp \
   -o "$BUILD_DIR/test_protected"
 "$BUILD_DIR/test_protected"
+
+for TARGET in ESP32C3 ESP32S3; do
+  c++ -std=c++17 -fno-exceptions -Wall -Wextra -Werror -I../../include -I../../third_party/miniz \
+    "-DCONFIG_IDF_TARGET_$TARGET=1" \
+    ../../src/Zip.cpp "$BUILD_DIR/miniz.o" test_manifest_reserve.cpp \
+    -o "$BUILD_DIR/test_manifest_reserve_$TARGET"
+  "$BUILD_DIR/test_manifest_reserve_$TARGET"
+done

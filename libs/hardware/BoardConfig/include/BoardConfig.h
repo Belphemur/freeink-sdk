@@ -1002,7 +1002,7 @@ constexpr BoardProfile XTEINK_X3 = {
     0,
     PIN_UNASSIGNED,
     2.0f,
-    20,
+    PIN_UNASSIGNED,  // usbDetect: GPIO20 is I2C SDA, not USB detection
     NO_TOUCH,
     NO_FRONTLIGHT,
     NO_AUDIO,
@@ -1034,7 +1034,7 @@ constexpr BoardProfile XTEINK_X3_UC8279 = {
     0,
     PIN_UNASSIGNED,
     2.0f,
-    20,
+    PIN_UNASSIGNED,  // usbDetect: GPIO20 is I2C SDA, not USB detection
     NO_TOUCH,
     NO_FRONTLIGHT,
     NO_AUDIO,

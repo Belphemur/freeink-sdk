@@ -11,6 +11,10 @@
 #include "ContentMinizConfig.h"
 #include "Util.h"
 
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
+#include <sdkconfig.h>
+#endif
+
 namespace freeink {
 namespace content {
 
@@ -150,15 +154,16 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
     return false;
   }
 
+#if defined(CONFIG_IDF_TARGET_ESP32C3) && CONFIG_IDF_TARGET_ESP32C3
+  constexpr size_t kCipherChunk = 512;
+  constexpr size_t kOutputChunk = 1024;
+#else
   constexpr size_t kCipherChunk = 2048;
   constexpr size_t kOutputChunk = 4096;
+#endif
+  static_assert(kCipherChunk % 16 == 0, "CBC chunks must contain whole AES blocks");
 
-  // Biggest allocation first. mz_inflateInit2 needs ~40KB in ONE block (an
-  // inflate_state: the tinfl decompressor plus a 32KB dictionary), while the
-  // scratch below is 8KB. Taking the 8KB first can carve it out of the very
-  // block the 40KB needs, so a heap whose largest free region is ~47KB -- ample
-  // for the window on its own -- fails on the pair. Measured on device: image
-  // extraction refused at maxAlloc=47092 with 41168 required.
+  // Allocate the contiguous inflate state before the smaller streaming buffers.
   // LCP marks already-uncompressed resources Compression Method="0":
   // decrypt-only, no inflate stage.
   const bool stored =
@@ -283,10 +288,30 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
   }
   if (entry.method != 0 && entry.method != 8) return false;
 
+  struct InflateGuard {
+    mz_stream stream{};
+    ~InflateGuard() {
+      if (stream.state) mz_inflateEnd(&stream);
+    }
+  } inflater;
+  auto& stream = inflater.stream;
+  // Reserve the contiguous inflate state before smaller parser allocations.
+  if (entry.method == 8) {
+    const int inflateResult = mz_inflateInit2(&stream, -15);
+    if (inflateResult != MZ_OK) {
+      lastError_ = inflateResult == MZ_MEM_ERROR ? "manifest inflate out of memory" : "manifest inflate init failed";
+      return false;
+    }
+  }
+
+#if defined(CONFIG_IDF_TARGET_ESP32C3) && CONFIG_IDF_TARGET_ESP32C3
+  constexpr size_t kChunk = 512;
+#else
   constexpr size_t kChunk = 2048;
+#endif
   auto* bufs = static_cast<uint8_t*>(malloc(kChunk * 2));  // freed below; kept raw for the single free
   if (!bufs) {
-    lastError_ = "out of memory";
+    lastError_ = "manifest scratch out of memory";
     return false;
   }
   uint8_t* inBuf = bufs;
@@ -302,29 +327,46 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
   bool haveLast = false;
   bool malformed = false;
   std::string value;
-  // Pre-reserve the bounded worst case behind a nothrow probe: string/vector
-  // growth is a throwing allocation, and with -fno-exceptions a failed grow
-  // abort()s the firmware mid-open (field crash: bad_alloc in feed()'s append
-  // when a book is opened on a fragmented post-session heap). carry peaks at
-  // the 4KB unterminated-tag cap plus one chunk; with capacity reserved, the
-  // appends below never allocate.
+  // Probe each reserve separately: these buffers need not share a contiguous block.
   {
     constexpr size_t kCarryReserve = 4096 + kChunk;
     constexpr size_t kValueReserve = 1024;  // attribute scratch (URIs)
     constexpr size_t kUriReserve = 256;     // encrypted-entry hashes (8B each)
-    void* probe = malloc(kCarryReserve + kValueReserve + kUriReserve * sizeof(uint64_t) +
-                         kUriReserve * sizeof(std::pair<uint64_t, uint32_t>) + 512);
-    if (!probe) {
+    const auto canReserve = [this](size_t bytes, const char* error) {
+      constexpr size_t kAllocationHeadroom = 64;
+      if (heapProbe(bytes + kAllocationHeadroom)) return true;
+      lastError_ = error;
+      return false;
+    };
+    if (carry.capacity() < kCarryReserve && !canReserve(kCarryReserve + 1, "manifest carry out of memory")) {
       free(bufs);
-      lastError_ = "out of memory";
       return false;
     }
-    free(probe);
     carry.reserve(kCarryReserve);
+    if (value.capacity() < kValueReserve && !canReserve(kValueReserve + 1, "manifest attribute out of memory")) {
+      free(bufs);
+      return false;
+    }
     value.reserve(kValueReserve);
+    if (encryptedUriHashes_.capacity() < kUriReserve &&
+        !canReserve(kUriReserve * sizeof(uint64_t), "manifest hashes out of memory")) {
+      free(bufs);
+      return false;
+    }
     encryptedUriHashes_.reserve(kUriReserve);
+    if (originalSizes_.capacity() < kUriReserve &&
+        !canReserve(kUriReserve * sizeof(std::pair<uint64_t, uint32_t>), "manifest sizes out of memory")) {
+      free(bufs);
+      return false;
+    }
     originalSizes_.reserve(kUriReserve);
-    storedUriHashes_.reserve(64);  // covered by the probe's slack
+    constexpr size_t kStoredReserve = 64;
+    if (storedUriHashes_.capacity() < kStoredReserve &&
+        !canReserve(kStoredReserve * sizeof(uint64_t), "manifest stored hashes out of memory")) {
+      free(bufs);
+      return false;
+    }
+    storedUriHashes_.reserve(kStoredReserve);
   }
   auto handleTag = [&](const char* tag, size_t len) {
     if (len < 3 || tag[1] == '/' || tag[1] == '?' || tag[1] == '!') return;
@@ -390,12 +432,6 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
       remaining -= static_cast<uint32_t>(amount);
     }
   } else {
-    mz_stream stream;
-    memset(&stream, 0, sizeof(stream));
-    if (mz_inflateInit2(&stream, -15) != MZ_OK) {
-      free(bufs);
-      return false;
-    }
     bool ended = false;
     while (remaining > 0 && ok && !ended) {
       const size_t amount = remaining < kChunk ? remaining : kChunk;
@@ -429,7 +465,6 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
         if (status == MZ_BUF_ERROR && produced == 0 && stream.avail_in == before) break;
       } while (stream.avail_in > 0 || produced == kChunk);
     }
-    mz_inflateEnd(&stream);
     ok = ok && ended;
   }
   free(bufs);
