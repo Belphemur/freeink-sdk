@@ -37,10 +37,10 @@
 
 #include <algorithm>
 #include <cctype>
-#include <iterator>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -245,9 +245,19 @@ class SecureHttpClient {
       // Connection: keep-alive header (below) overrides that.
       bool keepAlive = line.compare(0, 9, "HTTP/1.0 ") != 0;
 
+      bool headersComplete = false;
+      size_t headerBytes = 0;
       std::string transferEncoding;
       while (readLine(*_conn, line, headerDeadline, shouldAbort)) {
-        if (line.empty()) break;  // end of headers
+        if (line.empty()) {
+          headersComplete = true;
+          break;
+        }  // end of headers
+        headerBytes += line.size();
+        if (headerBytes > 8192 || _responseHeaders.size() >= 64) {
+          closeConnection();
+          return -1;
+        }
         const size_t colon = line.find(':');
         if (colon == std::string::npos) continue;
         std::string name = line.substr(0, colon);
@@ -266,11 +276,13 @@ class SecureHttpClient {
         } else if (name == "connection") {
           std::string v = value;
           std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
-          if (v.find("close") != std::string::npos) keepAlive = false;
-          else if (v.find("keep-alive") != std::string::npos) keepAlive = true;
+          if (v.find("close") != std::string::npos)
+            keepAlive = false;
+          else if (v.find("keep-alive") != std::string::npos)
+            keepAlive = true;
         }
       }
-      if (_aborted) {
+      if (_aborted || !headersComplete) {
         closeConnection();
         return -1;
       }
@@ -412,9 +424,7 @@ class SecureHttpClient {
     return !host.empty() && (scheme == "http" || scheme == "https");
   }
 
-  std::string hostHeader() const {
-    return hostHeaderFor(_scheme, _host, _port);
-  }
+  std::string hostHeader() const { return hostHeaderFor(_scheme, _host, _port); }
 
   static std::string hostHeaderFor(const std::string& scheme, const std::string& host, uint16_t port) {
     const uint16_t defaultPort = scheme == "https" ? 443 : 80;
