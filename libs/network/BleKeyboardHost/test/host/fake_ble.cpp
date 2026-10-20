@@ -182,10 +182,19 @@ struct FakeState {
   std::vector<std::unique_ptr<NimBLERemoteCharacteristic>> owned;
   std::vector<NimBLERemoteCharacteristic*> chars;
   NimBLERemoteService service;
+  NimBLERemoteService gapService;
+  // What NimBLE holds after discovery on this link; connect() clears it.
+  std::vector<NimBLERemoteService*> discovered;
+  bool uuidSearchFails = false;
   NimBLEClient* client = nullptr;
   NimBLEScan scan;
   std::map<std::string, std::vector<uint8_t>> nvs;
   bool lingerOnDisconnect = false;
+
+  FakeState() {
+    service.uuid_ = NimBLEUUID(0x1812);
+    gapService.uuid_ = NimBLEUUID(0x1800);
+  }
 
   NimBLERemoteCharacteristic* at(int index) {
     if (index < 0 || static_cast<size_t>(index) >= chars.size()) return nullptr;
@@ -266,6 +275,8 @@ struct FakeState {
     scan = NimBLEScan();
     nvs.clear();
     lingerOnDisconnect = false;
+    discovered.clear();
+    uuidSearchFails = false;
   }
 };
 
@@ -361,6 +372,7 @@ bool taskDeletedWhileHeld() { return g_deletedWhileHeld; }
 size_t connectCalls() { return state().connectCalls; }
 std::vector<std::string> connectAddresses() { return state().connectAddresses; }
 void failConnects(bool fail) { state().failConnects = fail; }
+void failServiceSearchByUuid(bool fail) { state().uuidSearchFails = fail; }
 unsigned long clockMs() { return g_clockMs.load(); }
 void advanceMillis(uint32_t ms) { g_clockMs += ms; }
 
@@ -404,6 +416,7 @@ bool NimBLEClient::connect(const NimBLEAddress& address) {
     return false;
   }
   state().lastError = 0;
+  state().discovered.clear();
   connected_ = true;
   return true;
 }
@@ -428,9 +441,23 @@ bool NimBLEClient::cancelConnect() {
 
 int NimBLEClient::getLastError() const { return state().lastError; }
 
+// Like NimBLE: a service already discovered on this link is found without a
+// request; otherwise the peer is searched for that one UUID.
 NimBLERemoteService* NimBLEClient::getService(const NimBLEUUID& uuid) {
   if (holdHere(Stage::Discovery)) return nullptr;
-  return uuid.value16() == 0x1812 ? &state().service : nullptr;
+  for (NimBLERemoteService* svc : state().discovered) {
+    if (svc->getUUID() == uuid) return svc;
+  }
+  if (state().uuidSearchFails || uuid != state().service.getUUID()) return nullptr;
+  state().discovered.push_back(&state().service);
+  return &state().service;
+}
+
+const std::vector<NimBLERemoteService*>& NimBLEClient::getServices(bool refresh) {
+  // A dropped link lists nothing, as NimBLE's retrieveServices() fails at once.
+  if (refresh) state().discovered.clear();
+  if (refresh && connected_) state().discovered = {&state().gapService, &state().service};
+  return state().discovered;
 }
 
 void NimBLEClient::setConnectTimeout(uint32_t) {}

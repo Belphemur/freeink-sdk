@@ -1,26 +1,11 @@
-# FreeInkBook SDK Development Guide
+# Agent notes
 
-Project: Low-level book rendering SDK (EPUB, CSS, text layout, glyph caching)
-Repo: https://github.com/Belphemur/freeink-sdk — fork of https://github.com/Free-Ink/freeink-sdk
+Changes that have to be repeated in several files. Follow the linked checklist
+before calling any of them done.
 
-## Scope
-
-This work is part of the CrossPoint X reader TTF font support effort (see
-https://github.com/Belphemur/XPoint PR #96). The three features to implement
-are:
-
-1. **Strikethrough** — `StyleStrikethrough` bit + `line-through` CSS parsing
-2. **Synthetic-hyphen flag** — `LayoutHyphenated` on `PageTextRun`
-3. **Drawn horizontal rule** — `PageRule` element + render arm
-
-## Layout
-
-- `libs/book/FreeInkBook/include/` — public headers (BookFont.h, Layout.h, Css.h)
-- `libs/book/FreeInkBook/src/` — engine source (ChapterLayout.cpp, PageRenderer.cpp, Css.cpp)
-- `libs/book/FreeInkBook/test/host/` — host tests (test_freeinkbook.cpp)
-
-## Build/Style
-
-- Header guards: `#pragma once`
-- Classes: PascalCase, methods: camelCase, constants: UPPER_SNAKE_CASE
-- Run host tests: `cd libs/book/FreeInkBook/test/host && ./run.sh`
+- **New touch device or touch controller**: every edit is listed in
+  [docs/adding-a-touch-controller.md](docs/adding-a-touch-controller.md). A missed
+  step can build cleanly and ship a touchscreen that does nothing.
+- **New device (any)**: see "Adding a new device" in [README.md](README.md).
+- **Host tests**: [docs/testing.md](docs/testing.md). Run the suites for every
+  library you touched, plus the suites that compile `BoardConfig.h` when you edit it.

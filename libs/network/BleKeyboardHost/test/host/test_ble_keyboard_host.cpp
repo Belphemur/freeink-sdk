@@ -106,6 +106,16 @@ void testKeyboardPressIsOneKeyEvent() {
   CHECK(!host().popKey(ev));
 }
 
+// A peer that returns nothing for a search for the HID service UUID (Flic) still
+// connects: listing all its services finds it.
+void testHidFoundByListingWhenUuidSearchFails() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  fakeble::failServiceSearchByUuid(true);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+}
+
 // A peer that is pairing or being discovered sits in a NimBLE wait that only a
 // disconnect ends (cancelConnect() covers the GAP connect alone). end() must not
 // delete the connection task inside that wait: NimBLE later completes the wait
@@ -493,6 +503,98 @@ void testKeyboardModifierByteIsNotTheButton() {
   CHECK(!edges[1].pressed && edges[1].code() == 0x000204u);
 }
 
+// A keyboard map with no modifier keys: a bare key array, as the Flic Duo sends
+// ("4F 00 .." for Right Arrow). Byte 0 is the key.
+void testBareKeyArrayReadsByteZeroAsAKey() {
+  // The Flic Duo's own Report Map: four 16-bit key slots, no modifier byte.
+  constexpr uint8_t kBareKeyArrayMap[] = {
+      0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x01,  // Generic Desktop, Keyboard, Report ID 1
+      0x75, 0x10, 0x95, 0x04, 0x15, 0x00, 0x25, 0xFF,  //   4 x 16 bits
+      0x05, 0x07, 0x19, 0x00, 0x29, 0xFF,              //   Keyboard page, usages 0..0xFF
+      0x81, 0x00,                                      //   Input: key array
+      0xC0,                                            // End Collection
+  };
+  fakeble::resetWorld();
+  const int mapChar = fakeble::addCharacteristic(0x2A4B, true, false, false);
+  fakeble::setValue(mapChar, kBareKeyArrayMap, sizeof kBareKeyArrayMap);
+  const int in = fakeble::addInputReport(1);
+  const int other = fakeble::addInputReport(2);  // the Flic also has one its map does not describe
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+  frame(in, {0x4F, 0, 0, 0, 0, 0, 0, 0});  // Right Arrow, slot 1
+  frame(in, {0, 0, 0, 0, 0, 0, 0, 0});
+
+  freeink::KeyEvent ev;
+  CHECK(host().popKey(ev) && ev.keycode == 0x4F && ev.special == freeink::SpecialKey::Right && ev.mods == 0);
+  const std::vector<freeink::RawButtonEvent> edges = drainRaw();
+  CHECK(edges.size() == 2);
+  if (edges.size() != 2) return;
+  CHECK(edges[0].pressed && edges[0].value == 0x4F && edges[0].byteIndex == 0 && edges[0].reportId == 1);
+  CHECK(!edges[1].pressed && edges[1].value == 0x4F);
+
+  frame(in, {0, 0, 0, 0, 0, 0, 0x50, 0});  // Left Arrow, slot 4
+  frame(in, {0, 0, 0, 0, 0, 0, 0, 0});
+  CHECK(host().popKey(ev) && ev.keycode == 0x50);
+  frame(in, {0, 0x4F, 0, 0, 0, 0, 0, 0});  // 0x4F00 and 0x014F: above the map's
+  frame(in, {0, 0, 0, 0, 0, 0, 0, 0});     // logical maximum, so not keys
+  frame(in, {0x4F, 0x01, 0, 0, 0, 0, 0, 0});
+  frame(in, {0, 0, 0, 0, 0, 0, 0, 0});
+  CHECK(!host().popKey(ev));
+
+  // Only the map's report id and length are bare keys; others keep the boot decode.
+  drainRaw();
+  frame(other, {0x4F, 0, 0, 0, 0, 0, 0, 0});
+  frame(other, {0, 0, 0, 0, 0, 0, 0, 0});
+  frame(in, {0x4F, 0, 0, 0, 0, 0, 0});
+  frame(in, {0, 0, 0, 0, 0, 0, 0});
+  CHECK(!host().popKey(ev));
+  CHECK(drainRaw().empty());
+}
+
+// A map with a second Input (here a consumer array after the keyboard array) is
+// not a bare key array: byte 0 of its keyboard report is not read as a key.
+void testMapWithSecondInputKeepsBootDecode() {
+  constexpr uint8_t kCompositeMap[] = {
+      0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x01,  // Keyboard, Report ID 1
+      0x75, 0x10, 0x95, 0x04, 0x15, 0x00, 0x25, 0xFF,  //   4 x 16 bits (the Flic's report)
+      0x05, 0x07, 0x19, 0x00, 0x29, 0xFF, 0x81, 0x00,  //   Input: key array
+      0xC0,                                            // End Collection
+      0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x85, 0x02,  // Consumer Control, Report ID 2
+      0x75, 0x10, 0x95, 0x04, 0x15, 0x00, 0x26, 0xFF,  //   4 x 16 bits
+      0x03, 0x19, 0x00, 0x2A, 0xFF, 0x03, 0x81, 0x00,  //   Input: usage array
+      0xC0,                                            // End Collection
+  };
+  fakeble::resetWorld();
+  const int mapChar = fakeble::addCharacteristic(0x2A4B, true, false, false);
+  fakeble::setValue(mapChar, kCompositeMap, sizeof kCompositeMap);
+  const int in = fakeble::addInputReport(1);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+  frame(in, {0x4F, 0, 0, 0, 0, 0, 0, 0});
+  frame(in, {0, 0, 0, 0, 0, 0, 0, 0});
+  freeink::KeyEvent ev;
+  CHECK(!host().popKey(ev));
+}
+
+// The same keyboard with a vendor status byte declared ahead of its keys (an Input
+// that is not a key array): byte 0 stays the boot layout's modifier byte.
+void testKeyboardWithOtherInputsKeepsBootLayout() {
+  constexpr uint8_t kStatusByteMap[] = {
+      0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x75, 0x08, 0x95, 0x02,  // Keyboard, 2 x 8 bits
+      0x81, 0x01,                                                  //   Input: constant
+      0x95, 0x06, 0x05, 0x07, 0x19, 0x00, 0x29, 0xFF, 0x81, 0x00,  //   Input: 6 keys
+      0xC0,
+  };
+  fakeble::resetWorld();
+  serveRemote(kStatusByteMap, sizeof kStatusByteMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+  frame(g_inputReport, {0x07, 0, 0x4F, 0, 0, 0, 0, 0});  // status 0x07, Right Arrow
+  freeink::KeyEvent ev;
+  CHECK(host().popKey(ev) && ev.keycode == 0x4F);
+  CHECK(!host().popKey(ev));  // no phantom key 0x07
+}
+
 void testStreamedHoldIsOnePressAndOneRelease() {
   const int in = connectBareRemote(3);
   unsigned long lastFrameMs = 0;
@@ -635,6 +737,7 @@ void testRemoteButtonProfiles() {
 int main() {
   testRemoteButtonProfiles();
   testKeyboardPressIsOneKeyEvent();
+  testHidFoundByListingWhenUuidSearchFails();
   testEndDuringPairingDoesNotDeleteTaskInsideNimble(fakeble::Stage::Security);
   testEndDuringPairingDoesNotDeleteTaskInsideNimble(fakeble::Stage::Discovery);
   testScanCancelsReconnectThatIsPairing();
@@ -653,6 +756,9 @@ int main() {
   testSelectedPeerThatDropsGetsAFreshPlan();
   testRawEdgeNamesTheReportAndTheByte();
   testKeyboardModifierByteIsNotTheButton();
+  testBareKeyArrayReadsByteZeroAsAKey();
+  testKeyboardWithOtherInputsKeepsBootLayout();
+  testMapWithSecondInputKeepsBootDecode();
   testStreamedHoldIsOnePressAndOneRelease();
   testSilentHoldKeepsItsReleaseForTheReleaseFrame();
   testPressOnlyFramesAfterSilenceAreNewPresses();

@@ -69,6 +69,9 @@ size_t connectCalls();
 std::vector<std::string> connectAddresses();
 // While set, every GAP connect fails with a timeout (the peer is off or away).
 void failConnects(bool fail);
+// The peer returns nothing for a search for one service UUID; listing all services
+// still finds them.
+void failServiceSearchByUuid(bool fail);
 unsigned long clockMs();
 void advanceMillis(uint32_t ms);
 
