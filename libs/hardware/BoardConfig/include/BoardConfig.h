@@ -460,10 +460,7 @@ enum class DisplayController : uint8_t {
 };
 
 // Optional capacitive touch controller.
-// PiccoCst: the Onyx Picco's capacitive controller at I2C 0x24 (suspected
-// Chipsemi/Hynitron CST-series). Init/reset/INT are recovered; the framed
-// coordinate protocol is only partially recovered (per-point X/Y byte offsets
-// unknown), so the driver is a tap-dump scaffold — see InputManager.cpp.
+// PiccoCst: the Onyx Picco's Parade TMA525C (PIP protocol) at I2C 0x24.
 enum class TouchController : uint8_t { None, Chsc6x, Gt911, Ft5x06, Ft6336u, Gslx680, Cst816s, PiccoCst };
 
 // Optional audio output path. Murphy M3 ships an ES8388-compatible stereo
@@ -1699,9 +1696,6 @@ constexpr BoardProfile METALIO_EINK4 = {
 //
 // Pending hardware validation / deeper RE (shipped conservatively here):
 //   * Buttons — up=21 / down=9 confirmed on hardware; GPIO5's role is not.
-//   * Touch — controller model is unknown (I2C 0x24 is non-standard) and the INT
-//     pin was not recovered, so touch can't function yet → NO_TOUCH for now
-//     (recovered so far: RST=11, addr=0x24, native 480x800 portrait digitizer).
 //   * Frontlight — it's a 2-channel warm/cool I2C LED driver @0x38 (not PWM, not
 //     the LM3630A the I2cFrontlight backend supports) → NO_FRONTLIGHT until a
 //     driver is added.
@@ -1742,10 +1736,6 @@ constexpr BoardProfile PICCO = {
     // Capacitive touch (PiccoCst @ I2C 0x24 on the shared bus SDA7/SCL8, RST=10,
     // INT=11 active-low). Native digitizer is 480x800 portrait on the 800x480
     // landscape panel, so swapXY maps it to panel axes (like the Sticky).
-    // TAP-DUMP SCAFFOLD: init/reset/INT are recovered and the driver reads on INT,
-    // but the per-point X/Y byte offsets in the status block are NOT yet recovered,
-    // so coordinates are not published until a hardware tap-dump identifies them
-    // (build with -DTOUCH_PROBE_DEBUG to log raw frames). flipX/flipY pending HW.
     {TouchController::PiccoCst, 7, 8, 11, 10, 0x24, 0, 799, 0, 479, false, 0, true, false, PIN_UNASSIGNED, true,
      false, true},  // swapXY; flipX=false; flipY=true (portrait horizontal was reversed on hardware)
     NO_FRONTLIGHT,   // no LEDC pins; the frontlight is the I2C driver in i2cFrontlight below

@@ -265,8 +265,7 @@ bool piccoWaitInt(int8_t irq, unsigned long timeoutMs);
 
 bool InputManager::prepareForDeepSleep() {
 #if FREEINK_DEVICE_EEGO_A4
-  const auto& t = BoardConfig::ACTIVE.touch;
-  if (t.controller == BoardConfig::TouchController::Gslx680) {
+  if (const auto& t = BoardConfig::ACTIVE.touch; t.controller == BoardConfig::TouchController::Gslx680) {
     const uint8_t halt = 0x88;
     const bool ok = gslWrite(0xE0, &halt, 1);
     delay(5);
@@ -285,8 +284,8 @@ bool InputManager::prepareForDeepSleep() {
   }
 #endif
 #if FREEINK_DEVICE_PICCO
-  const auto& t = BoardConfig::ACTIVE.touch;
-  if (t.controller == BoardConfig::TouchController::PiccoCst && t.i2cAddress != 0) {
+  if (const auto& t = BoardConfig::ACTIVE.touch;
+      t.controller == BoardConfig::TouchController::PiccoCst && t.i2cAddress != 0) {
     // Stock FUN_4200c730: SET_POWER(SLEEP) to command register 0x0005, wait
     // for the response, then pull RST/INT/GPIO12 down. deepSleep() floats the
     // digital pad config, so the pulldowns are set in the RTC domain.
@@ -2343,21 +2342,6 @@ void InputManager::pollGslx680(const unsigned long now) {
   }
 }
 
-// --- Onyx Picco (PiccoCst, I2C 0x24) — TAP-DUMP SCAFFOLD --------------------
-//
-// Recovered from the retail firmware (Ghidra). Init/reset/INT are HIGH
-// confidence; the coordinate read is only PARTIALLY recovered, so this driver
-// brings the controller up and reads on INT but does NOT yet publish touch
-// coordinates. Enough is known to finish it from a hardware tap-dump:
-//   * INT (irq): active-low, falls when a sample is ready (attachInterrupt
-//     FALLING in FUN_4200bcc4). Here it is polled.
-//   * RST: pulse HIGH -> 1ms -> LOW -> 10ms -> HIGH, then ~50ms settle (FUN_4200b984).
-//   * The firmware writes a framed command (header 0x04, length, marker 0x2F/0x40,
-//     cmd, 16-bit checksum) then reads a 0x108-byte status block. In that block
-//     buf[0x36]==0x1F is the report id and buf[0x38]&0x7F is the touch-point count.
-//     The per-point X/Y byte offsets were NOT recovered (handler is in a packed
-//     .irom region). Build -DTOUCH_PROBE_DEBUG, tap a unit, read the dumped bytes
-//     to locate X/Y, then mirror pollFt6336u's publish/slop/press-release logic.
 // --- Onyx Picco: Parade/Cypress TMA525C (PIP protocol) -----------------------
 // Recovered from the stock firmware (build 2912, "TMA525C" driver). Every read is
 // a 2-byte little-endian length followed by a re-read of the whole report from its

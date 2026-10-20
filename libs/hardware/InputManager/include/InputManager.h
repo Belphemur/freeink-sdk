@@ -617,7 +617,7 @@ class InputManager {
   bool gslWrite(uint8_t reg, const uint8_t* data, uint8_t len);
   bool gslRead(uint8_t reg, uint8_t* buf, uint8_t len);
   void beginPiccoTouch();               // Onyx Picco PiccoCst (I2C 0x24) init/reset
-  void pollPiccoTouch(unsigned long now);  // tap-dump scaffold — see InputManager.cpp
+  void pollPiccoTouch(unsigned long now);
   bool gslUploadFirmware();
 
   enum class MultiTouchGestureState : uint8_t { Idle, Tracking, Blocked };

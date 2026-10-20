@@ -11,6 +11,15 @@
 #include <FreeInkUI.h>
 #include <FreeInkUIComponentStyle.h>
 
+// Component style overrides (Screen::setComponentStyle). Its checks read a runtime pointer, so a
+// firmware that never sets a style still carries every override and content-alignment path, the
+// row-measuring loop of listContentHeight() inlined at each list call site: ~3.3 KB of flash in a
+// firmware with four list screens. Building with FREEINK_UI_COMPONENT_STYLE=0 compiles them out,
+// and setComponentStyle() with them.
+#ifndef FREEINK_UI_COMPONENT_STYLE
+#define FREEINK_UI_COMPONENT_STYLE 1
+#endif
+
 #include <atomic>
 #include <memory>
 #include <new>
@@ -62,7 +71,9 @@ public:
   const DeviceContext &device() const { return frame_.device(); }
   const ThemeTokens &theme() const { return theme_; }
   Rect contentRect() const { return content_; }
+#if FREEINK_UI_COMPONENT_STYLE
   void setComponentStyle(const ComponentStyle* style) { componentStyle_ = style; }
+#endif
 
   void setContentMargin(Insets margin) {
     content_ = insetClamped(frame_.safeRect(), margin);
@@ -171,9 +182,9 @@ public:
       themed.styles.normal.border = Paint::solid(Color::Black);
       themed.styles.normal.borderWidth = theme_.headerUnderline;
     }
-    if (componentStyle_) {
-      componentStyle_->text.apply(themed.titleText);
-      componentStyle_->apply(themed.styles);
+    if (componentStyle()) {
+      componentStyle()->text.apply(themed.titleText);
+      componentStyle()->apply(themed.styles);
     }
     themed.minTouchSize = theme_.minTouchSize;
     ui::header(frame_, take(anchor, theme_.headerHeight), themed);
@@ -273,12 +284,12 @@ public:
       themed.valueText = theme_.smallText;
     if (textStyleUnset(themed.headerText))
       themed.headerText = theme_.smallText;
-    if (componentStyle_) {
-      componentStyle_->text.apply(themed.labelText);
-      componentStyle_->text.apply(themed.subtitleText);
-      componentStyle_->text.apply(themed.valueText);
-      componentStyle_->text.apply(themed.headerText);
-      themed.underlineFitsText = componentStyle_->markerWidth == MarkerWidth::Text;
+    if (componentStyle()) {
+      componentStyle()->text.apply(themed.labelText);
+      componentStyle()->text.apply(themed.subtitleText);
+      componentStyle()->text.apply(themed.valueText);
+      componentStyle()->text.apply(themed.headerText);
+      themed.underlineFitsText = componentStyle()->markerWidth == MarkerWidth::Text;
     }
     if (themed.rowStyles.unset()) {
       // Expand the theme's selection style over its base row styles; explicit
@@ -307,7 +318,7 @@ public:
       }
       themed.rowStyles = styles;
     }
-    if (componentStyle_) componentStyle_->apply(themed.rowStyles);
+    if (componentStyle()) componentStyle()->apply(themed.rowStyles);
     if (themed.rowHeight <= 0) {
       if (themed.rowPaddingY < 0) {
         const int16_t padding = device().hasTouch ? theme_.listTouchRowPaddingY : theme_.listRowPaddingY;
@@ -353,9 +364,9 @@ public:
   void syncListViewport(ListNav &nav, ListProps &props, const int count,
                         const int selectionOffset = 0) {
     props = resolveListProps(props);
-    if (componentStyle_ && componentStyle_->contentAlign != Align::Start && count > 0) {
+    if (componentStyle() && componentStyle()->contentAlign != Align::Start && count > 0) {
       const int height = listContentHeight(target(), frame_.assets(), content_, props);
-      content_ = componentStyle_->alignContent(content_, height);
+      content_ = componentStyle()->alignContent(content_, height);
     }
     nav.syncToProps(content_, props.rowHeight, props.rowGap, count, props, selectionOffset);
   }
@@ -364,8 +375,8 @@ public:
             LayoutAnchor anchor = LayoutAnchor::Top) {
     const ListProps themed = resolveListProps(props);
     Rect rect = height > 0 ? take(anchor, height) : content_;
-    if (componentStyle_ && componentStyle_->contentAlign != Align::Start)
-      rect = componentStyle_->alignContent(rect, listContentHeight(target(), frame_.assets(), rect, themed));
+    if (componentStyle() && componentStyle()->contentAlign != Align::Start)
+      rect = componentStyle()->alignContent(rect, listContentHeight(target(), frame_.assets(), rect, themed));
     ui::list(frame_, rect, themed);
   }
 
@@ -768,9 +779,21 @@ private:
     return margin > safeInset ? static_cast<int16_t>(margin - safeInset) : 0;
   }
 
+  // The style set by setComponentStyle(); a constant nullptr when compiled out, so every override
+  // path folds away.
+  const ComponentStyle* componentStyle() const {
+#if FREEINK_UI_COMPONENT_STYLE
+    return componentStyle_;
+#else
+    return nullptr;
+#endif
+  }
+
   FrameType &frame_;
   const ThemeTokens &theme_;
+#if FREEINK_UI_COMPONENT_STYLE
   const ComponentStyle* componentStyle_ = nullptr;
+#endif
   Rect content_{};
 };
 
