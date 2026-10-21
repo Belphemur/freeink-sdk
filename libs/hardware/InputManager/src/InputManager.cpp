@@ -3095,6 +3095,8 @@ void InputManager::pollGt911(const unsigned long now) {
 }
 #endif  // FREEINK_TOUCH_GT911
 
+#if FREEINK_TOUCH_GT911
+
 bool InputManager::setTouchSleep(const bool asleep) {
   if (gt911Addr == 0) {
     return false; // no GT911 on this board: nothing to park
@@ -3297,7 +3299,18 @@ bool InputManager::exitGt911Sleep() {
   return false;
 }
 
-#else // !FREEINK_CAP_TOUCH: no GT911 on this build — the toggle stays a no-op
+#else // !FREEINK_TOUCH_GT911: this build compiles touch but no GT911 — the toggle stays a no-op
+
+bool InputManager::setTouchSleep(const bool asleep) {
+  (void)asleep;
+  return false;
+}
+
+bool InputManager::wakeTouch() { return false; }
+
+#endif // FREEINK_TOUCH_GT911
+
+#else // !FREEINK_CAP_TOUCH: no touch on this build — the toggle stays a no-op
 
 bool InputManager::setTouchSleep(const bool asleep) {
   (void)asleep;
