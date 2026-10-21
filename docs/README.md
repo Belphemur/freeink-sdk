@@ -7,6 +7,7 @@ Device build flags and dependencies are in [platformio.sample.ini](../platformio
 
 | Guide | Covers |
 |---|---|
+| [ESP-IDF](esp-idf.md) | Building the display and FreeInkUI as an ESP-IDF component, without arduino-esp32 |
 | [FreeInkUI](freeink-ui.md) | UI runtime, components, themes, input adapters, and adoption |
 | [FreeInkBook](freeink-book.md) | EPUB parsing, layout, fonts, rendering, and caches |
 | [Grayscale capabilities](grayscale-capabilities.md) | Overlay and absolute encodings, uploads, and recovery |
