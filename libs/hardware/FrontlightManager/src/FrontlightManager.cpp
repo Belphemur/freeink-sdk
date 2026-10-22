@@ -16,6 +16,11 @@
 // firmware's Serial stream the monitor reads. LOG_INF routes through logPrintf
 // to the firmware Serial and the crash-report ring buffer.
 #include <Logging.h>
+#if FREEINK_DEVICE_EEGO_A4
+#include <esp_mac.h>
+
+#include "EegoUnlitUnits.h"
+#endif
 
 namespace {
 constexpr uint32_t maxDuty(uint8_t bits) { return (1u << bits) - 1u; }
@@ -152,6 +157,12 @@ void FrontlightManager::begin() {
     const bool detected = Wire.endTransmission() == 0;
     digitalWrite(i2c.enable, LOW);
     if (!detected) return;
+    // The controller is fitted on some unlit units too; stock lists those.
+    uint8_t mac[6] = {};
+    if (esp_efuse_mac_get_default(mac) == ESP_OK &&
+        freeink::eegoA4UidHasNoFrontlight(static_cast<uint32_t>(mac[3]) << 16 | mac[4] << 8 | mac[5])) {
+      return;
+    }
 
     _begun = true;
     _brightness = 0;

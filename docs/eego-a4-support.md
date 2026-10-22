@@ -33,10 +33,10 @@ The original pin map and controller details came from stock-firmware analysis
 | Panel | **UC8279C**, **768 × 552** (2 bpp), BUSY active-low |
 | Panel RAM | 768 × **600**; host FB is 768×552 sent **bottom-up**, then 48 white rows |
 | Framebuffer | 52,992 bytes (768/8 × 552); grayscale planes 52,992 B each, lazy from PSRAM |
-| Display SPI | SCLK 42, MOSI 45, CS 21, DC 14, RST 13, BUSY 41, PWR-EN 6 · **20 MHz** |
-| MicroSD | dedicated **HSPI** bus: SCLK 39, MISO 40, MOSI 38, CS 47 · 20 MHz |
+| Display SPI | SCLK 42, MOSI 45, CS 21, DC 14, RST 13, BUSY 41 · **20 MHz** |
+| MicroSD | dedicated **HSPI** bus: SCLK 39, MISO 40, MOSI 38, CS 47 · 20 MHz · power enable GPIO6 (active-low) |
 | Buttons | UP 5 and DOWN 7 active-low; POWER 8 active-high with INPUT_PULLDOWN |
-| Battery | ADC GPIO 10, charge-status GPIO 11, divider ×1.559 |
+| Battery | **CW2015** fuel gauge at I²C 0x62 on SDA 2 / SCL 1 (shared with touch and RTC), probed at runtime; ADC GPIO 10 (divider ×1.559) when the gauge does not answer. Charge status GPIO 11 |
 | Touch | **GSLX680** — SDA 2, SCL 1, RST 3, addr 0x40. Firmware blob uploaded at boot (`gsl/EegoA4GslFirmware.h`, extracted + hash-verified); backend in InputManager. |
 | Touch mapping | Calibration in `pollGslx680` returns panel-native X 0..767 / Y 0..551; profile swap/flip disabled |
 | Screen key | GSL sentinel `rawX=0x03a0, rawY=0x1020`; short press = Back, 700 ms hold = Home |
@@ -54,12 +54,24 @@ B/W paint after initialization uses the full waveform to clear unknown glass sta
 After grayscale, the next B/W paint seeds the old plane with the inverse of the
 target so every pixel is driven with the requested waveform. Each B/W paint then
 copies the displayed frame into the old plane for the next differential update.
-Grayscale uses the stock four-gray waveform (five 42-byte records), which
-drives absolute levels from any prior screen state. The driver advertises
-absolute planes for images (no B/W base pass) and folds overlay masks onto a
-snapshot of their B/W base into the same planes. Planes go out uninverted as
-MSB to DTM1 and LSB to DTM2, so black/dark/light/white are 00/01/10/11, with
-the gray power settings PWR 0x03 00 72 72 and VCOM_DC 0x32. The planes are
+Anti-aliased (overlay) pages use stock V1.0.3's reader "Gray3" path. The B/W
+base is stashed undisplayed; with its gray masks it becomes one three-level
+frame (white / middle / black), sent as a per-pixel transition from the
+previous Gray3 frame in a single refresh: unchanged white and middle pixels
+hold, black is re-driven, and only changed pixels are cleared or nudged. A
+cleanup request (non-FAST base) shows the page with black and white swapped,
+then the page itself. Any B/W refresh or four-gray image resets the history,
+so the next Gray3 page drives every pixel from its new level.
+
+Full images (absolute/direct planes) use the stock four-gray waveform (five
+42-byte records), which drives every pixel from any prior state, with no B/W
+base pass. Planes go out MSB to DTM1 and LSB to DTM2, so
+black/dark/light/white are 00/01/10/11.
+
+B/W and gray share the stock V1.0.3 panel session: PWR 0x03 00 72 72,
+VCOM_DC 0x32, gate/source 0x65 00 00 00 00, with DTM1 seeded white before
+power-on. Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
+uses the stock production DU waveform (0x50 = 0xd7), both 49-byte records. The planes are
 lazily allocated, PSRAM first; if allocation fails the driver leaves the
 existing B/W image up.
 
@@ -74,8 +86,19 @@ Build with `-DFREEINK_DEVICE_EEGO_A4=1`; see the `eego_a4` environment in
   external Full/Fast/Gray LUTs, bottom-up scan, and padding to 600 panel RAM rows.
 - `InputManager` uploads the GSLX680 firmware and applies calibration in
   `pollGslx680`, returning panel-native coordinates without a second profile transform.
+- `BatteryMonitor` probes the CW2015 once. When it answers, a sleeping gauge is
+  woken and the 64-byte BATINFO battery profile is compared with the stock
+  3.7 V 2000 mAh profile; an empty or different profile is uploaded (profile
+  bytes, CONFIG update flag, MODE power-on reset) and read back. Voltage is
+  VCELL × 305 µV; the percentage is the gauge SOC rounded, plus one, capped at
+  100, matching the stock battery icon. Samples outside 2500–4500 mV or above
+  100% are rejected. When the gauge does not answer, the ADC pin is used.
+  Charging comes from GPIO 11; the gauge cannot observe it.
 - `FrontlightManager` probes the optional LM3630A through
   `BoardProfile::i2cFrontlight`. The profile's PWM frontlight field is `NO_FRONTLIGHT`.
+  The controller is fitted on some unlit units too, so a unit the stock
+  firmware lists as unlit (by device UID, the low 24 bits of the factory MAC)
+  reports no frontlight even when the controller answers.
 
 ## Open items (need a physical unit)
 
@@ -96,6 +119,9 @@ Build with `-DFREEINK_DEVICE_EEGO_A4=1`; see the `eego_a4` environment in
   `076ac8…`) and the init/read sequence is RE-derived, but the
   panel-native calibration needs a corner-tap check.
 - Standby current with the GPIO4 latch + GPIO3-low sequence.
+- CW2015 on hardware: the stock profile and register sequence are recovered
+  from stock V1.0.3 and match a live unit's resident profile byte for byte, but
+  the SDK's upload path and ADC fallback have only run against a host model.
 
 ## Provenance
 

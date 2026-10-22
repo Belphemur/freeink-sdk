@@ -12,7 +12,8 @@
 //     BQ27220 gauge (+ optional BQ25896 charger) over I2C; the ADC pin/divider are
 //     ignored. Used by X3 and LilyGo T5 S3. Config comes from
 //     BoardConfig::ACTIVE.batteryGauge, and gauge-vs-ADC is chosen at *runtime*
-//     (gaugeAddr != 0), so X3 (gauge) and X4 (ADC) work from one C3 binary.
+//     (gaugeAddr != 0), so X3 (gauge) and X4 (ADC) work from one C3 binary. A
+//     CW2015 is probed once; when it does not answer, the ADC pin is used.
 class BatteryMonitor {
 public:
     static constexpr int8_t PIN_NONE = -1;

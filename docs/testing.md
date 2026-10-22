@@ -35,7 +35,10 @@ Compiles `BatteryMonitor` and the real X3 board profile against a model BQ27220
 that holds the Design Capacity load to TRM SLUUBD4A 6.1: key timing, CONFIG
 UPDATE, checksummed Data Memory writes, and the X3's block re-select. Every
 refused I2C transaction must still leave the gauge out of CONFIG UPDATE and
-sealed, and the next start must finish the load.
+sealed, and the next start must finish the load. It also compiles the EEGO A4
+profile against a model CW2015: the battery-profile check and upload sequence,
+the voltage and percentage conversion, and the ADC fallback when no gauge
+answers.
 
 ## Fonts
 
