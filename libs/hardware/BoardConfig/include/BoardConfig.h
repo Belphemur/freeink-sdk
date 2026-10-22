@@ -882,6 +882,13 @@ struct BoardProfile {
   // measured floating/pull-up/pull-down all read 0 with USB connected), so
   // consumers must read it with a pull-up and invert.
   bool usbDetectActiveHigh = true;
+  // Pixels the firmware lowers its bottom status line (toward the screen edge)
+  // from the theme's position.
+  int8_t statusBarOffsetY = 0;
+  // Side clearance for chrome in the bottom corners (status line, footer
+  // readouts) when those corners need more room than cornerRadius. 0 = use
+  // cornerRadius.
+  uint8_t bottomCornerRadius = 0;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -1564,7 +1571,10 @@ constexpr BoardProfile EEGO_A4 = {
     18,   // tabBarOffsetY
     80,   // tabBarHeightPct
     80,   // tabBarWidthPct
-    60};  // wifiMaxTxPower: 15 dBm, the cap stock V1.0.3 applies
+    60,    // wifiMaxTxPower: 15 dBm, the cap stock V1.0.3 applies
+    true,  // usbDetectActiveHigh: default (no USB detect pin)
+    6,     // statusBarOffsetY
+    40};   // bottomCornerRadius
 
 static_assert(EEGO_A4.displayWidth / 8 * EEGO_A4.displayHeight == 52992,
               "EEGO A4 framebuffer must be 52,992 bytes (768/8 x 552)");

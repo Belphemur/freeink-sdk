@@ -115,20 +115,21 @@ int main() {
     driver.displayGray(bus, base, false, nullptr, false);
   };
   {
-    // First Gray3 page after a B/W refresh: no history, every pixel driven from
-    // its new level, base and grays in a single refresh.
+    // First Gray3 page after a B/W screen: the base goes out as a normal B/W
+    // refresh (clearing the previous screen), then a Gray3 transition from it
+    // nudges only the gray pixels and re-drives black.
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     const auto before = bus.refreshes;
     gray3Page(page.data(), RefreshMode::Fast);
-    assert(bus.refreshes == before + 1 && "Gray3 page must be a single refresh with no B/W base");
+    assert(bus.refreshes == before + 2 && "entry must be one B/W base refresh plus one Gray3 transition");
     assert(bus.interval == 0x00 && bus.lutBytes == 49);
-    assert(bus.oldAtRefresh[physical0] == 0b11001111 && bus.newAtRefresh[physical0] == 0b10111111 &&
-           "reset codes: white 11, black 10, middle 01");
-    assert(bus.oldAtRefresh[physical0 + 1] == 0xff && bus.newAtRefresh[physical0 + 1] == 0xff);
+    assert(bus.oldAtRefresh[physical0] == 0b01000000 && bus.newAtRefresh[physical0] == 0b00110000 &&
+           "from the B/W base: black re-driven (10), base-black -> middle nudged (01), white holds");
+    assert(bus.oldAtRefresh[physical0 + 1] == 0x00 && bus.newAtRefresh[physical0 + 1] == 0x00);
     assert(bus.oldPlane.size() == 600 * 96 && bus.oldPlane[552 * 96] == 0x00 && "padding rows hold");
   }
   {
-    // The same page again: white and middle hold, black is re-driven.
+    // The same page again: one refresh; white and middle hold, black re-driven.
     const auto before = bus.refreshes;
     gray3Page(page.data(), RefreshMode::Fast);
     assert(bus.refreshes == before + 1);
@@ -170,9 +171,10 @@ int main() {
     driver.display(bus, page.data(), nullptr, RefreshMode::Half, false);
     driver.copyGrayscaleLsb(bus, lsbMask.data());
     driver.copyGrayscaleMsb(bus, msbMask.data());
+    const auto before = bus.refreshes;
     driver.displayGray(bus, page.data(), false, nullptr, false);
-    assert(bus.interval == 0x00 && bus.oldAtRefresh[physical0] == 0b11001111 &&
-           bus.newAtRefresh[physical0] == 0b10111111 && "unannounced overlay must be a reset Gray3 page");
+    assert(bus.refreshes == before + 1 && bus.interval == 0x00 && bus.oldAtRefresh[physical0] == 0b01000000 &&
+           bus.newAtRefresh[physical0] == 0b00110000 && "unannounced overlay must transition from the shown base");
   }
 
   driver.deepSleep(bus);
