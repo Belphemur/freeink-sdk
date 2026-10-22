@@ -68,6 +68,13 @@ uint8_t g_targetType = 0;
 bool g_targetTryAltType = false;
 // Set by an end() that could not finish; cleared by the one that does.
 std::atomic<bool> g_teardownPending{false};
+// Held by the one end() that is running. end() is called from more than one task
+// (an app may stop the radio from its main loop and from a render task), and its
+// teardown (connection task delete, client delete, NimBLEDevice::deinit) is not
+// re-entrant: two at once can double-free NimBLE state. A second caller does not
+// wait; it gets false, which reads as "still stopping" and is retried like a
+// teardown that ran out of time.
+std::atomic<bool> g_endBusy{false};
 // False while a link attempt or a link exists; set again by NimBLE's disconnect
 // callback. NimBLE only lets go of the client once that callback has run.
 std::atomic<bool> g_disconnectObserved{true};
@@ -614,6 +621,12 @@ bool BleKeyboardHost::begin(const char* hostName) {
 }
 
 bool BleKeyboardHost::end(uint32_t timeoutMs) {
+  if (g_endBusy.exchange(true)) return false;
+  struct EndBusyRelease {
+    ~EndBusyRelease() { g_endBusy.store(false); }
+  } endBusyRelease;
+  // Read under g_endBusy: no other end() can be between its begun_ and
+  // g_teardownPending writes, so "both false" really means stopped.
   if (!begun_ && !g_teardownPending.load()) return true;
   const uint32_t budgetMs = timeoutMs > kMaxTeardownTimeoutMs ? kMaxTeardownTimeoutMs : timeoutMs;
   const uint32_t startMs = millis();
@@ -621,8 +634,10 @@ bool BleKeyboardHost::end(uint32_t timeoutMs) {
   clearSelectedPlanLocked();
   portEXIT_CRITICAL(&g_mux);
   if (begun_) {
-    begun_ = false;
+    // Stopping before not-running: an observer of isRunning()/isStopping() never
+    // sees both false while the stack is still up.
     g_teardownPending.store(true);
+    begun_ = false;
     NimBLEScan* scan = NimBLEDevice::getScan();
     if (scan && scan->isScanning()) scan->stop();
   }

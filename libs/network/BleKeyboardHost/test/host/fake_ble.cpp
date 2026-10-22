@@ -173,8 +173,10 @@ uint32_t ulTaskNotifyTake(BaseType_t clearOnExit, uint32_t) {
 // --- Fake stack state -----------------------------------------------------------
 namespace fakeble {
 
+void resetTeardownInstrumentation();  // with the NimBLEDevice fakes below
+
 struct FakeState {
-  bool initialized = false;
+  std::atomic<bool> initialized{false};
   int lastError = 0;
   size_t connectCalls = 0;
   std::vector<std::string> connectAddresses;
@@ -298,6 +300,7 @@ void resetWorld() {
   }
   g_deletedWhileHeld = false;
   state().reset();
+  resetTeardownInstrumentation();
   g_clockMs = 1000;
 }
 
@@ -480,11 +483,68 @@ bool NimBLEScan::stop() {
 }
 void NimBLEScan::clearResults() { retained_.clear(); }
 
+namespace {
+
+std::atomic<size_t> g_inTeardown{0};
+std::atomic<size_t> g_maxTeardownOverlap{0};
+std::atomic<uint32_t> g_teardownStallMs{0};
+std::atomic<bool> g_deinitHoldArmed{false};
+std::atomic<bool> g_deinitHeld{false};
+std::atomic<bool> g_deinitReleased{false};
+
+struct TeardownScope {
+  TeardownScope() {
+    const size_t now = ++g_inTeardown;
+    size_t seen = g_maxTeardownOverlap.load();
+    while (now > seen && !g_maxTeardownOverlap.compare_exchange_weak(seen, now)) {
+    }
+    const uint32_t stall = g_teardownStallMs.load();
+    if (stall != 0) std::this_thread::sleep_for(std::chrono::milliseconds(stall));
+  }
+  ~TeardownScope() { --g_inTeardown; }
+};
+
+}  // namespace
+
+namespace fakeble {
+
+size_t maxTeardownOverlap() { return g_maxTeardownOverlap.load(); }
+void stallTeardown(uint32_t ms) { g_teardownStallMs = ms; }
+void holdNextDeinit() {
+  g_deinitReleased = false;
+  g_deinitHeld = false;
+  g_deinitHoldArmed = true;
+}
+bool waitUntilDeinitHeld(uint32_t timeoutMs) {
+  for (uint32_t waited = 0; waited < timeoutMs; ++waited) {
+    if (g_deinitHeld.load()) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return false;
+}
+void releaseDeinit() {
+  g_deinitHoldArmed = false;
+  g_deinitReleased = true;
+}
+void resetTeardownInstrumentation() {
+  releaseDeinit();
+  g_teardownStallMs = 0;
+  g_maxTeardownOverlap = 0;
+}
+
+}  // namespace fakeble
+
 bool NimBLEDevice::init(const std::string&) {
   state().initialized = true;
   return true;
 }
 bool NimBLEDevice::deinit(bool) {
+  TeardownScope scope;
+  if (g_deinitHoldArmed.exchange(false)) {
+    g_deinitHeld = true;
+    while (!g_deinitReleased.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    g_deinitHeld = false;
+  }
   state().initialized = false;
   return true;
 }
@@ -504,6 +564,7 @@ NimBLEClient* NimBLEDevice::createClient() {
   return state().client;
 }
 bool NimBLEDevice::deleteClient(NimBLEClient* client) {
+  TeardownScope scope;
   if (client == nullptr || client != state().client) return false;
   delete client;
   state().client = nullptr;

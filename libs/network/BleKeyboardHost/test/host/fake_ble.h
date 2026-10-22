@@ -64,6 +64,18 @@ bool waitUntilHeld(Stage stage, uint32_t timeoutMs = 1000);
 // inside a NimBLE wait.
 bool taskDeletedWhileHeld();
 
+// Teardown instrumentation. NimBLEDevice::deleteClient() and deinit() count how
+// many callers are inside them at once; maxTeardownOverlap() is the highest
+// count seen since resetWorld(). stallTeardown(ms) makes both take that long
+// (real time) so a second caller has a window to land in. holdNextDeinit()
+// parks the next deinit() caller inside it until releaseDeinit(); a deinit()
+// that arrives meanwhile is not held, so it shows up as overlap, not a hang.
+size_t maxTeardownOverlap();
+void stallTeardown(uint32_t ms);
+void holdNextDeinit();
+bool waitUntilDeinitHeld(uint32_t timeoutMs = 1000);
+void releaseDeinit();
+
 size_t connectCalls();
 // Addresses the host asked NimBLE to connect to, in order.
 std::vector<std::string> connectAddresses();

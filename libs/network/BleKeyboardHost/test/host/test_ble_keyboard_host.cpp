@@ -6,7 +6,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <atomic>
+#include <chrono>
 #include <initializer_list>
+#include <thread>
 #include <vector>
 
 #include "BleRemoteProfiles.h"
@@ -332,6 +335,85 @@ void testEndWaitsForTheClientToFinishDisconnecting() {
   CHECK(!fakeble::clientExists());
   CHECK(!NimBLEDevice::isInitialized());
   CHECK(!host().isStopping());
+}
+
+// end() runs on more than one task in an app (main loop and render task). A
+// second end() that lands while one is inside the teardown must not tear down
+// alongside it, and must not report "stopped" while the stack is still up.
+void testSecondEndDuringTeardownReportsStillStopping() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  CHECK(fakeble::connectTo(kRemote));
+
+  fakeble::holdNextDeinit();
+  std::atomic<bool> firstDone{false};
+  std::atomic<bool> firstResult{false};
+  std::thread first([&] {
+    firstResult = host().end(1000);
+    firstDone = true;
+  });
+  CHECK(fakeble::waitUntilDeinitHeld());
+
+  CHECK(!host().end(0));
+  CHECK(!host().end(1000));
+  CHECK(host().isStopping());
+  CHECK(!host().isRunning());
+  CHECK(NimBLEDevice::isInitialized());
+  CHECK(!firstDone.load());
+
+  fakeble::releaseDeinit();
+  first.join();
+  CHECK(firstResult.load());
+  CHECK(fakeble::maxTeardownOverlap() == 1);
+  CHECK(!host().isStopping());
+  CHECK(!NimBLEDevice::isInitialized());
+  CHECK(host().end(0));
+}
+
+// Two tasks retrying end(0) through a link that takes a while to close, as the
+// main loop and a render task do around a chapter build with a remote connected.
+// Whichever sees true must see the stack fully down; the teardown never overlaps.
+void testTwoTasksRetryingEndNeverOverlap() {
+  constexpr int kRounds = 25;
+  constexpr int kMaxTries = 20000;
+  int tornStops = 0;
+  int stuck = 0;
+  size_t overlap = 0;
+  for (int round = 0; round < kRounds; ++round) {
+    fakeble::resetWorld();
+    serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+    CHECK(fakeble::beginHost());
+    CHECK(fakeble::connectTo(kRemote));
+    fakeble::lingerOnDisconnect();
+    fakeble::stallTeardown(2);
+
+    std::atomic<int> torn{0};
+    std::atomic<int> gaveUp{0};
+    auto retry = [&] {
+      for (int tries = 0; tries < kMaxTries; ++tries) {
+        if (host().end(0)) {
+          if (NimBLEDevice::isInitialized() || fakeble::clientExists() || host().isStopping()) ++torn;
+          return;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+      }
+      ++gaveUp;
+    };
+    std::thread loopTask(retry);
+    std::thread renderTask(retry);
+    std::this_thread::sleep_for(std::chrono::milliseconds(round % 5));
+    fakeble::finishDisconnect();
+    loopTask.join();
+    renderTask.join();
+    tornStops += torn.load();
+    stuck += gaveUp.load();
+    if (fakeble::maxTeardownOverlap() > overlap) overlap = fakeble::maxTeardownOverlap();
+  }
+  CHECK(overlap == 1);
+  CHECK(tornStops == 0);
+  CHECK(stuck == 0);
+  fakeble::resetWorld();
 }
 
 // Both remotes bonded, nothing connected, every later connect failing, and the
@@ -749,6 +831,8 @@ int main() {
   testEndCancelsAPairingWaitBeforeDeletingTheTask();
   testEndLeavesAStuckTaskAloneAndFinishesLater();
   testEndWaitsForTheClientToFinishDisconnecting();
+  testSecondEndDuringTeardownReportsStillStopping();
+  testTwoTasksRetryingEndNeverOverlap();
   testSelectedPeerIsTheOnlyOneRetriedSixTimes();
   testSelectedPlanStartsNothingAfterItsWindow();
   testArmIsRefusedWhenItCannotApply();
