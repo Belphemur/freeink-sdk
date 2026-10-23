@@ -55,6 +55,7 @@ class FakeDrawTarget : public DrawTarget {
     FontId font = 0;
     TextAlign align = TextAlign::Left;
     const uint8_t* bitmapData = nullptr;
+    bool bold = false;
   };
 
   Op ops[256]{};
@@ -62,13 +63,15 @@ class FakeDrawTarget : public DrawTarget {
   mutable bool measuredForbiddenLabel = false;
   bool drewForbiddenLabel = false;
   int16_t charWidth = 6;
+  int16_t boldCharWidth = 0;
   int16_t lineH = 12;
   int16_t fontLineH[DisplayTarget::FONT_SLOTS]{};
 
-  Size measureText(FontId font, const char* text, TextStyle) const override {
+  Size measureText(FontId font, const char* text, TextStyle style) const override {
     if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
       measuredForbiddenLabel = true;
-    return Size{static_cast<int16_t>(charWidth * static_cast<int16_t>(std::strlen(text))), lineHeight(font)};
+    const int16_t width = style.bold && boldCharWidth > 0 ? boldCharWidth : charWidth;
+    return Size{static_cast<int16_t>(width * static_cast<int16_t>(std::strlen(text))), lineHeight(font)};
   }
   int16_t lineHeight(FontId font) const override {
     return font < DisplayTarget::FONT_SLOTS && fontLineH[font] > 0 ? fontLineH[font] : lineH;
@@ -94,6 +97,7 @@ class FakeDrawTarget : public DrawTarget {
     if (opCount) {
       ops[opCount - 1].font = style.font;
       ops[opCount - 1].align = style.align;
+      ops[opCount - 1].bold = style.bold;
     }
   }
   void bitmap(Rect rect, BitmapRef bitmap, BitmapMode, Paint foreground, Rotation rotation) override {
@@ -2770,6 +2774,62 @@ void testListSectionHeaders() {
   // Second section: header height 16 (12 line + 4 gap) + two 40px rows +
   // 20px section gap puts its underline at 16 + 80 + 20 + 12 + 2 = 130.
   CHECK_EQ(secondHeaderY, 130);
+}
+
+void testListBoldLabels() {
+  for (const bool listBold : {false, true}) {
+    FakeDrawTarget draw;
+    draw.boldCharWidth = 10;
+    DeviceContext device = makeDevice();
+    device.minTouchSize = 0;
+    InputSnapshot input;
+    InteractionBuffer<16> interactions;
+    Frame<16> frame(draw, device, input, interactions);
+    ListItem items[2]{};
+    items[0].label = items[1].label = "Group title";
+    items[0].bold = true;
+    items[0].actionValue = 7;
+    items[1].actionValue = 8;
+    ListProps props;
+    props.items = items;
+    props.count = 2;
+    props.action = 17;
+    props.rowHeight = 20;
+    props.rowGap = 0;
+    props.sidePadding = 0;
+    props.scrollIndicator = false;
+    props.labelText.maxLines = 2;
+    props.labelText.bold = listBold;
+
+    // The regular title fits; its wider bold form wraps onto two lines.
+    CHECK_EQ(measureListRow(draw, nullptr, 72, props, items[0]).labelLines, 2);
+    CHECK_EQ(measureListRow(draw, nullptr, 72, props, items[1]).labelLines, listBold ? 2 : 1);
+    list(frame, Rect{0, 0, 72, 160}, props);
+    CHECK_EQ(interactions.count(), 2u);
+    CHECK_EQ(interactions.data()[0].rect.height, 32);
+    CHECK_EQ(interactions.data()[1].rect.y, 32);
+    CHECK_EQ(interactions.data()[1].rect.height, listBold ? 32 : 20);
+    size_t labels = 0;
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      if (draw.ops[i].kind != FakeDrawTarget::Op::Text) continue;
+      CHECK_EQ(draw.ops[i].bold, labels == 0 || listBold);
+      ++labels;
+    }
+    CHECK_EQ(labels, 2u);
+    InputSnapshot tap;
+    tap.touchReleased = true;
+    tap.touchX = 10;
+    tap.touchY = 10;
+    CHECK_EQ(interactions.route(tap).value, 7);
+
+    // Hug-content rows must use the same effective font weight for hit width.
+    interactions.clear();
+    props.hugContents = true;
+    props.labelText.maxLines = 1;
+    list(frame, Rect{0, 0, 200, 160}, props);
+    CHECK_EQ(interactions.data()[0].rect.width, 110);
+    CHECK_EQ(interactions.data()[1].rect.width, listBold ? 110 : 66);
+  }
 }
 
 void testListWrappedLabelHeights() {
@@ -6027,6 +6087,7 @@ int main() {
   testThemePrimitiveParity();
   testRotationAndBitmapSampling();
   testListSectionHeaders();
+  testListBoldLabels();
   testListWrappedLabelHeights();
   testCrossInkSleepScreenComposition();
   testCoverCarousel();

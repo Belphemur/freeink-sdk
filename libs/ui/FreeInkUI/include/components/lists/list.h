@@ -27,9 +27,10 @@ struct ListItem {
   bool toggle = false;
   bool toggleChecked = false;
   // Optional section heading drawn immediately before this selectable row.
-  // It shares the row's logical index and interaction value. Kept last so
-  // existing aggregate initializers remain source-compatible.
+  // It shares the row's logical index and interaction value.
   const char *sectionHeading = nullptr;
+  // Emphasize this label without changing row interactivity or list-wide bold text.
+  bool bold = false;
 };
 
 struct ListNav;
@@ -454,7 +455,9 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   ListRowLayout result;
   const int16_t rowH = props.rowHeight > 0 ? props.rowHeight : 36;
   const int16_t sidePad = props.sidePadding < 0 ? 8 : props.sidePadding;
-  const int16_t labelLh = target.lineHeight(props.labelText.font);
+  TextStyle labelStyle = props.labelText;
+  labelStyle.bold = labelStyle.bold || item.bold;
+  const int16_t labelLh = target.lineHeight(labelStyle.font);
   const BitmapRef icon = item.icon ? item.icon : resolveBitmap(assets, item.iconAsset);
   const int16_t iconSize = icon ? (props.iconSize > 0 ? props.iconSize : icon.width) : 0;
   const int16_t contentWidth = static_cast<int16_t>(width - sidePad * 2 -
@@ -468,16 +471,16 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   if (item.toggle || item.value)
     result.labelWidth = static_cast<int16_t>(result.labelWidth - result.valueWidth -
                                             props.valueInset - props.textGap);
-  if (props.balanceWrappedLabelWithValue && props.labelText.maxLines > 1 &&
+  if (props.balanceWrappedLabelWithValue && labelStyle.maxLines > 1 &&
       (item.toggle || item.value) && item.label &&
-      target.measureText(props.labelText.font, item.label, props.labelText).width > result.labelWidth) {
+      target.measureText(labelStyle.font, item.label, labelStyle).width > result.labelWidth) {
     const int16_t cap = static_cast<int16_t>(contentWidth * 3 / 5);
     if (result.labelWidth > cap) result.labelWidth = cap;
   }
   if (result.labelWidth < 0) result.labelWidth = 0;
-  if (item.label && props.labelText.maxLines > 1 && labelLh > 0 && result.labelWidth > 0) {
+  if (item.label && labelStyle.maxLines > 1 && labelLh > 0 && result.labelWidth > 0) {
     const int16_t lines = static_cast<int16_t>(measureWrappedText(
-        target, item.label, props.labelText, result.labelWidth).height / labelLh);
+        target, item.label, labelStyle, result.labelWidth).height / labelLh);
     if (lines > 1) result.labelLines = static_cast<uint8_t>(lines);
   }
   const int16_t subLh = item.subtitle ? target.lineHeight(props.subtitleText.font) : 0;
@@ -651,6 +654,8 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       cursorY = static_cast<int16_t>(cursorY + headerH + rowGap);
       continue;
     }
+    TextStyle labelStyle = props.labelText;
+    labelStyle.bold = labelStyle.bold || item.bold;
     const ListRowLayout layout = measureListRow(frame.target(), frame.assets(),
                                                  rowArea.width, props, item);
     const int16_t itemH = layout.height;
@@ -710,7 +715,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       // selection pill wraps the text instead of spanning the rect.
       const int16_t labelW =
           frame.target()
-              .measureText(props.labelText.font, item.label, props.labelText)
+              .measureText(labelStyle.font, item.label, labelStyle)
               .width;
       const int16_t hugW = static_cast<int16_t>(labelW + sidePad * 2);
       if (hugW < row.width)
@@ -784,8 +789,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     // Slot layout (mirrors settingRow): the label owns a "title band" and the
     // icon and value align to it; the subtitle spans the full content width
     // under the band so it never collides with the value.
-    TextStyle labelStyle =
-        textStyleWithForeground(props.labelText, style.foreground);
+    labelStyle = textStyleWithForeground(labelStyle, style.foreground);
     // The band holds every label line the height pre-pass measured (usually
     // one); the subtitle and the row's growth both follow it.
     const int16_t labelBlockH = layout.labelHeight;
