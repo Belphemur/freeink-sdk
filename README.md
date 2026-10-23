@@ -133,7 +133,7 @@ so the SD manager itself stays device-agnostic.
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 | B/W (90°-rotated framebuffer, full/fast LUTs), CHSC6x touch, PWM frontlight |
 | **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | LovyanGFX EPD driver with 16-gray, GT911 touch, PWM backlight, BQ27220/BQ25896 I²C battery |
 | **M5Paper v1.1** | ESP32 (classic) | IT8951E | 540×960 16-gray ED047TC1 | hand-rolled IT8951 driver (own SPI, 1bpp→4bpp load, GC16/DU/A2 modes, auto rotation onto the portrait panel), GT911 touch, GPIO35 ADC battery |
-| **Sticky** (Upcoming Device) | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver (X4-class), GT911 touch, PDM microphone (Microphone lib), BQ27220 I²C battery gauge, PCF8563 RTC + SHT40 temp/humidity + LSM6DS3TR-C IMU (Rtc / EnvironmentSensor / Imu libs), SPI MicroSD (shares the display bus), LEDC buzzer (Buzzer lib); orientation/SD-sharing pending hardware validation |
+| **Sticky** | ESP32-S3 | SSD1677 or SSD2677 | 3.97" 800×480 B/W | reuses the SSD1677 driver (X4-class); newer units carry an SSD2677, detected at boot (CMD 0x70) and driven by the SSD2677 driver with OTP waveforms, GT911 touch, PDM microphone (Microphone lib), BQ27220 I²C battery gauge, PCF8563 RTC + SHT40 temp/humidity + LSM6DS3TR-C IMU (Rtc / EnvironmentSensor / Imu libs), SPI MicroSD (shares the display bus), LEDC buzzer (Buzzer lib); orientation/SD-sharing pending hardware validation |
 | **Xteink X4 Pro** | ESP32-S3 | SSD1677, UC8179, **or UC8279** (per batch) | 800×480 B/W | GT911 touch, dual warm/cold frontlight, native 1-bit SDMMC, BM8563 RTC, CW2017 battery gauge; controller auto-detected at boot |
 | **Xteink X4 Classic** (X4C) | ESP32-S3 | SSD1677, UC8179, **or UC8279** (per unit) | 800×480 B/W | same board/glass as the X4 Pro but **no touch, no frontlight** — those pins become four extra discrete front buttons (8 buttons total); native 1-bit SDMMC, BM8563 RTC, CW2017 battery gauge; controller auto-detected at boot |
 | **M5Stack Paper Mono** | ESP32-S3 | SSD1677 | 800×480 B/W | non-flashing fast refresh + 3-level grayscale (host-authored LUTs), FT6336 touch, PMIC-PWM frontlight (AW9967), RX8130 RTC, PDM microphone, LEDC buzzer, discrete RGB LED, native 1-bit SDMMC, M5PM1 battery/charging telemetry; power/reset rails sequenced through the on-board M5PM1 PMIC + M5IOE1 expander |
@@ -340,7 +340,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_M5` | M5 PaperColor (S3, ED2208 + color) |
 | `-DFREEINK_DEVICE_MURPHY` | Murphy M3 (S3, UC8253 + touch + frontlight) |
 | `-DFREEINK_DEVICE_LILYGO` | LilyGo T5 S3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX) |
-| `-DFREEINK_DEVICE_STICKY` | Sticky (S3, SSD1677 800×480 + GT911 touch + PDM mic) |
+| `-DFREEINK_DEVICE_STICKY` | Sticky (S3, SSD1677 or SSD2677 800×480 + GT911 touch + PDM mic) |
 | `-DFREEINK_DEVICE_X4PRO` | Xteink X4 Pro (S3, SSD1677/UC8179/UC8279 auto-detect + GT911 touch + SDMMC) |
 | `-DFREEINK_DEVICE_X4CLASSIC` | Xteink X4 Classic / X4C (S3, SSD1677/UC8179/UC8279 auto-detect, buttons-only — no touch/frontlight, + SDMMC) |
 | `-DFREEINK_DEVICE_PAPERMONO` | M5Stack Paper Mono (S3, SSD1677 + FT6336 touch + PMIC frontlight) |

@@ -25,6 +25,18 @@ The book engine consumes `esp_full_miniz` as a nested submodule. Clone with
 `git clone --recurse-submodules`, or run `git submodule update --init --recursive`
 first; the suite fails immediately if that checkout is missing.
 
+## Progressive JPEG
+
+```sh
+python3 libs/assets/ProgressiveJpeg/test/host/run.py
+```
+
+Needs Pillow, `cjpeg` and `djpeg`. Decodes generated progressive JPEGs (4:2:0,
+4:2:2, 4:4:4, grayscale, restart intervals, odd sizes) and compares the luma
+with `djpeg -grayscale`; also checks that baseline files are refused and that
+a truncated stream decodes without failing. Set `PJ_EXTRA_JPEGS` to a
+colon-separated list of files to check real-world images too.
+
 ## Battery gauge
 
 ```sh
@@ -76,10 +88,13 @@ python3 libs/display/FreeInkDisplay/test/host/run_pro.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279c_a4.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8253_power.py
+python3 libs/display/FreeInkDisplay/test/host/run_picco.py
 ```
 
 These compile production drivers against recording buses. The Pro suite also
-compiles the facade in single- and dual-buffer modes. The checks cover transfer
+compiles the facade in single- and dual-buffer modes. The Picco suite builds the
+SSD1677/SSD2677 drivers as a Picco and as a Sticky, including each board's
+bit-banged panel probe. The checks cover transfer
 sequences, grayscale uploads, refresh lifecycle, and power-state behavior for
 the drivers included in each harness.
 

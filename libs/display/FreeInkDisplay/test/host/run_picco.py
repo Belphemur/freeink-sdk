@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the SSD1677 driver as a Picco build and check each panel variant."""
+"""Compile the SSD1677/SSD2677 drivers as Picco and Sticky builds and check each panel."""
 from pathlib import Path
 import os
 import shutil
@@ -8,7 +8,10 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 LIB = HERE.parents[1]
-with tempfile.TemporaryDirectory(prefix="freeink-picco-test-") as directory:
+
+
+def build(board, device_macro, test_cpp, directory):
+    """Build test_cpp against the SSD1677/SSD2677 drivers as a `board` build."""
     root = Path(directory)
     for folder in ("src/driver", "src/bus", "src/lut", "include"):
         (root / folder).mkdir(parents=True, exist_ok=True)
@@ -19,11 +22,24 @@ with tempfile.TemporaryDirectory(prefix="freeink-picco-test-") as directory:
     shutil.copy2(LIB / "include/GrayscaleCapabilities.h", root / "include/GrayscaleCapabilities.h")
     for name in ("Ssd1677Luts.h", "Ssd2677Luts.h"):
         shutil.copy2(LIB / f"src/lut/{name}", root / f"src/lut/{name}")
-    for name in ("SPI.h", "esp_heap_caps.h", "sdkconfig.h"):
-        shutil.copy2(HERE / "pro_stubs" / name, root / name)
     shutil.copy2(HERE / "pro_stubs/EpdBus.h", root / "src/bus/EpdBus.h")
-    board = (HERE / "pro_stubs/BoardConfig.h").read_text().replace("MetalioEInk4 };", "MetalioEInk4, Picco };")
-    (root / "BoardConfig.h").write_text(board.replace("Board board=Board::XteinkX4Pro;", "Board board=Board::Picco;").replace(
+    for name in ("esp_heap_caps.h", "sdkconfig.h"):
+        shutil.copy2(HERE / "pro_stubs" / name, root / name)
+    # SPI stub with the shared-bus pin re-attach the Sticky panel probe uses.
+    (root / "SPI.h").write_text((HERE / "pro_stubs/SPI.h").read_text() + """
+#include <stdint.h>
+struct spi_t {};
+inline int fakeSpiRestarts;
+struct FakeSpi {
+  spi_t* bus() { static spi_t s; return &s; }
+  int8_t pinSS() { return -1; }
+  void end() {}
+  bool begin(int8_t sck, int8_t miso, int8_t mosi, int8_t ss) { fakeSpiRestarts += sck == 12 && miso == 40 && mosi == 11 && ss == -1; return true; }
+};
+inline FakeSpi SPI;
+""")
+    board_h = (HERE / "pro_stubs/BoardConfig.h").read_text().replace("MetalioEInk4 };", "MetalioEInk4, Picco };")
+    (root / "BoardConfig.h").write_text(board_h.replace("Board board=Board::XteinkX4Pro;", "struct { int8_t miso=40; } sd;\n  " + f"Board board=Board::{board};").replace(
         "inline bool isX4Classic() { return false; }",
         "inline bool isX4Classic() { return false; }\ninline bool isPicco() { return ACTIVE.board == Board::Picco; }"))
     # Arduino stub plus a fake SSD1677 that answers CMD 0x2E with fakePanelId.
@@ -66,21 +82,29 @@ inline int digitalRead(int p) {
   if (fakePanelCommand != 0x2E) return 0;
   return (fakePanelId[(fakeBit / 8) % 10] >> (7 - fakeBit % 8)) & 1;
 }
-struct FakeSerial { explicit operator bool() const { return false; } template <class... A> void printf(const char*, A...) {} };
+struct FakeSerial { explicit operator bool() const { return false; } template <class... A> void printf(const char*, A...) {} void flush() {} };
 inline FakeSerial Serial;
 """
     (root / "Arduino.h").write_text('#include "BoardConfig.h"\n' + arduino)
-    exe = root / "picco"
+    exe = root / board.lower()
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Wno-unused-parameter",
-                    "-Wno-unused-function", "-DARDUINO=1", "-DFREEINK_DEVICE_PICCO=1", "-I" + str(root),
-                    str(HERE / "test_picco.cpp"), str(root / "src/driver/Ssd1677Driver.cpp"),
+                    "-Wno-unused-function", "-DARDUINO=1", f"-D{device_macro}=1", "-I" + str(root),
+                    str(HERE / test_cpp), str(root / "src/driver/Ssd1677Driver.cpp"),
                     str(root / "src/driver/Ssd2677Driver.cpp"), "-o", str(exe)],
                    check=True)
-    # The facade's Picco driver selection must compile in a Picco build.
+    # The facade's driver selection must compile in this build.
     shutil.copy2(LIB / "src/FreeInkDisplay.cpp", root / "src/FreeInkDisplay.cpp")
     shutil.copy2(LIB / "include/FreeInkDisplay.h", root / "include/FreeInkDisplay.h")
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-fsyntax-only", "-DARDUINO=1",
-                    "-DFREEINK_DEVICE_PICCO=1", "-DFREEINK_DRIVER_SSD1677=1", "-I" + str(root),
+                    f"-D{device_macro}=1", "-DFREEINK_DRIVER_SSD1677=1", "-I" + str(root),
                     "-I" + str(root / "include"), str(root / "src/FreeInkDisplay.cpp")], check=True)
+    return exe
+
+
+with tempfile.TemporaryDirectory(prefix="freeink-picco-test-") as directory:
+    exe = build("Picco", "FREEINK_DEVICE_PICCO", "test_picco.cpp", directory)
     for panel in ("yrd", "depg", "opm", "unknown", "se0400"):
         subprocess.run([str(exe), panel], check=True)
+with tempfile.TemporaryDirectory(prefix="freeink-sticky-test-") as directory:
+    exe = build("Sticky", "FREEINK_DEVICE_STICKY", "test_sticky_ssd2677.cpp", directory)
+    subprocess.run([str(exe)], check=True)

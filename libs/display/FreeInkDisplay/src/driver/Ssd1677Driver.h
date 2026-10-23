@@ -181,4 +181,10 @@ enum PiccoPanel : uint8_t {
 uint8_t piccoProbePanel();
 #endif
 
+#if FREEINK_DEVICE_STICKY
+// Sticky panel probe (cached): true when the unit carries an SSD2677 instead of
+// the SSD1677 (CMD 0x70 answers 0x07).
+bool stickyHasSsd2677();
+#endif
+
 }  // namespace freeink

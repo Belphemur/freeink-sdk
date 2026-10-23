@@ -27,7 +27,7 @@
 #if FREEINK_DRIVER_SSD1677
 #include "driver/Ssd1677Driver.h"
 #endif
-#if FREEINK_DEVICE_PICCO
+#if FREEINK_DEVICE_PICCO || FREEINK_DEVICE_STICKY
 #include "driver/Ssd2677Driver.h"
 #endif
 #if FREEINK_DRIVER_UC8253_X3
@@ -215,6 +215,13 @@ void FreeInkDisplay::selectDriver() {
       // Onyx Picco: the panel ID decides between the SSD1677 panels and the
       // SE0400NQW47 on the stock "SSD2677" path.
       if (BoardConfig::isPicco() && piccoProbePanel() == PiccoSe0400nqw47) {
+        _driver = &ssd2677Driver();
+        break;
+      }
+#endif
+#if FREEINK_DEVICE_STICKY
+      // Newer Stickys carry an SSD2677 in place of the SSD1677.
+      if (BoardConfig::ACTIVE.board == BoardConfig::Board::Sticky && stickyHasSsd2677()) {
         _driver = &ssd2677Driver();
         break;
       }
