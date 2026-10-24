@@ -66,6 +66,9 @@ class SecureHttpClient {
   // Skip peer verification (SecureClient does likewise). Required today because
   // the wolfSSL transport has no CA bundle wired up; see setCACert().
   void setInsecure() { _insecure = true; }
+  // Bulk download: lend wolfSSL a full-record buffer once the request is sent
+  // (see SecureClient::reserveFullRecord()). Applies to https connections.
+  void setReserveFullRecord(bool on) { _reserveFullRecord = on; }
   // Verify against a single PEM root. Clears the insecure flag.
   void setCACert(const char* rootCA) {
     _rootCA = rootCA;
@@ -218,6 +221,7 @@ class SecureHttpClient {
         if (reusing && attempt == 0) continue;
         return -1;
       }
+      if (_reserveFullRecord && _connHttps) _secure.reserveFullRecord();
 
       const unsigned long headerDeadline = millis() + _timeoutMs;
       std::string line;
@@ -596,6 +600,7 @@ class SecureHttpClient {
   // Kept-alive connection state. _conn points at _secure or _plain while a
   // connection is held open, and null otherwise.
   WiFiClient _plain;
+  bool _reserveFullRecord = false;
   SecureClient _secure;
   Client* _conn = nullptr;
   std::string _connHost;

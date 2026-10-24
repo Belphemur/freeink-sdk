@@ -4,7 +4,16 @@
 // build free of the wolfSSL dependency while leaving a single, well-defined
 // integration point for the TLS 1.3 transport.
 #if defined(FREEINK_NET_WOLFSSL)
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/memory.h>
+// ssl->max_fragment, to skip the full-record buffer when small records were agreed.
+#include <wolfssl/internal.h>
+
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
 #endif
 
 namespace freeink {
@@ -25,6 +34,47 @@ void SecureClient::setInsecure() { _insecure = true; }
 #if defined(FREEINK_NET_WOLFSSL)
 
 namespace {
+// Full-record buffer lent to wolfSSL (see setReserveFullRecord). wolfSSL frees
+// its grown input buffer after every record and allocates a new one for the
+// next; the allocator hook hands it this block instead, so a download needs a
+// ~16.4KB contiguous block once, right after the handshake, not per record.
+// Only the owning task borrows it, so a connection on another task can never
+// hold it when the owner frees it.
+constexpr size_t kRecordBufSize = (1 << 14) + 256 + 64;  // largest record + header/alignment slack
+constexpr size_t kLendMin = 1024;  // any record buffer, medium records too; small allocations use the heap
+std::atomic<void*> g_recordBuf{nullptr};
+std::atomic<TaskHandle_t> g_recordBufOwner{nullptr};
+std::atomic<bool> g_recordBufLent{false};
+
+void* lendMalloc(size_t size) {
+  void* buf = g_recordBuf.load();
+  bool expected = false;
+  if (buf && size > kLendMin && size <= kRecordBufSize && g_recordBufOwner.load() == xTaskGetCurrentTaskHandle() &&
+      g_recordBufLent.compare_exchange_strong(expected, true)) {
+    return buf;
+  }
+  return malloc(size);
+}
+
+void lendFree(void* ptr) {
+  if (ptr && ptr == g_recordBuf.load()) {
+    g_recordBufLent = false;
+    return;
+  }
+  free(ptr);
+}
+
+void* lendRealloc(void* ptr, size_t size) {
+  if (!ptr || ptr != g_recordBuf.load()) return realloc(ptr, size);
+  if (size <= kRecordBufSize) return ptr;
+  void* grown = malloc(size);
+  if (grown) {
+    memcpy(grown, ptr, kRecordBufSize);
+    g_recordBufLent = false;
+  }
+  return grown;
+}
+
 // Bridge wolfSSL's I/O to the underlying WiFiClient transport.
 int wcSend(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
   auto* t = static_cast<WiFiClient*>(ctx);
@@ -161,6 +211,24 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   return 1;
 }
 
+void SecureClient::reserveFullRecord() {
+  auto* ssl = static_cast<WOLFSSL*>(_ssl);
+  if (!_connected || !ssl || _recordBuf || g_recordBuf.load()) return;
+#ifdef HAVE_MAX_FRAGMENT
+  // Set below MAX_RECORD_SIZE only when the server accepted max_fragment_length.
+  if (ssl->max_fragment < MAX_RECORD_SIZE) return;
+#endif
+  static const bool hooked = wolfSSL_SetAllocators(lendMalloc, lendFree, lendRealloc) == 0;
+  _recordBuf = hooked ? malloc(kRecordBufSize) : nullptr;
+  if (_recordBuf) {
+    g_recordBufOwner = xTaskGetCurrentTaskHandle();
+    g_recordBuf = _recordBuf;
+  } else if (Serial) {
+    Serial.printf("[SecureClient] no full-record buffer (hook %d), max block %u\n", hooked,
+                  (unsigned)ESP.getMaxAllocHeap());
+  }
+}
+
 bool SecureClient::abortRequested() {
   if (!_shouldAbort || !_shouldAbort()) return false;
   _aborted = true;
@@ -225,6 +293,18 @@ int SecureClient::available() {
 
 void SecureClient::stop() {
   if (_ssl) { wolfSSL_free(static_cast<WOLFSSL*>(_ssl)); _ssl = nullptr; }
+  if (_recordBuf) {
+    // wolfSSL_free() returned the buffer if it was lent; freeing a lent one
+    // would leave wolfSSL with a dangling pointer, so leak it instead.
+    g_recordBuf = nullptr;
+    g_recordBufOwner = nullptr;
+    if (g_recordBufLent.exchange(false)) {
+      if (Serial) Serial.println("[SecureClient] full-record buffer still lent at stop; not freed");
+    } else {
+      free(_recordBuf);
+    }
+    _recordBuf = nullptr;
+  }
   if (_ctx) { wolfSSL_CTX_free(static_cast<WOLFSSL_CTX*>(_ctx)); _ctx = nullptr; }
   _transport.stop();
   _connected = false;
@@ -244,6 +324,7 @@ size_t SecureClient::write(const uint8_t* buf, size_t size) { (void)buf; (void)s
 int SecureClient::read(uint8_t* buf, size_t size) { (void)buf; (void)size; return -1; }
 int SecureClient::available() { return 0; }
 void SecureClient::stop() { _transport.stop(); _connected = false; }
+void SecureClient::reserveFullRecord() {}
 uint8_t SecureClient::connected() { return 0; }
 
 #endif
