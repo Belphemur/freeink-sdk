@@ -45,7 +45,9 @@ struct OptionDialogProps {
   bool verticalOptions = false;
   // Vertical options only: show visibleOptions of them, starting at
   // firstOption, with a scroll bar beside them; 0 shows all. The caller moves
-  // firstOption to keep the selected option in view.
+  // firstOption to keep the selected option in view. Only the shown options
+  // are registered, so InputPrev/InputNext focus stops at the window's edge;
+  // a scrolling dialog needs the caller to own button navigation.
   uint8_t firstOption = 0;
   uint8_t visibleOptions = 0;
   // Dim everything behind the dialog with a dither so stale chrome reads as
@@ -182,8 +184,11 @@ Rect optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
     buttons.width = static_cast<int16_t>(buttons.width - BAR_W - props.gap);
     const Rect track{static_cast<int16_t>(buttons.right() + props.gap), buttons.y, BAR_W, buttons.height};
     frame.target().fill(track, Paint::dither(Color::LightGray));
-    const int16_t thumbH = static_cast<int16_t>(track.height * shown / props.optionCount);
-    const int16_t thumbY = static_cast<int16_t>(track.y + track.height * first / props.optionCount);
+    // At least BAR_W tall so a long list still shows a thumb.
+    int16_t thumbH = static_cast<int16_t>(track.height * shown / props.optionCount);
+    if (thumbH < BAR_W) thumbH = BAR_W;
+    int16_t thumbY = static_cast<int16_t>(track.y + track.height * first / props.optionCount);
+    if (thumbY + thumbH > track.bottom()) thumbY = static_cast<int16_t>(track.bottom() - thumbH);
     frame.target().fill(Rect{track.x, thumbY, BAR_W, thumbH}, Paint::solid(Color::Black));
   }
   // Horizontal rows: fixed-width options keep their width, the rest split the

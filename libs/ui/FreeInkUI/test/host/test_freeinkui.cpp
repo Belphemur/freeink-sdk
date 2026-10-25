@@ -3291,6 +3291,12 @@ void testOptionDialogWindow() {
   CHECK_EQ(interactions.count(), 4u);
   CHECK_EQ(interactions.data()[0].value, 3);
   CHECK_EQ(interactions.data()[3].value, 6);
+  // The scroll bar's solid thumb sits right of the narrowed option column.
+  bool thumb = false;
+  for (const auto& op : draw.ops) {
+    if (op.kind == FakeDrawTarget::Op::Fill && op.paint == PaintKind::Solid && op.rect.width == 4) thumb = true;
+  }
+  CHECK(thumb);
 
   // A first option past the end clamps so the window stays full.
   d.firstOption = 9;
@@ -3303,6 +3309,10 @@ void testOptionDialogWindow() {
 
   // visibleOptions 0 keeps the old behavior: every option, no window.
   d.visibleOptions = 0;
+  CHECK_EQ(optionDialogShownCount(d), 10);
+  // A horizontal row ignores the window.
+  d.visibleOptions = 4;
+  d.verticalOptions = false;
   CHECK_EQ(optionDialogShownCount(d), 10);
 }
 
