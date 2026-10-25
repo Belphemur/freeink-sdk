@@ -3263,6 +3263,49 @@ void testMeasureWrappedText() {
 }
 
 
+void testOptionDialogWindow() {
+  // A vertical dialog showing 4 of 10 options draws (and registers) only that
+  // window, sizes itself for 4 buttons, and adds a scroll bar.
+  FakeDrawTarget draw;
+  DialogOption options[10];
+  for (int i = 0; i < 10; ++i) {
+    options[i].label = "Option";
+    options[i].action = 30;
+    options[i].value = static_cast<int16_t>(i);
+  }
+  OptionDialogProps d;
+  d.options = options;
+  d.optionCount = 10;
+  d.verticalOptions = true;
+  d.visibleOptions = 4;
+  d.firstOption = 3;
+  // 24 padding + (8 + 4 * 44 + 3 * 8) buttons
+  const int16_t h = optionDialogHeight(draw, d, 300);
+  CHECK_EQ(h, 232);
+
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> interactions;
+  Frame<16> frame(draw, device, input, interactions);
+  optionDialog(frame, Rect{20, 20, 300, h}, d);
+  CHECK_EQ(interactions.count(), 4u);
+  CHECK_EQ(interactions.data()[0].value, 3);
+  CHECK_EQ(interactions.data()[3].value, 6);
+
+  // A first option past the end clamps so the window stays full.
+  d.firstOption = 9;
+  InteractionBuffer<16> clamped;
+  FakeDrawTarget draw2;
+  Frame<16> frame2(draw2, device, input, clamped);
+  optionDialog(frame2, Rect{20, 20, 300, h}, d);
+  CHECK_EQ(clamped.count(), 4u);
+  CHECK_EQ(clamped.data()[0].value, 6);
+
+  // visibleOptions 0 keeps the old behavior: every option, no window.
+  d.visibleOptions = 0;
+  CHECK_EQ(optionDialogShownCount(d), 10);
+}
+
 void testButtonHitPadding() {
   // hitPadding gives adjacent controls contiguous, non-overlapping tap bands
   // with a single interaction each — no separate band registration.
@@ -6050,6 +6093,7 @@ int main() {
   testLayoutTextWrapping();
   testTouchToLogical();
   testMeasureWrappedText();
+  testOptionDialogWindow();
   testButtonHitPadding();
   testInvertedDrawTarget();
   testStyleSetUnset();
