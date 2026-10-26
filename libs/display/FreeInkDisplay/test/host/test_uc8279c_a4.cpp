@@ -73,7 +73,10 @@ int main() {
 
   // The caller still controls scheduled/manual cleanup.
   for (auto mode : {RefreshMode::Half, RefreshMode::Full}) {
+    const auto refreshes = bus.refreshes;
+    const auto powerOffs = bus.powerOffs;
     driver.display(bus, bw.data(), nullptr, mode, false);
+    assert(bus.powerOffs - powerOffs == bus.refreshes - refreshes && "every refresh must power the panel off");
     assert(bus.interval == 0x97 && bus.lutBytes == 49);
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     assert(bus.interval == 0xd7 && bus.lutBytes == 49);

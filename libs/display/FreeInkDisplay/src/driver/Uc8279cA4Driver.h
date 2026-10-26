@@ -38,7 +38,8 @@ class Uc8279cA4Driver : public PanelDriver {
 
  private:
   void hardwareReset(EpdBus& bus);
-  void initController(EpdBus& bus, bool grayMode = false);
+  enum class Session : uint8_t { Bw, Gray3, FourGray };
+  void initController(EpdBus& bus, Session session);
   void ensurePowerOn(EpdBus& bus);
   void loadFullLut(EpdBus& bus);
   void loadFastLut(EpdBus& bus);

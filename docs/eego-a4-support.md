@@ -66,14 +66,19 @@ fully clears the previous screen, and its grays follow as a Gray3 transition
 from that base.
 
 Full images (absolute/direct planes) use the stock four-gray waveform (five
-42-byte records), which drives every pixel from any prior state, with no B/W
-base pass. Planes go out MSB to DTM1 and LSB to DTM2, so
-black/dark/light/white are 00/01/10/11.
+42-byte records) with no B/W base pass. Planes go out MSB to DTM1 and LSB to
+DTM2, so black/dark/light/white are 00/01/10/11.
 
-Gray refreshes use the stock V1.0.3 panel session (PWR 0x03 00 72 72,
-VCOM_DC 0x32); B/W uses a stronger drive (PWR 0x43 00 78 78 17, VCOM_DC 0x24)
-because UI screens change with fast refreshes. Both use gate/source
-0x65 00 00 00 00 and seed DTM1 white before power-on. Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
+Every refresh powers the panel off afterwards. A panel left powered keeps
+weakly biasing the image it holds, and the next four-gray image then shows
+earlier screens as ghosts.
+
+Gray3 pages use the stock V1.0.3 reader session (PWR 0x03 00 72 72,
+VCOM_DC 0x32). Four-gray images use the stock v1.3.0 image session
+(PWR 0x03 00 78 78 17, VCOM_DC 0x20, gate/source 0x65 00 00 20 00, DTM1 seeded
+white after power-on). B/W uses a stronger drive (PWR 0x43 00 78 78 17,
+VCOM_DC 0x24) because UI screens change with fast refreshes. B/W and Gray3
+use gate/source 0x65 00 00 00 00 and seed DTM1 white before power-on. Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
 uses the stock production "DU-factory-previous" waveform (0x50 = 0xd7), both
 49-byte records. The planes are
 lazily allocated, PSRAM first; if allocation fails the driver leaves the
