@@ -57,11 +57,8 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
 }
 
 void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
-  // B/W keeps this driver's stronger drive (PWR 43 00 78 78 17, VCOM_DC 0x24): stock
-  // pairs its lower drive with full refreshes for UI screens, while this driver changes
-  // screens with fast ones. Gray3 pages use stock V1.0.3's reader session
-  // (PWR 03 00 72 72, VCOM_DC 0x32). Four-gray images use stock v1.3.0's image session
-  // (PWR 03 00 78 78 17, VCOM_DC 0x20, gate/source 00 00 20 00, white DTM1 after power-on).
+  // Gray3 uses stock V1.0.3's reader session and four-gray stock V1.3.0's image session.
+  // B/W keeps a stronger drive because this driver changes UI screens with fast refreshes.
   const bool fourGray = session == Session::FourGray;
   const uint8_t panel[] = {0x3f, 0x4a};
   const uint8_t gray3Power[] = {0x03, 0x00, 0x72, 0x72};
@@ -90,11 +87,10 @@ void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
   bus.cmdData(CMD_GATE_SOURCE_SETTING, interval, sizeof(interval));
   bus.cmdData(CMD_TCON, &tcon, 1);
 
-  // Stock seeds the old plane white before power-on, except for four-gray images.
-  if (!fourGray) fillControllerRam(bus, CMD_DTM1, 0xff);
+  // Stock seeds the old plane white, then enables panel power.
+  fillControllerRam(bus, CMD_DTM1, 0xff);
   bus.cmd(CMD_POWER_ON);
   bus.waitBusy(" A4 power-on");
-  if (fourGray) fillControllerRam(bus, CMD_DTM1, 0xff);
   _screenOn = true;
   _grayControllerMode = session != Session::Bw;
 }
@@ -152,16 +148,14 @@ void Uc8279cA4Driver::fillControllerRam(EpdBus& bus, const uint8_t command, cons
   bus.fillPlane(command, fill, CONTROLLER_HEIGHT, _widthBytes);
 }
 
-void Uc8279cA4Driver::refresh(EpdBus& bus, const bool turnOff, const uint8_t* bwBaseline) {
-  (void)turnOff;
+void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline) {
   ensurePowerOn(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" A4 refresh");
-  // Keep the next differential baseline coherent before disabling panel power.
+  // The next differential update diffs against this baseline.
   if (bwBaseline) writeFrame(bus, CMD_DTM1, bwBaseline);
-  // Always power off, as the UC8279 X4 driver does: a panel left powered keeps
-  // weakly biasing the held image as the booster rail droops at idle, and the
-  // next four-gray image brings that image back as a ghost.
+  // Always power off: leaving the panel powered between refreshes made later
+  // four-gray images show earlier screens as ghosts on hardware.
   bus.cmd(CMD_POWER_OFF);
   bus.waitBusy(" A4 power-off");
   _screenOn = false;
@@ -180,6 +174,7 @@ void Uc8279cA4Driver::begin(EpdBus& bus) {
 void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, const RefreshMode mode,
                               const bool turnOff) {
   (void)prev;
+  (void)turnOff;  // refresh() always powers off
   // Any B/W refresh replaces what a Gray3 transition would start from.
   _gray3HistoryValid = false;
   _gray3Session = false;
@@ -206,7 +201,7 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
     // first frame. Drive every pixel to the inverse first, then to the target.
     writeFrame(bus, CMD_DTM1, fb);
     writeFrame(bus, CMD_DTM2, fb, /*invert=*/true);
-    refresh(bus, false);
+    refresh(bus);
   }
   if (_firstRefreshPending || _redriveAfterGray) {
     // Inverse OLD makes every target pixel transition, clearing unknown startup
@@ -215,7 +210,7 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
     _firstRefreshPending = false;
   }
   writeFrame(bus, CMD_DTM2, fb);
-  refresh(bus, turnOff, fb);
+  refresh(bus, fb);
   // The displayed B/W frame is the base any following overlay gray pass folds
   // onto, however the caller started that pass.
   if (!_grayBase) _grayBase = allocateGrayBuffer();
@@ -312,7 +307,7 @@ void Uc8279cA4Driver::loadGray3Lut(EpdBus& bus, const bool anyBlack, const bool 
   }
 }
 
-void Uc8279cA4Driver::showGray3(EpdBus& bus, const bool turnOff) {
+void Uc8279cA4Driver::showGray3(EpdBus& bus) {
   if (!_gray3Session) {
     hardwareReset(bus);
     initController(bus, Session::Gray3);
@@ -326,7 +321,7 @@ void Uc8279cA4Driver::showGray3(EpdBus& bus, const bool turnOff) {
   const uint8_t interval = 0x00;
   bus.cmdData(CMD_VCOM_DATA_INTERVAL, &interval, 1);
   loadGray3Lut(bus, anyBlack, anyWhiteClear);
-  refresh(bus, turnOff);
+  refresh(bus);
   const size_t n = static_cast<size_t>(_widthBytes) * _height;
   memcpy(_gray3White, _grayLsb, n);
   memcpy(_gray3Middle, _grayMsb, n);
@@ -373,10 +368,10 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
       // Stock's periodic cleanup: the page with black and white swapped
       // (middle kept), then the page itself, both as Gray3 transitions.
       for (size_t i = 0; i < n; ++i) _grayLsb[i] = static_cast<uint8_t>(~(_grayLsb[i] | _grayMsb[i]));
-      showGray3(bus, false);
+      showGray3(bus);
       for (size_t i = 0; i < n; ++i) _grayLsb[i] = static_cast<uint8_t>(~(_grayLsb[i] | _grayMsb[i]));
     }
-    showGray3(bus, turnOff);
+    showGray3(bus);
     _basePending = false;
     _cleanupPage = false;
     return;
@@ -394,7 +389,7 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   // Both gray planes are fully written, replacing the unknown startup state.
   _firstRefreshPending = false;
   loadGrayLut(bus);
-  refresh(bus, turnOff);
+  refresh(bus);
   _redriveAfterGray = true;
 }
 
