@@ -124,3 +124,23 @@ SDK APIs. A public method, board profile, compatibility wrapper, or capability-g
 driver can have no in-repository callers and still be used by downstream firmware.
 Check references across all configurations before removing internal symbols, and
 exclude vendored dependencies and generated assets from routine source cleanup.
+
+## SecureNet bulk transfers
+
+```sh
+sh libs/network/SecureNet/test/host/run.sh
+WOLFSSL_INTERNAL_SOURCE=/path/to/Arduino-wolfSSL/src/src/internal.c \
+  python3 libs/network/SecureNet/test/host/test_record_reservation.py
+```
+
+The shell suite exercises HTTP control flow with scripted transports, including
+reservation timing after the request, cancellation, and resumed transfers. The
+Python harness compiles the production reservation/stop methods and the
+consumer's pinned wolfSSL buffer functions with a bounded allocator, sanitizers,
+and competing clients. It requires the consumer's verified input-retention and
+empty-buffer-release patches. It covers both allocation failure before the fix
+and retained medium/full records afterward; it does not perform TLS handshakes
+or measure device heap. Consumers without `FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER`
+use ordinary on-demand record growth without proactive reservation. Reservations
+use wolfSSL's own connection-owned buffer and allocator, with no global allocator
+replacement or cross-client loan.
