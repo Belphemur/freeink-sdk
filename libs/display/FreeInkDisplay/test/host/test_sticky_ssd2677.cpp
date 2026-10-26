@@ -1,12 +1,13 @@
 // Seeed Sticky with the SSD2677 panel: CMD 0x70 probe, stock init table, OTP
 // waveform latch per mode, full refresh old == new, rows bottom-to-top, fast
 // refresh keeping the rails on.
+#include <SPI.h>  // stub: counts shared-bus restarts
+#include <esp_heap_caps.h>
+
 #include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <vector>
-
-#include <SPI.h>  // stub: counts shared-bus restarts
 #define private public
 #include "src/driver/Ssd1677Driver.h"
 #include "src/driver/Ssd2677Driver.h"
@@ -28,7 +29,7 @@ static int count(const EpdBus& bus, uint8_t command) {
   return n;
 }
 
-int main() {
+int main(int argc, char**) {
   // An SSD2677 answers CMD 0x70 with 0x07 first; the probe restarts the shared
   // SPI bus on its existing pins (incl. the SD card's MISO) afterwards.
   static const uint8_t rev[3] = {0x07, 0x01, 0x01};
@@ -38,7 +39,23 @@ int main() {
   auto& s = ssd2677Driver();
 
   EpdBus bus;
+  fakeHeapCapsFail = argc > 1;
   s.begin(bus);
+  if (fakeHeapCapsFail) {
+    assert(static_cast<Ssd2677Driver&>(s)._old == nullptr);
+    // Both black and the following white frame must use the full waveform
+    // when there is no previous plane for a differential update.
+    for (uint8_t color : {uint8_t{0x00}, uint8_t{0xFF}}) {
+      Bytes page(48000, color);
+      bus.clear();
+      s.display(bus, page.data(), nullptr, RefreshMode::Fast, false);
+      assert(*lastData(bus, 0xE6) == Bytes({0xEE}));
+      assert(*lastData(bus, 0x10) == Bytes(96000, color));
+      assert(count(bus, 0x02) == 1 && "fallback powers off after full refresh");
+    }
+    std::puts("Sticky SSD2677: previous-plane allocation failure uses full refresh");
+    return 0;
+  }
   assert(*lastData(bus, 0x00) == Bytes({0x2F, 0x0E}));
   assert(*lastData(bus, 0x61) == Bytes({0x03, 0x20, 0x02, 0xA8}));
   assert(*lastData(bus, 0x30) == Bytes({0x08}) && *lastData(bus, 0xE9) == Bytes({0x01}));

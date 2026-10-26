@@ -103,3 +103,4 @@ with tempfile.TemporaryDirectory(prefix="freeink-picco-test-") as directory:
 with tempfile.TemporaryDirectory(prefix="freeink-sticky-test-") as directory:
     exe = build("Sticky", "FREEINK_DEVICE_STICKY", "test_sticky_ssd2677.cpp", directory)
     subprocess.run([str(exe)], check=True)
+    subprocess.run([str(exe), "no-old-plane"], check=True)
