@@ -396,7 +396,11 @@ bool Imu::read(Sample& out) {
   } else if (s.imuType == BoardConfig::ImuType::Bmi270) {
     if (sleeping_) return false;
     if (!configured_) {
-      if (!startBmi270(addr)) return false;
+      // A failed start has already switched advanced power save off.
+      if (!startBmi270(addr)) {
+        powerDownBmi270(addr);
+        return false;
+      }
       configured_ = true;
     }
     uint8_t raw[12] = {};
@@ -497,7 +501,11 @@ bool Imu::wake() {
         delayMicroseconds(BMI270_POWER_SAVE_WRITE_US);
         if (!writeReg(addr, BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_ACC_GYR)) return false;
       } else {
-        if (!startBmi270(addr)) return false;
+        // As in read(): undo the power state a failed start leaves behind.
+        if (!startBmi270(addr)) {
+          powerDownBmi270(addr);
+          return false;
+        }
         configured_ = true;
       }
       sleeping_ = false;

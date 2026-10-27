@@ -72,12 +72,16 @@ int main() {
   powerOn(0x68);
   assert(imu.begin() && imu.read(sample) && Wire.bmiUploads == 1 && sampling(0x68));
   // Upload refused or interrupted: wake() fails, the timeout is restored, a retry recovers.
+  // Each failure leaves both sensors off and advanced power save back on, so sleep() has
+  // nothing left to undo.
   powerOn(0x68);
   Wire.bmiRefuseInit = true;
-  assert(imu.begin() && !imu.wake() && !imu.read(sample));
+  assert(imu.begin() && !imu.wake() && Wire.regs[0x68][0x7C] == 1 && Wire.regs[0x68][0x7D] == 0);
+  assert(!imu.read(sample) && Wire.regs[0x68][0x7C] == 1 && Wire.regs[0x68][0x7D] == 0);
+  assert(imu.sleep() && Wire.regs[0x68][0x7C] == 1);
   Wire.bmiRefuseInit = false;
   Wire.failWriteReg = 0x5E;
-  assert(!imu.wake() && Wire.timeoutMs == 4);
+  assert(!imu.wake() && Wire.timeoutMs == 4 && Wire.regs[0x68][0x7C] == 1 && Wire.regs[0x68][0x7D] == 0);
   Wire.failWriteReg = -1;
   assert(imu.wake() && Wire.regs[0x68][0x21] == 1 && sampling(0x68));
   // SDO high: the part answers at 0x69 and nothing is written to 0x68.
