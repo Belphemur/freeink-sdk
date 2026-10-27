@@ -96,7 +96,9 @@ int main() {
     assert(http.getUniqueHeader("content-disposition") == nullptr);
   }
   for (const char* second : {"attachment; filename=Other.epub", "attachment; filename=Book.epub", ""}) {
-    const std::string response = std::string("HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=Book.epub\r\ncOnTeNt-DiSpOsItIoN: ") + second + "\r\nContent-Length: 0\r\n\r\n";
+    const std::string response =
+        std::string("HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=Book.epub\r\ncOnTeNt-DiSpOsItIoN: ") +
+        second + "\r\nContent-Length: 0\r\n\r\n";
     reset({response.c_str()});
     freeink::SecureHttpClient http;
     assert(http.begin("http://a/f"));
@@ -214,5 +216,22 @@ int main() {
   r = get("http://a/f", sink());
   assert(!r.complete && r.bytes == 5);
 
+  // A bounded body is insufficient if the peer can allocate unlimited headers.
+  std::string many = "HTTP/1.1 200 OK\r\n";
+  for (int i = 0; i < 65; ++i) many += "X-H: value\r\n";
+  many += "Content-Length: 0\r\n\r\n";
+  reset({many.c_str()});
+  freeink::SecureHttpClient bounded;
+  assert(bounded.begin("http://example.test/"));
+  assert(bounded.GET() < 0 && !bounded.responseComplete());
+  std::string large = "HTTP/1.1 200 OK\r\n";
+  for (int i = 0; i < 10; ++i) large += "X-H: " + std::string(1000, 'a') + "\r\n";
+  large += "\r\n";
+  reset({large.c_str()});
+  assert(bounded.begin("http://example.test/"));
+  assert(bounded.GET() < 0 && !bounded.responseComplete());
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n"});
+  assert(bounded.begin("http://example.test/"));
+  assert(bounded.GET() < 0 && !bounded.responseComplete());
   puts("resumable fetch ok");
 }

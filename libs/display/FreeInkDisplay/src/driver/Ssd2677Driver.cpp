@@ -167,7 +167,9 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
     // OTP waveforms: a full refresh sends old == new (every pixel driven to its
     // level) and powers off; a fast one diffs against the retained old plane
     // and keeps the rails on (stock).
-    const bool fast = mode == RefreshMode::Fast;
+    // Differential refresh needs a real previous frame. On allocation failure,
+    // send old == new with the full waveform so black pixels can still clear.
+    const bool fast = mode == RefreshMode::Fast && _old != nullptr;
     latchOtpWaveform(bus, fast ? OTP_FAST_ROOM : OTP_FULL_ROOM);
     sendPacked(bus, fast ? _old : fb, fb);
     powerAndRefresh(bus, !fast || turnOff);
