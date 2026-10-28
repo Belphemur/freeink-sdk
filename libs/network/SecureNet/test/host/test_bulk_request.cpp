@@ -45,6 +45,7 @@ void SecureClient::stop() {
 }
 uint8_t SecureClient::connected() { return _transport.connected(); }
 bool SecureClient::tls13Available() { return true; }
+bool hostResolves(const char*) { return true; }
 }  // namespace freeink
 
 void reset(std::initializer_list<const char*> replies) {

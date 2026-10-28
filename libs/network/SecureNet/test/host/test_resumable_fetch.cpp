@@ -22,6 +22,9 @@ void SecureClient::flush() {}
 void SecureClient::stop() {}
 uint8_t SecureClient::connected() { return 0; }
 bool SecureClient::tls13Available() { return false; }
+// The plain-http path checks hostResolves(); tests flip dnsWorks.
+bool dnsWorks = true;
+bool hostResolves(const char*) { return dnsWorks; }
 }  // namespace freeink
 
 using freeink::FetchOptions;
@@ -233,5 +236,13 @@ int main() {
   reset({"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n"});
   assert(bounded.begin("http://example.test/"));
   assert(bounded.GET() < 0 && !bounded.responseComplete());
+
+  // A host that does not resolve fails without a connect attempt.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc"});
+  freeink::dnsWorks = false;
+  r = get("http://a/f", sink());
+  freeink::dnsWorks = true;
+  assert(!r.complete && FakeNet::hosts().empty());
+
   puts("resumable fetch ok");
 }
