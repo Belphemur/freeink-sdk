@@ -3760,6 +3760,18 @@ void testGermanAndFrenchLetters() {
   CHECK(std::strcmp(buf, "\xc3\xaatre") == 0);  // être
 }
 
+void testGreekLayout() {
+  const KeyboardLayout& lower = builtinKeyboardLayout(KeyboardLayoutId::GreekEl);
+  const KeyboardLayout& upper = builtinKeyboardLayout(KeyboardLayoutId::GreekEl, true);
+  CHECK(std::strcmp(keyboardOutputFor(lower, 0x3C3), "σ") == 0);
+  CHECK(std::strcmp(keyboardAltOutputFor(lower, 0x3C3), "Σ") == 0);   // hold flips case
+  CHECK(std::strcmp(keyboardAltOutputFor(upper, 0x3A3), "σ") == 0);
+  CHECK(std::strcmp(keyboardAltOutputFor(lower, 0x3B5), "έ") == 0);   // vowels hold to tonos
+  CHECK(std::strcmp(keyboardAltOutputFor(lower, 0x3CA), "ΐ") == 0);
+  CHECK(keyboardAltOutputFor(lower, 0x3C2) == nullptr);                // ς has no capital
+  CHECK(std::strcmp(keyboardOutputFor(upper, ';'), ";") == 0);
+}
+
 void testCompactLayoutsMatchBuiltin() {
   // buildKeyboardLayout() must be builtinKeyboardLayout() without the tables:
   // every layer of every layout, one id past the last as the unknown-id path,
@@ -3770,7 +3782,7 @@ void testCompactLayoutsMatchBuiltin() {
   };
   KeyboardLayoutBuffer buffer;
   size_t keysCompared = 0;
-  for (uint8_t raw = 0; raw <= static_cast<uint8_t>(KeyboardLayoutId::ArabicAr) + 1; ++raw) {
+  for (uint8_t raw = 0; raw <= static_cast<uint8_t>(KeyboardLayoutId::GreekEl) + 1; ++raw) {
     const auto id = static_cast<KeyboardLayoutId>(raw);
     for (uint8_t flags = 0; flags < 16; ++flags) {
       const bool shifted = flags & 1, symbols = flags & 2, numbers = flags & 4, lang = flags & 8;
@@ -4036,12 +4048,12 @@ void testSymbolKeyboardPages() {
 }
 
 void testKeyboardLayoutVariants() {
-  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::ArabicAr); ++id) {
+  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::GreekEl); ++id) {
     for (int flags = 0; flags < 16; ++flags) {
       const auto layoutId = static_cast<KeyboardLayoutId>(id);
       const bool shifted = flags & 1, symbols = flags & 2, numbers = flags & 4, lang = flags & 8;
       const KeyboardLayout& layout = builtinKeyboardLayout(layoutId, shifted, symbols, numbers, lang);
-      const bool hasCase = id < static_cast<int>(KeyboardLayoutId::HebrewIl);
+      const bool hasCase = layoutId != KeyboardLayoutId::HebrewIl && layoutId != KeyboardLayoutId::ArabicAr;
       const bool hasLang = lang || id >= static_cast<int>(KeyboardLayoutId::CyrillicRu);
       CHECK_EQ(layout.rowCount, numbers && !symbols ? 5 : 4);
       CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_BACKSPACE).kind, KeyboardActivationKind::Delete);
@@ -4687,7 +4699,7 @@ void testResponsiveKeyboardSizing() {
   CHECK_EQ(keyboardPreferredHeight(480, 5), 312);
   CHECK_EQ(keyboardPreferredHeight(800, 5), 312);
   CHECK_EQ(keyboardPreferredHeight(480, 5, Insets{4, 4, 4, 4}, 6, 28, 10), 287);
-  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::ArabicAr); ++id) {
+  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::GreekEl); ++id) {
     for (int flags = 0; flags < 8; ++flags) {
       FakeDrawTarget draw;
       DeviceContext device = makeDevice(480, 800);
@@ -6114,6 +6126,7 @@ int main() {
   testLocalizedKeyboardLayout();
   testGermanAndFrenchLetters();
   testCompactLayoutsMatchBuiltin();
+  testGreekLayout();
   testKeyboardUniformRowWidths();
   testKeyboardOuterControlAlignment();
   testWideScriptNumberRowWidth();
