@@ -25,11 +25,25 @@ int main() {
   static_assert(BoardConfig::METALIO_EINK4.sdmmc.d3 == -1);
   std::fill(std::begin(gpioLevels), std::end(gpioLevels), HIGH);
 
-  // A transient boot failure is retryable. Safe output latches precede direction.
+  // A transient boot failure is retryable and restarts the bus. Safe output latches precede direction.
   Wire.failExpander = true;
   assert(!freeink::metalio::ensureBooted());
+  assert(Wire.ends == 1 && !Wire.started);
+  // Polls right after a failure do not touch the bus again.
+  assert(!freeink::metalio::ensureBooted());
+  assert(Wire.ends == 1);
+  fakeNow += 500;
+  assert(!freeink::metalio::ensureBooted());
+  assert(Wire.ends == 2);
+  // A bounded wait gives up after waitMs without spinning forever.
+  const unsigned long waitStart = fakeNow;
+  assert(!freeink::metalio::ensureBooted(300));
+  assert(fakeNow - waitStart >= 300 && fakeNow - waitStart < 400);
   Wire.failExpander = false;
-  assert(freeink::metalio::ensureBooted());
+  // A slow-starting expander is found within the wait, on a restarted bus.
+  Wire.expanderReadyAt = fakeNow + 2000;
+  assert(freeink::metalio::ensureBooted(3000));
+  assert(Wire.started && fakeNow >= Wire.expanderReadyAt);
   assert(Wire.writes[0][0] == 2 && Wire.writes[1][0] == 6);
   const unsigned out = Wire.expander[2] | (Wire.expander[3] << 8);
   assert((out & ((1 << 5) | (1 << 6) | (1 << 9) | (1 << 11))) ==

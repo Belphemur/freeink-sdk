@@ -50,17 +50,35 @@ inline bool setOutput(uint8_t pin, bool high) {
   return writeRegister(2, high ? value | mask : value & ~mask);
 }
 
-inline bool ensureBooted() {
+// On some boards the I2C bus cannot start until ~2 s after power-up, so each failed attempt
+// restarts the bus. waitMs bounds how long this call retries; callers passing 0 retry at most
+// every RETRY_GAP_MS, so a missing expander does not stall every poll.
+inline bool ensureBooted(uint32_t waitMs = 0) {
+  constexpr unsigned long RETRY_GAP_MS = 500;
   static bool ready = false;
+  static bool tried = false;
+  static unsigned long lastFailure = 0;
   if (ready) return true;
-  if (!Wire.begin(41, 42, 400000)) return false;
-  Wire.setTimeOut(10);
+  if (waitMs == 0 && tried && millis() - lastFailure < RETRY_GAP_MS) return false;
+  tried = true;
   constexpr uint16_t outputs = (1u << PIN_AMP_SELECT) | (1u << PIN_AMP_ENABLE) |
       (1u << PIN_SCREEN_SD_POWER) | (1u << PIN_MAIN_POWER) |
       (1u << PIN_TOUCH_RESET) | (1u << PIN_POWER_PULSE);
   constexpr uint16_t inputs = (1u << PIN_VOLUME_DOWN) | (1u << PIN_VOLUME_UP) | (1u << 12);
   uint16_t latch, config, polarity;
-  if (!readRegister(2, latch) || !readRegister(6, config) || !readRegister(4, polarity)) return false;
+  const unsigned long start = millis();
+  for (;;) {
+    if (Wire.begin(41, 42, 400000)) {
+      Wire.setTimeOut(10);
+      if (readRegister(2, latch) && readRegister(6, config) && readRegister(4, polarity)) break;
+    }
+    Wire.end();
+    if (millis() - start >= waitMs) {
+      lastFailure = millis();
+      return false;
+    }
+    delay(50);
+  }
   // Set safe levels BEFORE switching directions: no shutdown pulse or amp pop.
   latch = (latch & ~outputs) | (1u << PIN_MAIN_POWER) | (1u << PIN_POWER_PULSE);
   if (!writeRegister(2, latch) || !writeRegister(6, (config & ~outputs) | inputs) ||

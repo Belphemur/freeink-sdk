@@ -94,6 +94,11 @@ InputManager::InputManager()
       twoButtonPressStart(0),
       twoButtonLongPressActive(false) {}
 
+#if FREEINK_DEVICE_METALIO_EINK4
+// The vendor firmware waits up to ~2 s for the expander on slow-starting boards.
+static constexpr uint32_t METALIO_BOOT_WAIT_MS = 3000;
+#endif
+
 void InputManager::begin() {
 #if FREEINK_DEVICE_PICCO
   // pinMode preserves wake interrupt types; a held polled button must not trigger a level ISR.
@@ -102,7 +107,7 @@ void InputManager::begin() {
   }
 #endif
 #if FREEINK_DEVICE_METALIO_EINK4
-  if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted();
+  if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted(METALIO_BOOT_WAIT_MS);
 #endif
   if (hasToggleSwitch()) {
     pinMode(BoardConfig::ACTIVE.input.toggleSwitch, INPUT_PULLUP);
