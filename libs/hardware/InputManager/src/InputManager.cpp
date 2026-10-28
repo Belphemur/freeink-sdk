@@ -6,6 +6,7 @@
 
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
+#include <I2cBusLock.h>
 #include <driver/gpio.h>
 #if FREEINK_DEVICE_PICCO
 #include <driver/rtc_io.h>
@@ -94,6 +95,11 @@ InputManager::InputManager()
       twoButtonPressStart(0),
       twoButtonLongPressActive(false) {}
 
+#if FREEINK_DEVICE_METALIO_EINK4
+// The vendor firmware waits up to ~2 s for the expander on slow-starting boards.
+static constexpr uint32_t METALIO_BOOT_WAIT_MS = 3000;
+#endif
+
 void InputManager::begin() {
 #if FREEINK_DEVICE_PICCO
   // pinMode preserves wake interrupt types; a held polled button must not trigger a level ISR.
@@ -102,7 +108,7 @@ void InputManager::begin() {
   }
 #endif
 #if FREEINK_DEVICE_METALIO_EINK4
-  if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted();
+  if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted(METALIO_BOOT_WAIT_MS);
 #endif
   if (hasToggleSwitch()) {
     pinMode(BoardConfig::ACTIVE.input.toggleSwitch, INPUT_PULLUP);
@@ -1563,6 +1569,7 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const u
 
 #if FREEINK_TOUCH_FT5X06 || FREEINK_TOUCH_CST816S  // the register helpers serve both
 bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
+  const freeink::I2cBusLock busLock;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1571,6 +1578,7 @@ bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
 }
 
 bool InputManager::ft5x06ReadReg(const uint8_t reg, uint8_t* buf, const uint8_t len) {
+  const freeink::I2cBusLock busLock;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
