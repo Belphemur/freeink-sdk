@@ -35,6 +35,13 @@ int main() {
   fakeNow += 500;
   assert(!freeink::metalio::ensureBooted());
   assert(Wire.ends == 2);
+  // A failed attempt clears a bus whose SDA is held low: 9 SCL pulses, then STOP.
+  gpioLevels[41] = LOW;
+  gpioWrites[42] = 0;
+  fakeNow += 500;
+  assert(!freeink::metalio::ensureBooted());
+  assert(gpioWrites[42] == 1 + 9 * 2);
+  gpioLevels[41] = HIGH;
   // A bounded wait gives up after waitMs without spinning forever.
   const unsigned long waitStart = fakeNow;
   assert(!freeink::metalio::ensureBooted(300));
@@ -109,8 +116,11 @@ int main() {
   Wire.expander[0] &= ~(1 << 7);
   fakeNow += 25;
   assert(input.getState() & (1 << InputManager::BTN_DOWN));
+  // One failed read keeps the last good sample; failures beyond 100 ms release the key.
   Wire.failExpander = true;
   fakeNow += 25;
+  assert(input.getState() & (1 << InputManager::BTN_DOWN));
+  fakeNow += 100;
   assert(!(input.getState() & (1 << InputManager::BTN_DOWN)));
   Wire.failExpander = false;
   assert(freeink::metalio::powerOff());

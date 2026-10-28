@@ -6,6 +6,7 @@
 
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
+#include <I2cBusLock.h>
 #include <driver/gpio.h>
 #if FREEINK_DEVICE_PICCO
 #include <driver/rtc_io.h>
@@ -1568,6 +1569,7 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const u
 
 #if FREEINK_TOUCH_FT5X06 || FREEINK_TOUCH_CST816S  // the register helpers serve both
 bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
+  const freeink::I2cBusLock busLock;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1576,6 +1578,7 @@ bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
 }
 
 bool InputManager::ft5x06ReadReg(const uint8_t reg, uint8_t* buf, const uint8_t len) {
+  const freeink::I2cBusLock busLock;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
