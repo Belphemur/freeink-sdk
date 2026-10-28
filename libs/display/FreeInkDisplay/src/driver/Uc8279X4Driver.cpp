@@ -524,7 +524,8 @@ void Uc8279X4Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t
                                    uint16_t w, uint16_t h, bool turnOff) {
   const bool alignable = (x % 8 == 0) && (w % 8 == 0);
   const bool inBounds = w > 0 && h > 0 && (uint32_t)x + w <= _w && (uint32_t)y + h <= _h;
-  const bool diffValid = _oldPlaneValid && !_needFullClear;
+  // The first Fast after a gray pass needs display()'s whole-panel re-drive.
+  const bool diffValid = _oldPlaneValid && !_needFullClear && !_redriveAfterGray;
   if (!fb || !alignable || !inBounds || !diffValid) {
     display(bus, fb, prev, RefreshMode::Fast, turnOff);
     return;

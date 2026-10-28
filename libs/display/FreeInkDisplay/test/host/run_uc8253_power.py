@@ -131,6 +131,21 @@ int main() {
  before = bus.refreshes;
  d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Half, false);
  assert(bus.refreshes == before + 1);                                         // differential base
+ // The reader's page turn asks for a _fast base. The clean branch's display(Fast) gives the
+ // same gentle WW cell as the differential, so greys on the glass must not double the refresh.
+ d.copyGrayscaleLsb(bus, fb.data());
+ d.copyGrayscaleMsb(bus, fb.data());
+ d.displayGray(bus, fb.data(), false, nullptr, false);
+ d.cleanupGrayscaleBuffers(bus, fb.data());
+ for (int page = 0; page < 3; ++page) {
+   before = bus.refreshes;
+   d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Fast, false);
+   assert(bus.refreshes == before + 1);                                       // single differential base
+   d.copyGrayscaleLsb(bus, fb.data());
+   d.copyGrayscaleMsb(bus, fb.data());
+   d.displayGray(bus, fb.data(), false, nullptr, false);
+   d.cleanupGrayscaleBuffers(bus, fb.data());
+ }
  std::cout << "PASS: UC8253 cold power-on, warm Full, power-off/wake, and clean gray base after AA\\n";
 }
 """)
