@@ -80,6 +80,7 @@ const Ssd1677Config& ssd1677DefaultConfig();
 
 class Ssd1677Driver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "SSD1677"; }
   explicit Ssd1677Driver(const Ssd1677Config& cfg = ssd1677DefaultConfig());
 
   uint32_t spiHz() const override;

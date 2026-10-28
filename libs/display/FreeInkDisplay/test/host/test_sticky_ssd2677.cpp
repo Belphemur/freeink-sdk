@@ -9,6 +9,7 @@
 #include <cstring>
 #include <vector>
 #define private public
+#include "FreeInkDisplay.h"
 #include "src/driver/Ssd1677Driver.h"
 #include "src/driver/Ssd2677Driver.h"
 #include "src/lut/Ssd2677Luts.h"
@@ -29,12 +30,26 @@ static int count(const EpdBus& bus, uint8_t command) {
   return n;
 }
 
-int main(int argc, char**) {
+int main(int argc, char** argv) {
+  const bool originalPanel = argc > 1 && !strcmp(argv[1], "ssd1677");
   // An SSD2677 answers CMD 0x70 with 0x07 first; the probe restarts the shared
   // SPI bus on its existing pins (incl. the SD card's MISO) afterwards.
   static const uint8_t rev[3] = {0x07, 0x01, 0x01};
-  memcpy(fakePanelRev, rev, 3);
-  assert(stickyHasSsd2677() && fakePanelCommand == 0x70 && fakeSpiRestarts == 1);
+  if (!originalPanel) memcpy(fakePanelRev, rev, 3);
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  assert(display.getControllerName() == nullptr && fakePanelCommand == -1 && fakeSpiRestarts == 0);
+  display.selectDriver();
+  const char* expected = originalPanel ? "SSD1677" : "SSD2677";
+  assert(!strcmp(display.getControllerName(), expected));
+  assert(fakePanelCommand == 0x70 && fakeSpiRestarts == 1);
+  // The board profile still says SSD1677; diagnostics must follow the selected driver.
+  assert(BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::SSD1677);
+  assert(!strcmp(display.getControllerName(), expected) && fakeSpiRestarts == 1);
+  if (originalPanel) {
+    std::puts("Sticky SSD1677: detected controller identity passed");
+    return 0;
+  }
+  assert(stickyHasSsd2677());
 
   auto& s = ssd2677Driver();
   assert(s.busyPolarity() == BusyPolarity::ActiveLowReady);

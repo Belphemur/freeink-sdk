@@ -5,10 +5,11 @@
 #include <cstring>
 #include <vector>
 #define private public
+#include "FreeInkDisplay.h"
 #include "src/driver/Ssd1677Driver.h"
 #include "src/driver/Ssd2677Driver.h"
-#include "src/lut/Ssd2677Luts.h"
 #include "src/lut/Ssd1677Luts.h"
+#include "src/lut/Ssd2677Luts.h"
 #undef private
 
 using namespace freeink;
@@ -69,12 +70,25 @@ int main(int argc, char** argv) {
   static const uint8_t depg[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x00, 0x08, 0x01, 0x00, 0x4E};
   static const uint8_t opm[10] = {'W', '0', '4', '0', 'B', '3', 0, 0, 0, 0};
   static const uint8_t none[10] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-  const uint8_t* id = !strcmp(which, "depg") ? depg : !strcmp(which, "opm") ? opm : !strcmp(which, "unknown") ? none : yrd;
+  const uint8_t* id = !strcmp(which, "depg")      ? depg
+                      : !strcmp(which, "opm")     ? opm
+                      : !strcmp(which, "unknown") ? none
+                                                  : yrd;
   memcpy(fakePanelId, id, 10);
+  const auto checkController = [](const char* expected) {
+    FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+    const int before = fakePanelCommand;
+    assert(display.getControllerName() == nullptr && fakePanelCommand == before);
+    display.selectDriver();
+    assert(!strcmp(display.getControllerName(), expected));
+    const int after = fakePanelCommand;
+    assert(!strcmp(display.getControllerName(), expected) && fakePanelCommand == after);
+  };
   if (!strcmp(which, "se0400")) {
     static const uint8_t rev[3] = {0x07, 0x01, 0x01};
     memcpy(fakePanelId, none, 10);
     memcpy(fakePanelRev, rev, 3);
+    checkController("SSD2677");
     assert(piccoProbePanel() == PiccoSe0400nqw47);
     auto& s = ssd2677Driver();
     assert(s.busyPolarity() == BusyPolarity::ActiveLow);
@@ -90,16 +104,19 @@ int main(int argc, char** argv) {
     s.display(bus, newFb.data(), oldFb.data(), RefreshMode::Fast, false);
     // First paint is forced FULL; data is old(hi)/new(lo) pairs, MSB first.
     const Bytes* data = nullptr;
-    for (const auto& w : bus.writes) if (w.command == 0x10) data = &w.bytes;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x10) data = &w.bytes;
     assert(data && data->size() == 96000);
     assert((*data)[0] == 0xAA && (*data)[1] == 0xFF);  // (1,0)x4 then (1,1)x4
     const Bytes* lut = nullptr;
-    for (const auto& w : bus.writes) if (w.command == 0x20) lut = &w.bytes;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x20) lut = &w.bytes;
     assert(lut && *lut == Bytes(lut_picco_se0400_full, lut_picco_se0400_full + 535));
     assert(lastRegister(bus, 0x12) == 0x00);
     bus.clear();
     s.display(bus, newFb.data(), oldFb.data(), RefreshMode::Fast, true);
-    for (const auto& w : bus.writes) if (w.command == 0x20) lut = &w.bytes;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x20) lut = &w.bytes;
     assert(*lut == Bytes(lut_picco_se0400_fast, lut_picco_se0400_fast + 535));
     assert(lastRegister(bus, 0x02) == 0x00);
 
@@ -117,7 +134,8 @@ int main(int argc, char** argv) {
     bus.clear();
     s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);  // old must = retained black
     data = nullptr;
-    for (const auto& w : bus.writes) if (w.command == 0x10) data = &w.bytes;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x10) data = &w.bytes;
     assert(data && data->size() == 96000);
     assert((*data)[0] == 0x55 && (*data)[100] == 0x55 && (*data)[95999] == 0x55);
     // Overlay AA: LSB mask -> low bit, MSB mask -> high bit, slot-5 LUT.
@@ -130,17 +148,20 @@ int main(int argc, char** argv) {
     s.copyGrayscaleLsb(bus, lsb.data());
     s.copyGrayscaleMsb(bus, msb.data());
     const Bytes* g = nullptr;
-    for (const auto& w : bus.writes) if (w.command == 0x10) g = &w.bytes;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x10) g = &w.bytes;
     // px: (msb,lsb) = 11 11 01 01 | 10 10 00 00
     assert(g && g->size() == 96000 && (*g)[0] == 0xF5 && (*g)[1] == 0xA0);
     s.displayGray(bus, newFb.data(), false, nullptr, false);
-    for (const auto& w : bus.writes) if (w.command == 0x20) lut = &w.bytes;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x20) lut = &w.bytes;
     assert(*lut == Bytes(lut_picco_se0400_gray, lut_picco_se0400_gray + 535));
     s.deepSleep(bus);
     assert(lastRegister(bus, 0x07) == 0xA5);
     std::printf("Picco se0400: probe, init, packing and refresh passed\n");
     return 0;
   }
+  checkController("SSD1677");
 
   auto& d = static_cast<Ssd1677Driver&>(ssd1677Driver());
   // Sleep latches the display pins; the probe must release them before driving RESET.

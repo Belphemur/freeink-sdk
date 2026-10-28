@@ -44,6 +44,7 @@ const Uc8253X3Config& uc8253X3DefaultConfig();
 
 class Uc8253X3Driver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "UC8253"; }
   explicit Uc8253X3Driver(const Uc8253X3Config& cfg = uc8253X3DefaultConfig());
 
   uint32_t spiHz() const override;

@@ -89,6 +89,10 @@ class FreeInkDisplay {
   // runtime-selected; a single-device build gets exactly that panel's size.
   static constexpr uint32_t MAX_BUFFER_SIZE = BoardConfig::MAX_FRAMEBUFFER_BYTES;
 
+  // Selected controller/backend identity; nullptr until a driver is selected by begin().
+  // Read-only: never probes hardware or substitutes the board profile default.
+  const char* getControllerName() const;
+
   // Runtime dimensions
   uint16_t getDisplayWidth() const { return displayWidth; }
   uint16_t getDisplayHeight() const { return displayHeight; }
