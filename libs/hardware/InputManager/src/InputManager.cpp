@@ -728,7 +728,7 @@ bool InputManager::hasTouch() const {
 
 int8_t InputManager::touchWakeIrqPin() const {
 #if FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
-  return touchWakeIrqUsable ? BoardConfig::ACTIVE.touch.irq : static_cast<int8_t>(-1);
+  return touchWakeIrqUsable && !gt911StatusFault ? BoardConfig::ACTIVE.touch.irq : static_cast<int8_t>(-1);
 #else
   return -1;
 #endif
@@ -2411,6 +2411,7 @@ void InputManager::beginGt911() {
   // controller's own table, so a result from an earlier begin() says nothing
   // about the mode the controller is in now.
   touchWakeIrqUsable = false;
+  gt911StatusFault = false;
   if (touchDataEnabled) {
     gt911ConfigureIntWake();
   }
@@ -2441,12 +2442,12 @@ bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t 
   return true;
 }
 
-void InputManager::gt911ClearStatus() {
+bool InputManager::gt911ClearStatus() {
   Wire.beginTransmission(gt911Addr);
   Wire.write(0x81);
   Wire.write(0x4E);
   Wire.write(static_cast<uint8_t>(0x00));
-  Wire.endTransmission();
+  return Wire.endTransmission() == 0;
 }
 
 #if FREEINK_GT911_INT_WAKE
@@ -2469,6 +2470,12 @@ constexpr uint16_t GT911_CONFIG_FRESH = 0x8100;
 // Datasheet flows allow it a few ms; give it 100 ms before calling it refused.
 constexpr uint8_t GT911_FRESH_POLL_MS = 10;
 constexpr uint8_t GT911_FRESH_POLL_TRIES = 10;
+// Status register (0x814E) access on the INT-wake path. In low-level mode a
+// pending report holds INT asserted until 0x814E is cleared, so a read or
+// clear that fails on I2C is retried a few times, briefly, before the line is
+// withdrawn as a wake source.
+constexpr uint8_t GT911_STATUS_TRIES = 3;
+constexpr uint8_t GT911_STATUS_RETRY_MS = 2;
 }  // namespace
 
 bool InputManager::gt911WriteReg(const uint16_t reg, const uint8_t* buf, const uint8_t len) {
@@ -2579,11 +2586,56 @@ void InputManager::gt911ConfigureIntWake() {
   // In low-level mode a pending report holds INT down until the status
   // register is cleared, and re-reading the config table makes the controller
   // latch one. Clear it so the line idles released and the app's first level
-  // wake is armed on a quiet pin instead of an already-asserted one.
-  gt911ClearStatus();
+  // wake is armed on a quiet pin instead of an already-asserted one. If the
+  // clear fails, the line is still usable in principle but withheld
+  // (gt911StatusFault) until a poll gets the register cleared.
   touchWakeIrqUsable = true;
+  gt911ClearStatusForWake();
   LOG_INF("INPUT", "GT911 INT wake: INT=%d low-level hold (%s)", t.irq,
           needsPatch ? "patched this boot" : "already set");
+}
+
+// Retries only while the INT is actually offered as a wake source. Already
+// faulted, or never offered (config refused): one attempt per poll, so a dead
+// controller costs each poll a single transfer, as without the flag.
+uint8_t InputManager::gt911StatusTries() const {
+  return touchWakeIrqUsable && !gt911StatusFault ? GT911_STATUS_TRIES : 1;
+}
+
+bool InputManager::gt911ReadStatusForWake(uint8_t& status) {
+  const uint8_t tries = gt911StatusTries();
+  for (uint8_t i = 0; i < tries; ++i) {
+    if (i > 0) delay(GT911_STATUS_RETRY_MS);
+    if (gt911ReadReg(0x814E, &status, 1)) return true;
+  }
+  gt911SetStatusFault(true);
+  return false;
+}
+
+void InputManager::gt911ClearStatusForWake() {
+  const uint8_t tries = gt911StatusTries();
+  for (uint8_t i = 0; i < tries; ++i) {
+    if (i > 0) delay(GT911_STATUS_RETRY_MS);
+    if (gt911ClearStatus()) {
+      gt911SetStatusFault(false);
+      return;
+    }
+  }
+  gt911SetStatusFault(true);
+}
+
+// While set, touchWakeIrqPin() reports -1: an INT that may be held asserted by
+// an uncleared report must not be armed as a level wake, or a controller that
+// stops answering on I2C would keep the host awake. Logged once per episode.
+void InputManager::gt911SetStatusFault(const bool fault) {
+  // Nothing to withdraw on a controller that never offered the pin.
+  if (fault == gt911StatusFault || (fault && !touchWakeIrqUsable)) return;
+  gt911StatusFault = fault;
+  if (fault) {
+    LOG_ERR("INPUT", "GT911 INT wake: status register 0x814E unreachable on I2C; INT withdrawn as a wake source");
+  } else {
+    LOG_INF("INPUT", "GT911 INT wake: status register reachable again; INT usable as a wake source");
+  }
 }
 
 #endif  // FREEINK_GT911_INT_WAKE
@@ -2841,7 +2893,12 @@ void InputManager::pollGt911(const unsigned long now) {
     return;
   }
   uint8_t status = 0;
-  if (!gt911ReadReg(0x814E, &status, 1)) {
+#if FREEINK_GT911_INT_WAKE
+  const bool statusRead = gt911ReadStatusForWake(status);
+#else
+  const bool statusRead = gt911ReadReg(0x814E, &status, 1);
+#endif
+  if (!statusRead) {
     // Keep the last complete frame while the single-touch state remains
     // latched. Clearing only this snapshot makes a transient I2C failure look
     // like a multi-contact release to multi-touch consumers, which can split one
@@ -2861,6 +2918,18 @@ void InputManager::pollGt911(const unsigned long now) {
   }
 
   if (!(status & 0x80)) {  // buffer not ready
+#if FREEINK_GT911_INT_WAKE
+    // A nonzero status with the buffer-ready bit clear is latched controller
+    // state (e.g. the HaveKey bit or a stale contact count) that 0x814E holds
+    // until the host clears it, and in low-level INT mode the line stays
+    // asserted along with it. Clear it here too so an armed level wake is not
+    // left firing on it. The all-zero idle pass stays a single read.
+    if (status != 0) {
+      gt911ClearStatusForWake();
+    } else {
+      gt911SetStatusFault(false);  // nothing latched: INT is released
+    }
+#endif
     return;
   }
 
@@ -2965,7 +3034,11 @@ void InputManager::pollGt911(const unsigned long now) {
     touchPoint.valid = false;
   }
 
+#if FREEINK_GT911_INT_WAKE
+  gt911ClearStatusForWake();  // GT911 requires clearing 0x814E after each read
+#else
   gt911ClearStatus();  // GT911 requires clearing 0x814E after each read
+#endif
 }
 #endif  // FREEINK_TOUCH_GT911
 

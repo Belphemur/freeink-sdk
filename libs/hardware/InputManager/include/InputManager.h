@@ -224,7 +224,11 @@ class InputManager {
   // report frame until the poll clears the status register, which a level wake
   // cannot miss. -1 whenever that cannot be guaranteed (no touch, probe failed,
   // FREEINK_GT911_INT_WAKE not built, or the controller refused the mode);
-  // callers must keep polling in that case.
+  // callers must keep polling in that case. Also -1 while the poll cannot
+  // read or clear the status register over I2C: a pending report would then
+  // hold the line asserted indefinitely, so arming it would pin the host
+  // awake. That state is transient (the pin comes back once a poll succeeds),
+  // so query this before each sleep rather than caching it.
   int8_t touchWakeIrqPin() const;
   // Asserted level of #touchWakeIrqPin (true = LOW), from the board profile's
   // TouchConfig::irqActiveLow. The driver only ever programs a low-level hold,
@@ -376,12 +380,21 @@ class InputManager {
   uint16_t mapTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax, uint16_t outMax) const;
   void beginGt911();
   bool gt911ReadReg(uint16_t reg, uint8_t* buf, uint8_t len);
-  void gt911ClearStatus();
+  bool gt911ClearStatus();
 #if FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
   bool gt911WriteReg(uint16_t reg, const uint8_t* buf, uint8_t len);
   // Put the INT line in low-level hold mode so it can serve as a light-sleep
   // wake source; sets touchWakeIrqUsable on success.
   void gt911ConfigureIntWake();
+  // Status-register access for the INT-wake path: bounded retries, and a
+  // latched fault (gt911StatusFault) while 0x814E cannot be read or cleared,
+  // both only once the INT has been offered (touchWakeIrqUsable).
+  bool gt911ReadStatusForWake(uint8_t& status);
+  void gt911ClearStatusForWake();
+  void gt911SetStatusFault(bool fault);
+  uint8_t gt911StatusTries() const;
+  // 0x814E could not be read or cleared: touchWakeIrqPin() reports -1.
+  bool gt911StatusFault = false;
 #endif  // FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
