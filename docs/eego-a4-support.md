@@ -34,7 +34,7 @@ The original pin map and controller details came from stock-firmware analysis
 | Panel RAM | 768 × **600**; host FB is 768×552 sent **bottom-up**, then 48 white rows |
 | Framebuffer | 52,992 bytes (768/8 × 552); grayscale planes 52,992 B each, lazy from PSRAM |
 | Display SPI | SCLK 42, MOSI 45, CS 21, DC 14, RST 13, BUSY 41 · **20 MHz** |
-| MicroSD | dedicated **HSPI** bus: SCLK 39, MISO 40, MOSI 38, CS 47 · 20 MHz · power enable GPIO6 (active-low) |
+| MicroSD | dedicated **HSPI** bus: SCLK 39, MISO 40, MOSI 38, CS 47 · 20 MHz; power enable GPIO6 (active-low) on units with the CW2015 gauge, otherwise GPIO6 is left HIGH |
 | Buttons | UP 5 and DOWN 7 active-low; POWER 8 active-high with INPUT_PULLDOWN |
 | Battery | **CW2015** fuel gauge at I²C 0x62 on SDA 2 / SCL 1 (shared with touch and RTC), probed at runtime; ADC GPIO 10 (divider ×1.559) when the gauge does not answer. Charge status GPIO 11 |
 | Touch | **GSLX680** — SDA 2, SCL 1, RST 3, addr 0x40. Firmware blob uploaded at boot (`gsl/EegoA4GslFirmware.h`, extracted + hash-verified); backend in InputManager. |
@@ -103,6 +103,14 @@ Build with `-DFREEINK_DEVICE_EEGO_A4=1`; see the `eego_a4` environment in
   100, matching the stock battery icon. Samples outside 2500–4500 mV or above
   100% are rejected. When the gauge does not answer, the ADC pin is used.
   Charging comes from GPIO 11; the gauge cannot observe it.
+  GPIO6 depends on the unit. On units whose CW2015 answers, it is the SD
+  card's active-low power enable, as stock V1.0.3 drives it; held HIGH, the
+  card does not answer. On a tested unlit unit without the gauge, the GPIO10
+  ADC reads the battery only with GPIO6 HIGH (a 40-minute trace showed about
+  4.12 to 4.08 V). Before mounting the card, `SDCardManager` checks for the
+  gauge at 0x62: if it answers, GPIO6 becomes the SD power enable and display
+  initialization leaves it alone; otherwise display initialization drives it
+  HIGH. The profile describes the gauge-less case.
 - `FrontlightManager` probes the optional LM3630A through
   `BoardProfile::i2cFrontlight`. The profile's PWM frontlight field is `NO_FRONTLIGHT`.
   The controller is fitted on some unlit units too, so a unit the stock
@@ -130,7 +138,8 @@ Build with `-DFREEINK_DEVICE_EEGO_A4=1`; see the `eego_a4` environment in
 - Standby current with the GPIO4 latch + GPIO3-low sequence.
 - CW2015 on hardware: the stock profile and register sequence are recovered
   from stock V1.0.3 and match a live unit's resident profile byte for byte, but
-  the SDK's upload path and ADC fallback have only run against a host model.
+  the SDK's upload path has only run against a host model. ADC fallback has
+  been tested on an unlit unit with GPIO6 HIGH; other revisions need checking.
 
 ## Provenance
 
