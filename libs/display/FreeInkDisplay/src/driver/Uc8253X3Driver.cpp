@@ -376,9 +376,11 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   // The differential branch below hands an AA-edge pixel -- grey on the glass, white in
   // DTM1, white in the new frame -- the gentle WW settle of _aa_pre_bw_mid, and the
   // absolute gray pass that follows idles WW and BB, so nothing after this point can
-  // recover it. Take the clean base instead; a _half drives it to the rail.
+  // recover it. Take the clean base instead; a _half drives it to the rail. A _fast
+  // fallback would give the same WW cell, so it keeps the single differential pass.
   const bool cleanBaseNeeded = !_redRamSynced || _grayState.lsbValid || _forceFullSyncNext ||
-                               _initialFullSyncsRemaining > 0 || _grayOnGlass;
+                               _initialFullSyncsRemaining > 0 ||
+                               (_grayOnGlass && fallback != RefreshMode::Fast);
   if (cleanBaseNeeded) {
     display(bus, fb, nullptr, fallback, /*turnOff=*/false);
     loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
