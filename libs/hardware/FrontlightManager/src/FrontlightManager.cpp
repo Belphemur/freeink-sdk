@@ -412,11 +412,20 @@ bool FrontlightManager::piccoUpdate(const uint8_t reg, const uint8_t mask, const
 }
 
 bool FrontlightManager::configurePicco() {
+  // The LM3630A-style controller needs time to leave software sleep before
+  // brightness/current writes (also used by the Linux lm3630a driver). Only
+  // pay this settling delay on the first on after boot/off, not slider ticks.
+  if (!piccoUpdate(0x00, 0x80, 0x00)) {
+    LOG_ERR("FrontlightMgr", "Picco frontlight wake failed");
+    return false;
+  }
+  delay(2);
   // Recovered power-on sequence (FUN_42008cc4): filter/mode/config registers.
   bool ok = piccoWrite(0x50, 0x03);
   ok = piccoUpdate(0x01, 0x07, 0x00) && ok;
   ok = piccoWrite(0x02, 0x38) && ok;
   _i2cConfigured = ok;
+  if (!ok) LOG_ERR("FrontlightMgr", "Picco frontlight configuration failed");
   return ok;
 }
 
@@ -440,9 +449,8 @@ void FrontlightManager::applyPicco() {
   const uint8_t coolPwm = e[0], warmPwm = e[1], coolCur = static_cast<uint8_t>(e[2] & 0x1f),
                 warmCur = static_cast<uint8_t>(e[3] & 0x1f);
 
-  piccoUpdate(0x00, 0x80, 0x00);  // leave standby
-  piccoWrite(0x03, coolPwm);      // cool brightness
-  piccoWrite(0x04, warmPwm);      // warm brightness
+  piccoWrite(0x03, coolPwm);  // cool brightness
+  piccoWrite(0x04, warmPwm);  // warm brightness
   piccoUpdate(0x05, 0x1f, coolCur);
   piccoUpdate(0x06, 0x1f, warmCur);
   piccoUpdate(0x00, 0x14, (coolPwm || coolCur) ? 0x04 : 0x00);  // cool channel enable

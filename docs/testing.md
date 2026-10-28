@@ -91,6 +91,18 @@ report decode into key events, auto-reconnect, scanning and teardown order.
 The fake has no radio, so pairing, link timing and memory use still need a
 device.
 
+## Frontlight driver
+
+```sh
+sh libs/hardware/FrontlightManager/test/host/run.sh
+```
+
+Compiles the Picco frontlight backend and real board profile against a register
+model with a wake-settling interval. Covers the first nonzero brightness write,
+off/on level restoration, warm/cool channels, slider updates without repeated
+wake delays, and retry after a failed wake transaction. Physical light output
+and the actual controller settling time still require a device check.
+
 ## Display drivers
 
 ```sh
