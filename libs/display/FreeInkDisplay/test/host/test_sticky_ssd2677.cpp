@@ -37,10 +37,15 @@ int main(int argc, char**) {
   assert(stickyHasSsd2677() && fakePanelCommand == 0x70 && fakeSpiRestarts == 1);
 
   auto& s = ssd2677Driver();
+  assert(s.busyPolarity() == BusyPolarity::ActiveLowReady);
 
   EpdBus bus;
   fakeHeapCapsFail = argc > 1;
   s.begin(bus);
+  // Wait after reset, panel setting and the final E9 command, exactly once
+  // each. A second wait after E9 looks for a new BUSY pulse for 100 ms even
+  // though no command was sent. AA reinitializes twice per steady-state turn.
+  assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 1, 10}));
   if (fakeHeapCapsFail) {
     assert(static_cast<Ssd2677Driver&>(s)._old == nullptr);
     // Both black and the following white frame must use the full waveform
@@ -126,6 +131,7 @@ int main(int argc, char**) {
   bus.clear();
   s.copyGrayscaleLsb(bus, lsbMask.data());
   s.copyGrayscaleMsb(bus, msbMask.data());
+  assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 1, 10}));
   assert(count(bus, 0x00) == 1 && count(bus, 0xE6) == 0 && *lastData(bus, 0xE0) == Bytes({0x10}) &&
          "masks go out after a fresh init, no OTP latch");
   data = lastData(bus, 0x10);
@@ -137,6 +143,10 @@ int main(int argc, char**) {
   bus.clear();
   s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);
   assert(count(bus, 0x00) == 1 && *lastData(bus, 0xE6) == Bytes({0x19}) && "next frame re-inits after the AA LUT");
+  // The next base still waits after reset/initialization, OTP latch and power
+  // on, and still performs its refresh. Only the duplicate init wait is gone.
+  assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 1, 10, 13, 15}));
+  assert(bus.waits == 6);
 
   // Deep sleep: the rails are on after a fast frame, so they go off first.
   bus.clear();

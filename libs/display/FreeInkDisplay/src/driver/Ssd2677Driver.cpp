@@ -123,7 +123,9 @@ void Ssd2677Driver::initPanel(EpdBus& bus) {
     if (c.delayMs) delay(c.delayMs);
     if (c.waitBusy) bus.waitBusy(" SSD2677 init");
   }
-  bus.waitBusy(" SSD2677 init");
+  // Sticky's final command already waits for completion. Keep the final
+  // wait for init tables without a per-command wait on their last entry.
+  if (!list[count - 1].waitBusy) bus.waitBusy(" SSD2677 init");
   _needsPowerOn = true;
   _latchedWaveform = 0;
 }

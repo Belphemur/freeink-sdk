@@ -31,7 +31,10 @@ namespace freeink {
 class Ssd2677Driver : public PanelDriver {
  public:
   uint32_t spiHz() const override;
-  BusyPolarity busyPolarity() const override { return BusyPolarity::ActiveLow; }
+  BusyPolarity busyPolarity() const override {
+    return BoardConfig::ACTIVE.board == BoardConfig::Board::Sticky ? BusyPolarity::ActiveLowReady
+                                                                   : BusyPolarity::ActiveLow;
+  }
   PanelGeometry geometry() const override;
 
   void begin(EpdBus& bus) override;

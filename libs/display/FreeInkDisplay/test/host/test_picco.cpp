@@ -77,9 +77,13 @@ int main(int argc, char** argv) {
     memcpy(fakePanelRev, rev, 3);
     assert(piccoProbePanel() == PiccoSe0400nqw47);
     auto& s = ssd2677Driver();
+    assert(s.busyPolarity() == BusyPolarity::ActiveLow);
     EpdBus bus;
     s.begin(bus);
     assert(lastRegister(bus, 0x00) == 0x27 && lastRegister(bus, 0xE9) == 0x01);
+    // Picco's final init command has no per-command wait: keep the final
+    // completion wait as well as the reset wait.
+    assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 12}));
     Bytes oldFb(48000, 0xFF), newFb(48000, 0xFF);
     newFb[0] = 0x0F;  // left 4 px black, right 4 px white; old all white
     bus.clear();
