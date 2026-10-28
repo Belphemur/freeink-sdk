@@ -1549,9 +1549,12 @@ constexpr BoardProfile EEGO_A4 = {
     DisplayController::UC8279C,
     768,
     552,
-    {42, 45, 21, 14, 13, 41, 6},  // GPIO6 HIGH restores battery ADC readings on the tested unlit unit.
+    // GPIO6: display enable (HIGH) here, which units without the CW2015 need for
+    // GPIO10 battery readings. SDCardManager reassigns it to SD power (active-low)
+    // when the gauge answers. See docs/eego-a4-support.md.
+    {42, 45, 21, 14, 13, 41, 6},
     20000000,
-    // Leave GPIO6 HIGH via display initialization; SD must not drive it LOW.
+    // SD power enable: set at runtime (GPIO6, active-low) on units with the CW2015.
     {39, 40, 38, 47, PIN_UNASSIGNED, true, 20000000},
     // UP DOWN POWER. Power is active-HIGH (press drives 3V3) with a weak
     // external pull-down; INPUT_PULLDOWN required (InputManager honors the
