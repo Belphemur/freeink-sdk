@@ -85,6 +85,7 @@ inline bool ensureBooted(uint32_t waitMs = 0) {
   static bool tried = false;
   static unsigned long lastFailure = 0;
   if (ready) return true;
+  freeink::enableI2cBusLock();  // first call runs in setup(), before the render task exists
   if (waitMs == 0 && tried && millis() - lastFailure < RETRY_GAP_MS) return false;
   tried = true;
   constexpr uint16_t outputs = (1u << PIN_AMP_SELECT) | (1u << PIN_AMP_ENABLE) |
