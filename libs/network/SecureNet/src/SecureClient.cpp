@@ -1,5 +1,7 @@
 #include "SecureClient.h"
 
+#include <Network.h>
+
 // wolfSSL is only pulled in when explicitly enabled. This keeps the default SDK
 // build free of the wolfSSL dependency while leaving a single, well-defined
 // integration point for the TLS 1.3 transport.
@@ -81,10 +83,12 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   const uint32_t timeoutMs = getTimeout();
   if (abortRequested()) return 0;
   _transport.setConnectionTimeout(timeoutMs);
+  _tcpConnected = false;
   if (!_transport.connect(host, port)) {
     if (Serial) Serial.printf("[SecureClient] TCP connect failed (%s): %s:%u\n", label, host, port);
     return 0;
   }
+  _tcpConnected = true;
   if (abortRequested()) {
     _transport.stop();
     return 0;
@@ -205,12 +209,15 @@ bool SecureClient::abortRequested() {
 
 int SecureClient::connect(const char* host, uint16_t port) {
   _aborted = false;
+  stop();
+  if (abortRequested() || !hostResolves(host)) return 0;
   // Negotiate the highest mutually supported version rather than pinning TLS 1.3:
   // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
   // client fails those handshakes outright. v23 still selects 1.3 when the peer
   // offers it (WOLFSSL_TLS13 is enabled) and falls back to 1.2 otherwise.
   if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto")) return 1;
-  if (_aborted) return 0;
+  // Only a failed handshake can be a TLS version problem; don't retry a dead host.
+  if (_aborted || !_tcpConnected) return 0;
 
   // Some TLS 1.2-only servers are intolerant of a TLS 1.3-capable ClientHello
   // and abort with a fatal handshake_failure alert. Retry with an explicit
@@ -288,6 +295,13 @@ void SecureClient::stop() { _transport.stop(); _connected = false; }
 uint8_t SecureClient::connected() { return 0; }
 
 #endif
+
+bool hostResolves(const char* host) {
+  IPAddress ip;
+  if (Network.hostByName(host, ip) == 1) return true;
+  if (Serial) Serial.printf("[SecureNet] DNS lookup failed: %s\n", host);
+  return false;
+}
 
 // --- transport-agnostic single-byte helpers (shared) ---
 size_t SecureClient::write(uint8_t b) { return write(&b, 1); }

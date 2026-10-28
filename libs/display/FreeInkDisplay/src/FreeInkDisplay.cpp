@@ -522,6 +522,18 @@ void FreeInkDisplay::returnBuildStorage() {
 // is PSRAM-first with a malloc fallback, so this is correct with or without PSRAM.
 bool FreeInkDisplay::releaseSecondaryBuffer() {
   if (!frameBufferActive) return false;
+  // A deferred refresh is still reading these bytes: the last displayStart + swap parked the
+  // displayed frame here, and X3's post-waveform DTM1 sync reads it in displayFinish(). Freeing
+  // underneath that leaves the finish pointing at freed memory or, once it falls back to
+  // frameBuffer, reseeding the controller's previous-frame plane from a frame that was never
+  // displayed. Drain first -- the same reason, and the same one-line fix, as
+  // borrowSecondaryBuffer() above.
+  //
+  // Without this the obligation lands on every consumer: a caller that ships a refresh
+  // asynchronously must remember to finish it before freeing a framebuffer, and the failure is
+  // silent and deferred -- a later refresh diffs against a baseline that no longer describes the
+  // panel. Draining here retires that obligation rather than restating it at each call site.
+  syncPendingAsync();
   if (frameBufferActive == frameBuffer0) {
     free(frameBuffer0);
     frameBuffer0 = nullptr;
@@ -1043,12 +1055,40 @@ void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
   cancelGrayscalePass();
-  const uint8_t* baseline = frameBufferActive ? frameBufferActive : frameBuffer;
+  // The baseline must be the frame that is ON THE PANEL: drivers restore their diff state from it
+  // (LgfxEpdDriver seeds its canvas with fillCanvasBW(), and that canvas is what Panel_EPD diffs
+  // the next push against). Handing over a frame that was never displayed makes the next refresh
+  // drive the wrong pixels -- ghosting, arriving one page later than the cause.
+  //
+  // frameBufferActive is that frame, and it is the ONLY candidate. frameBuffer is never a
+  // substitute, in either of the two ways the secondary can be away:
+  //
+  //   LENT      -- borrowSecondaryBuffer() hands the block out without seeding anything, so
+  //                frameBuffer is the write buffer: the previously displayed frame, or a
+  //                half-rendered page.
+  //   released  -- a host that seeds frameBuffer from the displayed frame before freeing (the
+  //                CrossPoint HAL does) makes it briefly correct, but that happens upstream of
+  //                this call. Every caller of this function is the tail (or the abort point) of
+  //                a grayscale plane pass, and those passes clear frameBuffer to 0x00 and render
+  //                a plane into it -- twice. By the time we get here the "seeded" frame is an
+  //                LSB/MSB PLANE, and handing it over rebases the controller's previous-frame RAM
+  //                from the page's own glyph plane.
+  //
+  // With no baseline, say so instead of inventing one: every driver implements bw == nullptr as
+  // "drop the synced claim and take a clean/full sync on the next push" (Uc8253X3: _redRamSynced
+  // = false; Uc8179/Uc8279X4: _needFullClear; Uc8279: _forceFullSyncNext; the rest reload
+  // wholesale anyway). Returning early would leave a driver believing its RAM still mirrors the
+  // panel while it physically holds the two planes this pass just wrote.
+  //
+  // Host test: test_pro.cpp testGrayCleanupBaseline -- released and lent stream nothing into
+  // controller RAM and leave the driver needing a clean sync; it fails on the fallback above.
+  const uint8_t* baseline = frameBufferActive;
   if (!_inverted) {
     DisplayPmLock pmLock;
     _driver->cleanupGrayscaleBuffers(_bus, baseline);
   }
-  if (frameBuffer && baseline && frameBuffer != baseline) memcpy(frameBuffer, baseline, bufferSize);
+  if (!baseline) return;
+  if (frameBuffer && frameBuffer != baseline) memcpy(frameBuffer, baseline, bufferSize);
 }
 #endif
 

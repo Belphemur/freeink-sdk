@@ -26,6 +26,7 @@ struct TwoWire {
     regs[0x20][6] = regs[0x20][7] = 255;
   }
   bool begin(int sda, int scl, uint32_t hz) { return sda == 41 && scl == 42 && hz == 400000; }
+  bool end() { return true; }
   void setTimeOut(uint16_t ms) { timeoutMs = ms; }
   uint16_t getTimeOut() const { return timeoutMs; }
   void beginTransmission(uint8_t a) { address = a; tx.clear(); }
