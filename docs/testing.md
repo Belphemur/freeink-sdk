@@ -4,6 +4,16 @@ Run these commands from the repository root. Host tests use production code
 with desktop adapters or hardware stubs; they do not require a device or PlatformIO.
 You need a C/C++ compiler with C++17 support, Python 3, and a POSIX shell.
 
+## Serial transport
+
+```sh
+python3 libs/hardware/BoardConfig/test/host/run_serial.py
+```
+
+Checks that native USB Serial/JTAG output is serviced without a blocking flush,
+and that UART, TinyUSB, Sticky's UART bridge, and simulator builds remain no-ops.
+Device tests must also verify timely acknowledgements and intact transfer data.
+
 ## UI, books, credentials, and input
 
 ```sh
