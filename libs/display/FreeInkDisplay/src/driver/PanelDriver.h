@@ -33,6 +33,10 @@ class PanelDriver {
  public:
   virtual ~PanelDriver() = default;
 
+  // Stable controller/backend identity, independent of board defaults.
+  // Custom drivers may leave it unavailable instead of reporting a guessed name.
+  virtual const char* controllerName() const { return nullptr; }
+
   // --- bus configuration (consumed by the facade before begin()) ---
   virtual uint32_t spiHz() const = 0;
   virtual BusyPolarity busyPolarity() const = 0;

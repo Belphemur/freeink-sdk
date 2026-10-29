@@ -58,6 +58,7 @@ const Uc8179Config& uc8179DefaultConfig();
 
 class Uc8179Driver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "UC8179"; }
   explicit Uc8179Driver(const Uc8179Config& cfg = uc8179DefaultConfig());
 
   uint32_t spiHz() const override;

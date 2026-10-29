@@ -9,6 +9,7 @@
 #include <cstring>
 #include <vector>
 #define private public
+#include "FreeInkDisplay.h"
 #include "src/driver/Ssd1677Driver.h"
 #include "src/driver/Ssd2677Driver.h"
 #include "src/lut/Ssd2677Luts.h"
@@ -29,18 +30,37 @@ static int count(const EpdBus& bus, uint8_t command) {
   return n;
 }
 
-int main(int argc, char**) {
+int main(int argc, char** argv) {
+  const bool originalPanel = argc > 1 && !strcmp(argv[1], "ssd1677");
   // An SSD2677 answers CMD 0x70 with 0x07 first; the probe restarts the shared
   // SPI bus on its existing pins (incl. the SD card's MISO) afterwards.
   static const uint8_t rev[3] = {0x07, 0x01, 0x01};
-  memcpy(fakePanelRev, rev, 3);
-  assert(stickyHasSsd2677() && fakePanelCommand == 0x70 && fakeSpiRestarts == 1);
+  if (!originalPanel) memcpy(fakePanelRev, rev, 3);
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  assert(display.getControllerName() == nullptr && fakePanelCommand == -1 && fakeSpiRestarts == 0);
+  display.selectDriver();
+  const char* expected = originalPanel ? "SSD1677" : "SSD2677";
+  assert(!strcmp(display.getControllerName(), expected));
+  assert(fakePanelCommand == 0x70 && fakeSpiRestarts == 1);
+  // The board profile still says SSD1677; diagnostics must follow the selected driver.
+  assert(BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::SSD1677);
+  assert(!strcmp(display.getControllerName(), expected) && fakeSpiRestarts == 1);
+  if (originalPanel) {
+    std::puts("Sticky SSD1677: detected controller identity passed");
+    return 0;
+  }
+  assert(stickyHasSsd2677());
 
   auto& s = ssd2677Driver();
+  assert(s.busyPolarity() == BusyPolarity::ActiveLowReady);
 
   EpdBus bus;
   fakeHeapCapsFail = argc > 1;
   s.begin(bus);
+  // Wait after reset, panel setting and the final E9 command, exactly once
+  // each. A second wait after E9 looks for a new BUSY pulse for 100 ms even
+  // though no command was sent. AA reinitializes twice per steady-state turn.
+  assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 1, 10}));
   if (fakeHeapCapsFail) {
     assert(static_cast<Ssd2677Driver&>(s)._old == nullptr);
     // Both black and the following white frame must use the full waveform
@@ -126,6 +146,7 @@ int main(int argc, char**) {
   bus.clear();
   s.copyGrayscaleLsb(bus, lsbMask.data());
   s.copyGrayscaleMsb(bus, msbMask.data());
+  assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 1, 10}));
   assert(count(bus, 0x00) == 1 && count(bus, 0xE6) == 0 && *lastData(bus, 0xE0) == Bytes({0x10}) &&
          "masks go out after a fresh init, no OTP latch");
   data = lastData(bus, 0x10);
@@ -137,6 +158,10 @@ int main(int argc, char**) {
   bus.clear();
   s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);
   assert(count(bus, 0x00) == 1 && *lastData(bus, 0xE6) == Bytes({0x19}) && "next frame re-inits after the AA LUT");
+  // The next base still waits after reset/initialization, OTP latch and power
+  // on, and still performs its refresh. Only the duplicate init wait is gone.
+  assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 1, 10, 13, 15}));
+  assert(bus.waits == 6);
 
   // Deep sleep: the rails are on after a fast frame, so they go off first.
   bus.clear();

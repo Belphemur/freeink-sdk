@@ -252,6 +252,8 @@ void FreeInkDisplay::selectDriver() {
   if (_driver) _driver->setBackgroundHint(_inverted);
 }
 
+const char* FreeInkDisplay::getControllerName() const { return _driver ? _driver->controllerName() : nullptr; }
+
 void FreeInkDisplay::begin() {
   cancelGrayscalePass();
   DisplayPmLock pmLock;

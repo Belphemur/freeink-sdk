@@ -95,9 +95,22 @@ report decode into key events, auto-reconnect, scanning and teardown order.
 The fake has no radio, so pairing, link timing and memory use still need a
 device.
 
+## Frontlight driver
+
+```sh
+sh libs/hardware/FrontlightManager/test/host/run.sh
+```
+
+Compiles the Picco frontlight backend and real board profile against a register
+model with a wake-settling interval. Covers the first nonzero brightness write,
+off/on level restoration, warm/cool channels, slider updates without repeated
+wake delays, and retry after a failed wake transaction. Physical light output
+and the actual controller settling time still require a device check.
+
 ## Display drivers
 
 ```sh
+python3 libs/display/FreeInkDisplay/test/host/run_bus.py
 python3 libs/display/FreeInkDisplay/test/host/run_pro.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279c_a4.py
@@ -106,7 +119,9 @@ python3 libs/display/FreeInkDisplay/test/host/run_picco.py
 ```
 
 These compile production drivers against recording buses. The Pro suite also
-compiles the facade in single- and dual-buffer modes. The Picco suite builds the
+compiles the facade in single- and dual-buffer modes, checks every concrete driver
+header against the shared interface, and verifies selected controller identity
+independently of board metadata. The Picco suite builds the
 SSD1677/SSD2677 drivers as a Picco and as a Sticky, including each board's
 bit-banged panel probe. The checks cover transfer
 sequences, grayscale uploads, refresh lifecycle, and power-state behavior for
