@@ -169,3 +169,12 @@ or measure device heap. Consumers without `FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER`
 use ordinary on-demand record growth without proactive reservation. Reservations
 use wolfSSL's own connection-owned buffer and allocator, with no global allocator
 replacement or cross-client loan.
+
+## Streaming JSON previews
+
+```sh
+sh libs/network/JsonSax/test/host/run.sh
+```
+
+Checks optional bounded string prefixes, unchanged default overflow handling,
+continued parsing after long strings, and rejection of oversized keys under ASan/UBSan.
