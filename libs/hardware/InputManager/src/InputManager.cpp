@@ -2001,16 +2001,15 @@ void InputManager::pollCst816s(const unsigned long now) {
     }
     cstVirtualButtons = 0;
   };
-  // Re-reading CST816S can return the last sample after its event ends.
-  // A stale successful read must not keep a contact pressed forever either.
-  if (active && !fresh && now - cstLastSample >= 100) { release(); return; }
+  // While a contact is held, read every sample whether or not an IRQ arrived
+  // (vendor firmware polls unconditionally); a zero-finger frame ends it.
   uint8_t data[5] = {};
   if (!ft5x06ReadReg(0x02, data, sizeof(data))) {
     // The device goes silent again after release; don't latch a key/contact.
     if (active && now - cstLastSample >= 100) release();
     return;
   }
-  if (fresh) cstLastSample = now;
+  cstLastSample = now;
   if (!(data[0] & 0x0F) || (data[1] >> 6) == 1) {
     release();
     return;

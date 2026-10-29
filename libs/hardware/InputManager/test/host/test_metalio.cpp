@@ -110,8 +110,12 @@ int main() {
   point(input, 120, 200);
   assert(input.touchPressed);
   fakeNow += 150;
-  input.update(); // stale successful frame, IRQ idle
-  assert(!input.touchPressed);
+  input.update(); // finger still down, IRQ idle: the contact holds
+  assert(input.touchPressed);
+  Wire.touch = {};
+  fakeNow += 25;
+  input.update(); // zero-finger frame read without an IRQ releases
+  assert(!input.touchPressed && input.touchReleasedEvent);
 
   Wire.expander[0] &= ~(1 << 7);
   fakeNow += 25;
