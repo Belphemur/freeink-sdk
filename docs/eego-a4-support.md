@@ -65,19 +65,23 @@ Gray3 history: the next page shows its base with a normal B/W refresh, which
 fully clears the previous screen, and its grays follow as a Gray3 transition
 from that base.
 
-Full images (absolute/direct planes) use the stock four-gray waveform (five
-42-byte records) with no B/W base pass. Planes go out MSB to DTM1 and LSB to
-DTM2, so black/dark/light/white are 00/01/10/11.
+Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
+sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,
+and two refreshes with the GC waveform at half its frame counts. Then the
+stock four-gray waveform (five 42-byte records) with planes MSB to DTM1 and
+LSB to DTM2, so black/dark/light/white are 00/01/10/11. The white record
+(0x21) has its last two white pulses lengthened to 6 frames (stock 0x81,
+0x82 become 0x86, 0x86). DTM1 is seeded white again before power-off.
 
 Every refresh powers the panel off afterwards. Leaving it powered between
 refreshes made later four-gray images show earlier screens as ghosts.
 
-Gray3 pages use the stock V1.0.3 reader session (PWR 03 00 72 72,
-VCOM_DC 0x32). Four-gray images use the stock V1.3.0 image session
-(PWR 03 00 78 78 17, VCOM_DC 0x20, gate/source 00 00 20 00). B/W uses a
-stronger drive (PWR 43 00 78 78 17, VCOM_DC 0x24) because UI screens change
-with fast refreshes. B/W and Gray3 use gate/source 00 00 00 00. Every session
-seeds DTM1 white before power-on.
+Gray3 pages and four-gray images use the stock V1.0.3 gray session
+(PWR 03 00 72 72, VCOM_DC 0x32). B/W uses stronger rails
+(PWR 43 00 78 78 17) because UI screens change with fast refreshes, and
+VCOM_DC 0x26: at stock 0x32, gray content showed white cut-outs of earlier
+black; at 0x24 the image fuzzed while the panel sat idle. Every session uses gate/source 00 00 00 00 and seeds
+DTM1 white before power-on.
 Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
 uses the stock production "DU-factory-previous" waveform (0x50 = 0xd7), both
 49-byte records. The planes are
