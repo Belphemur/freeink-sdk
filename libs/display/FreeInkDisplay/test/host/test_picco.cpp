@@ -199,6 +199,9 @@ int main(int argc, char** argv) {
     const auto old = Bytes(s._old, s._old + 48000);
     bus.clear();
     fakeDelayMs = 0;
+    // Since the forced end-of-refresh power-off, display()/displayGray() leave
+    // the panel off; re-arm the powered-on state the explicit hook verifies.
+    s._needsPowerOn = false;
     s.powerOffBetweenFrames(bus);
     assert(lastRegister(bus, 0x02) == 0 && s._needsPowerOn && !s._needsInitialFull);
     assert(fakeDelayMs == 0 && old == Bytes(s._old, s._old + 48000));
@@ -212,7 +215,9 @@ int main(int argc, char** argv) {
       if (w.command == 0x12) assert(poweredOn);
       assert(w.command != 0x07);  // no deep sleep
     }
-    assert(poweredOn && !s._needsPowerOn);
+    // Every refresh parks the panel (PON, 0x12, POF) — stock contract since
+    // the forced power-off, so _needsPowerOn must be set again afterwards.
+    assert(poweredOn && s._needsPowerOn);
     s.deepSleep(bus);
     assert(lastRegister(bus, 0x07) == 0xA5);
     std::printf("Picco se0400: probe, init, packing and refresh passed\n");
