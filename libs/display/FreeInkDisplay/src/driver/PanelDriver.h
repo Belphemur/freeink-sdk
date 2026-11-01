@@ -60,6 +60,10 @@ class PanelDriver {
   // issues POF when needed).
   virtual bool powerOffPanel(EpdBus& bus) { (void)bus; return false; }
 
+  // Called only after the host's complete frame (including grayscale) finishes.
+  // Retain controller RAM and the partial-refresh baseline; never reset/sleep.
+  virtual void powerOffBetweenFrames(EpdBus& bus) { (void)bus; }
+
   // --- core paint path (load RAM + refresh) ---
   virtual void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) = 0;
   virtual void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
