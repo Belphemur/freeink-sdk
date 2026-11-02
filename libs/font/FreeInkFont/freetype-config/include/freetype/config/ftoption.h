@@ -442,19 +442,20 @@ FT_BEGIN_HEADER
 
   /**************************************************************************
    *
-   * The size in bytes of the render pool used by the scan-line converter to
-   * do all of its work.
+   * The size in bytes of the stack render pool used by the scan-line
+   * converters. FreeType's rasterizers switch to dynamic allocations
+   * (through the FT_Memory allocator, i.e. FreeInkFont's fontAlloc) when a
+   * glyph needs more than the pool.
    *
-   * FreeInkFont: 4096 instead of the 16384 default. The smooth rasterizer
-   * allocates its worker — including this pool as a TCell array — ON THE
-   * CALLER'S STACK (ftgrays.c gray_TWorker worker[1] / gray_convert_glyph
-   * TCell buffer[]), so the default 16 KB pool alone makes every
-   * FT_Load_Char/FT_Render_Glyph burn ~16 KB of task stack: unusable on
-   * MCU-class task stacks (4–32 KB) and the root cause of a stack-overflow
-   * crash chain observed on device. 4 KB pools the same rasterizer into
-   * banded chunk passes — identical output, modest CPU increase per glyph.
-   * Measured (host, 64-bit): TrueType rasterize total 18.0 KB → 5.7 KB.
-   * The Adobe CFF engine adds its own (heap-dominated) depth on top.
+   * FreeInkFont: 4096 instead of the 16384 default. The pool lives on the
+   * caller's stack, so the default 16 KB pool makes every
+   * FT_Load_Char/FT_Render_Glyph burn up to ~16 KB of task stack: unusable
+   * on MCU-class task stacks (4–32 KB) and the root cause of a
+   * stack-overflow crash chain observed on device. 4 KB caps the stack use
+   * and lets oversized glyphs overflow into fontAlloc instead (since 2.15
+   * the rasterizers fall back to dynamic allocation automatically; before
+   * that they banded into chunk passes with identical output). The Adobe
+   * CFF engine adds its own (heap-dominated) depth on top.
    */
 #define FT_RENDER_POOL_SIZE  4096L
 
@@ -681,6 +682,7 @@ FT_BEGIN_HEADER
 #define TT_CONFIG_CMAP_FORMAT_12
 #define TT_CONFIG_CMAP_FORMAT_13
 #define TT_CONFIG_CMAP_FORMAT_14
+#define TT_CONFIG_CMAP_FORMAT_15
 
 
   /*************************************************************************/
@@ -799,6 +801,29 @@ FT_BEGIN_HEADER
    * added to the OpenType standard.
    */
 /* #define TT_CONFIG_OPTION_NO_BORING_EXPANSION */
+
+
+  /**************************************************************************
+   *
+   * Define `TT_CONFIG_OPTION_VARC` if you want to include support for
+   * variable composite glyphs (the 'VARC' table).  This is part of the
+   * 'boring' OpenType specification expansions.
+   *
+   *   https://github.com/harfbuzz/boring-expansion-spec/blob/main/VARC.md
+   *
+   * Variable composites enable more efficient encoding of variable glyphs
+   * by allowing glyphs to be composed from other glyphs with variable
+   * transformations and axis value overrides.
+   *
+   * FreeInkFont: opt-in (FREEINK_FONT_ENABLE_VARC), mirroring the upstream
+   * default behind a gate like the other heavy optional features. The
+   * ~3.8 KB ttvarc.c engine compiles into the truetype amalgamation only
+   * when enabled; e-reader fonts (static TTF/OTF) never carry 'VARC'
+   * tables, which exist for compact CJK variable fonts.
+   */
+#if FREEINK_FONT_ENABLE_VARC
+#define TT_CONFIG_OPTION_VARC
+#endif
 
 
   /**************************************************************************

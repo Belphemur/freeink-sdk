@@ -152,17 +152,15 @@ restores FreeType's normal v40. Only the face genuinely rendering right now
 can affect what FreeType sees, closing cross-face property clobbering in both
 directions.
 
-**Vendoring note:** the `autofit`/`raster` module sources here are from
-FreeType 2.14.3, while the rest of `third_party/freetype` in this tree is
-2.13.3. `find_unicode_charmap` in `ftobjs.c`/`ftobjs.h` was changed from
-`static` to `FT_BASE_DEF`/`FT_BASE` to match 2.14's exported linkage, which
-`afadjust.c` in `autofit` calls directly — that's the only cross-version patch
-this required. Validated with a host-side ASan/UBSan build across every
-`HintingMode` plus monochrome against a real bundled font
-(`test/host/FtFontRenderOptionsTest.cpp`), but the base FreeType tree hasn't
-been bumped to 2.14 wholesale, so other 2.13/2.14 internal drift is possible
-in code paths this didn't exercise. Bumping the whole vendored tree to one
-matching version is worth doing as a follow-up.
+**Vendoring note:** `third_party/freetype` is a pristine git submodule of
+the official mirror pinned to tag `VER-2-15-0`; nothing inside the submodule
+tree is patched. All module sources (including `autofit`/`raster`) compile
+from the submodule through the `src/freetype/ft_*.c` shims, and every
+FreeType customization lives in the `freetype-config/include/` overlay that
+shadows the submodule's `include/freetype/config/` — FreeType's documented
+customization mechanism. When bumping the submodule tag, port the pristine
+config's new options into the overlay (see the `FREEINK_FONT_ENABLE_*` gates
+in `ftoption.h` and the curated module list in `ftmodule.h`).
 
 ### FtFont ligatures: GSUB vs. TtfFont's compatibility-codepoint check
 
