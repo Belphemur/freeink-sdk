@@ -8,9 +8,9 @@
 #define private public
 #include "FreeInkDisplay.h"
 #include "src/driver/Ssd1677Driver.h"
-#include "src/lut/Ssd1677Luts.h"
 #include "src/driver/Uc8179Driver.h"
 #include "src/driver/Uc8279X4Driver.h"
+#include "src/lut/Ssd1677Luts.h"
 #undef private
 
 using namespace freeink;
@@ -215,8 +215,10 @@ static void testGrayCleanupBaseline() {
     std::memcpy(display.getFrameBuffer(), page.data(), page.size());
     display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
     assert(driver._oldPlaneValid);
-    if (lend) assert(display.borrowSecondaryBuffer(nullptr) != nullptr);
-    else assert(display.releaseSecondaryBuffer());
+    if (lend)
+      assert(display.borrowSecondaryBuffer(nullptr) != nullptr);
+    else
+      assert(display.releaseSecondaryBuffer());
     std::memcpy(display.getFrameBuffer(), planeScratch.data(), planeScratch.size());
     display._bus.clear();
     display.cleanupGrayscaleWithPreviousBuffer();
@@ -781,7 +783,8 @@ static void testMetalio() {
   assert(lastRegister(bus, 0x18) == 0x80);
   assert(lastRegister(bus, 0x3C) == 0x80);
   assert(lastRegister(bus, 0x2C) == 0x10);
-  for (const auto& w : bus.writes) if (w.command == 0x21) assert(w.bytes == Bytes({0, 0}));
+  for (const auto& w : bus.writes)
+    if (w.command == 0x21) assert(w.bytes == Bytes({0, 0}));
   assert(driver._isScreenOn);
   bus.clear();
   driver.displayGray(bus, bw.data(), false, nullptr, false);
@@ -790,7 +793,8 @@ static void testMetalio() {
   assert(lastRegister(bus, 0x22) == 0xCC);
   assert(lastRegister(bus, 0x3C) == 0xC0);
   bool lutWritten = false;
-  for (const auto& w : bus.writes) if (w.command == 0x32) lutWritten = true;
+  for (const auto& w : bus.writes)
+    if (w.command == 0x32) lutWritten = true;
   assert(lutWritten);
   // Exit grayscale the way the facade does so the next FAST isn't promoted.
   driver.cleanupGrayscaleBuffers(bus, bw.data());
@@ -806,7 +810,8 @@ static void testMetalio() {
   driver.displayStart(bus, bw.data(), nullptr, RefreshMode::Half, true);
   assert(bus.waits == 1);  // black pulse done; target waveform still pending
   unsigned pulses = 0;
-  for (const auto& w : bus.writes) if (w.command == 0x20) ++pulses;
+  for (const auto& w : bus.writes)
+    if (w.command == 0x20) ++pulses;
   assert(pulses == 2);
   assert(lastPlane(bus, 0x26) == Bytes(bw.size(), 0));
   driver.displayFinish(bus, bw.data());
@@ -861,6 +866,67 @@ static void testUc8279X4IdlePowerOff() {
                      [](const EpdBus::Write& w) { return w.command == 0x04; }));
   display.releaseBuffers();
   std::puts("  UC8279X4 idle powerOffPanel/facade + re-power: PASS");
+
+static void testDeferredGrayBase() {
+  Uc8179Driver blocking, deferred;
+  EpdBus first, second;
+  const auto a = frame(3), b = frame(89), lsb = frame(14), msb = frame(29);
+  for (auto pair : {std::pair<Uc8179Driver*, EpdBus*>{&blocking, &first}, {&deferred, &second}}) {
+    auto& driver = *pair.first;
+    auto& bus = *pair.second;
+    driver.begin(bus);
+    driver.beginGrayscale(bus, a.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+    driver.copyGrayscaleLsb(bus, lsb.data());
+    driver.copyGrayscaleMsb(bus, msb.data());
+    driver.displayGray(bus, a.data(), false, nullptr, false);
+    driver.cleanupGrayscaleBuffers(bus, a.data());
+    bus.clear();
+  }
+  blocking.beginGrayscale(first, b.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  assert(deferred.supportsDeferredGrayscaleBase());
+  assert(deferred.displayGrayscaleBaseStart(second, b.data(), RefreshMode::Fast, false));
+  assert(deferred._pendingGrayBase && deferred._pendingRefresh);
+  // The post-waveform OLD-plane upload must not happen while the base is running.
+  assert(second.writes.size() < first.writes.size());
+  deferred.displayFinish(second, b.data());
+  assert(!deferred._pendingGrayBase && !deferred._pendingRefresh);
+  assert(first.writes.size() == second.writes.size());
+  for (size_t i = 0; i < first.writes.size(); ++i) {
+    assert(first.writes[i].command == second.writes[i].command);
+    assert(first.writes[i].bytes == second.writes[i].bytes);
+  }
+  assert(deferred._bwPlanesSynced && deferred._oldPlaneValid);
+  assert(!deferred._redriveAfterGray);
+}
+
+static void testDeferredGrayFacadeUsesCurrentDrawFrame() {
+  Uc8179Driver driver;
+  FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+  display._driver = &driver;
+  display.begin();
+  const auto oldPage = frame(3), nextPage = frame(89);
+  memcpy(display.getFrameBuffer(), oldPage.data(), oldPage.size());
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+  memcpy(display.getFrameBuffer(), nextPage.data(), nextPage.size());
+  display._bus.clear();
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  assert(display.supportsDeferredGrayscaleBase());
+  assert(display.displayGrayscaleBaseAsync(FreeInkDisplay::FAST_REFRESH));
+#else
+  assert(!display.supportsDeferredGrayscaleBase());
+  assert(!display.displayGrayscaleBaseAsync(FreeInkDisplay::FAST_REFRESH));
+#endif
+  display.waitRefreshComplete();
+  // Both the deferred single-buffer path and blocking dual-buffer fallback
+  // must upload the newly drawn page, never the previous displayed buffer.
+  for (auto command : {0x10, 0x13}) {
+    const auto& bytes = lastPlane(display._bus, command);
+    assert(bytes.size() == 60000);
+    for (unsigned y = 0; y < 600; ++y)
+      for (unsigned x = 0; x < 100; ++x) assert(bytes[y * 100 + x] == (y < 480 ? nextPage[(479 - y) * 100 + x] : 0xff));
+  }
+  display.releaseBuffers();
+  free(driver._grayBase);
 }
 
 int main(int argc, char** argv) {
@@ -874,6 +940,8 @@ int main(int argc, char** argv) {
     std::puts("Sticky absolute capability, activation, power-down and B/W recovery passed");
     return 0;
   }
+  testDeferredGrayBase();
+  testDeferredGrayFacadeUsesCurrentDrawFrame();
   testUc8179GrayShadeSplit();
   testUc8279X4WaveformSelection();
   testUc8279X4StateMachine();
