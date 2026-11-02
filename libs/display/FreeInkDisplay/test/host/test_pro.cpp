@@ -866,6 +866,7 @@ static void testUc8279X4IdlePowerOff() {
                      [](const EpdBus::Write& w) { return w.command == 0x04; }));
   display.releaseBuffers();
   std::puts("  UC8279X4 idle powerOffPanel/facade + re-power: PASS");
+}
 
 static void testDeferredGrayBase() {
   Uc8179Driver blocking, deferred;
