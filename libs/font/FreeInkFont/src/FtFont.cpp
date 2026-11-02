@@ -1034,7 +1034,16 @@ bool FtFont::glyphBounds(const uint32_t codepoint, const uint16_t sizePx, int16_
 }
 
 bool FtFont::metrics26_6(const uint32_t codepoint, const uint32_t pixelSize26_6, GlyphMetrics& out) {
-  return metricsGlyph26_6(glyphId(codepoint), pixelSize26_6, out);
+  const GlyphId glyph = glyphId(codepoint);
+  if (glyph == 0) {
+    // A zero glyph ID is always missing (see the header contract). Loading
+    // .notdef here would report phantom metrics for absent codepoints and
+    // diverge from advance()'s fast path, which reports MissingGlyph.
+    lastGlyphFailure_ = GlyphFailure::MissingGlyph;
+    lastGlyphError_ = 0;
+    return false;
+  }
+  return metricsGlyph26_6(glyph, pixelSize26_6, out);
 }
 
 bool FtFont::metricsGlyph26_6(const GlyphId glyph, const uint32_t pixelSize26_6, GlyphMetrics& out) {
