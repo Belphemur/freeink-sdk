@@ -24,6 +24,7 @@ cp -R ../fixtures/ncxonly "$BUILD_DIR/fixtures/ncxonly"
 python3 ../fixtures/gen_big_chapter.py "$BUILD_DIR/fixtures/minimal/OEBPS/text/ch2.xhtml"
 mkdir -p "$BUILD_DIR/fixtures/minimal/OEBPS/images"
 python3 ../fixtures/gen_test_image.py "$BUILD_DIR/fixtures/minimal/OEBPS/images/pattern.png"
+python3 ../fixtures/gen_gif_bmp.py "$BUILD_DIR/fixtures/minimal/OEBPS/images"
 # JPEG variant via macOS sips (or ImageMagick if available).
 if command -v sips >/dev/null 2>&1; then
   sips -s format jpeg "$BUILD_DIR/fixtures/minimal/OEBPS/images/pattern.png" \

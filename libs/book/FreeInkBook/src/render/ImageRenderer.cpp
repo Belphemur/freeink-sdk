@@ -731,7 +731,11 @@ BookStatus ImageRenderer::render(BookSource& source, const ZipCatalog& zip,
                      ? renderJpegProgressive(source, *entry, image, scratch, rowFn, user)
                      : renderJpeg(source, *entry, image, scratch, rowFn, user);
         break;
+      case ImageInfo::Kind::Gif:
+      case ImageInfo::Kind::Bmp:
       case ImageInfo::Kind::Unknown:
+        // Probed but not decoded by the SDK — the host app renders these
+        // with its own converters.
         status = BookStatus::Unsupported;
         break;
     }
