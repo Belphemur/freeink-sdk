@@ -15,9 +15,14 @@
 //
 // The combo is board-specific: boardCombo() resolves the ACTIVE profile's pair —
 // Back + Up on ADC-ladder boards (the classic Xteink layout), Power + Next on
-// the X4 Pro (its two other keys are GPIO0, a boot strap that must not be held
-// at reset, and touch-only back/confirm). Pass a pair explicitly through
-// SdUpdateOptions to override it for an SD update.
+// the X4 Pro / X4 Classic (their Up key is GPIO0, a boot strap that must not be
+// held at reset; on the Pro Back/Confirm are the GT911's capacitive Home key +
+// touch), and Up + Down on the EEGO A4 (its Back key is touch-only). Pass a
+// pair explicitly through SdUpdateOptions to override it for an SD update.
+//
+// Call order: on multi-device binaries, call BoardConfig::selectDevice() BEFORE
+// either checkBootCombo() overload — the combo resolves from the ACTIVE
+// profile, which defaults to DEFAULT_DEVICE until selection.
 //
 // It is always safe to call unconditionally and early — it does nothing unless
 // ALL of these hold: the combo is pressed, slot 0 contains a valid app image, and
@@ -46,11 +51,15 @@ namespace freeink {
 namespace recovery {
 
 // Read the recovery combo and, if held, switch to OTA slot 0 and reboot. Returns
-// immediately (no reboot) in every other case.
+// immediately (no reboot) in every other case. On multi-device binaries, call
+// BoardConfig::selectDevice() first (see the file comment above).
 void checkBootCombo();
 
 // The board's recovery combo, resolved from the ACTIVE BoardConfig profile.
-// X4 Pro: Power + Next (BTN_POWER + BTN_DOWN). Every other profile: Back + Up.
+// X4 Pro / X4 Classic: Power + Next (BTN_POWER + BTN_DOWN). EEGO A4: Up + Down
+// (BTN_UP + BTN_DOWN; Back is touch-only there). Every other profile: Back + Up.
+// On multi-device binaries, resolve only after BoardConfig::selectDevice() —
+// ACTIVE.board defaults to DEFAULT_DEVICE until then.
 struct RecoveryCombo {
   int8_t button1;
   int8_t button2;  // -1 = single-button latch
@@ -67,11 +76,15 @@ struct SdUpdateOptions {
   // Rename the image to "<path>.flashed" after a successful flash so holding
   // the combo through the post-flash reset can't flash the same file again.
   bool renameOnSuccess = false;
-  // The combo, as InputManager button indices. The default -1 -1 resolves to
-  // the ACTIVE board's boardCombo() (Back + Up on ADC-ladder boards, Power +
-  // Next on the X4 Pro). Set button2 = -1 for a single-button latch.
-  int8_t button1 = -1;
-  int8_t button2 = -1;
+  // The combo, as InputManager button indices. The default kAutoCombo resolves
+  // that slot to the ACTIVE board's boardCombo() (Back + Up on ADC-ladder
+  // boards, Power + Next on the X4 Pro / X4 Classic, Up + Down on the EEGO A4);
+  // overriding one slot keeps the board's other key, so an explicit single key
+  // still needs the board's partner held. Pass button2 = -1 for an explicit
+  // single-button latch; button1 = -1 disables the check.
+  static constexpr int8_t kAutoCombo = -128;  // INT8_MIN: resolve from boardCombo()
+  int8_t button1 = kAutoCombo;
+  int8_t button2 = kAutoCombo;
 };
 
 // Combo-latched SD update: when the combo is held at reset, look for
