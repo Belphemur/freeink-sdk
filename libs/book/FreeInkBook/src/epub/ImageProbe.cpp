@@ -1,4 +1,4 @@
-// FreeInkBook — PNG/JPEG dimension probe without decoding.
+// FreeInkBook — PNG/JPEG/GIF/BMP dimension probe without decoding.
 
 #include "epub/ImageProbe.h"
 
@@ -16,6 +16,13 @@ uint16_t be16(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1
 uint32_t be32(const uint8_t* p) {
   return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
          (static_cast<uint32_t>(p[2]) << 8) | p[3];
+}
+
+uint16_t le16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
+
+uint32_t le32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
 // Sequential reader over a ZipEntryReader with exact-read and skip.
@@ -76,6 +83,48 @@ BookStatus probeImage(BookSource& source, const ZipEntry& entry, Arena& scratch,
       out->kind = ImageInfo::Kind::Png;
       out->width = static_cast<uint16_t>(w);
       out->height = static_cast<uint16_t>(h);
+    }
+    scratch.release(marked);
+    return BookStatus::Ok;
+  }
+
+  // GIF87a / GIF89a: signature, then LE16 logical-screen width/height at
+  // offsets 6/8. Probe only — frame decoding stays app-side.
+  if (memcmp(hdr, "GIF87a", 6) == 0 || memcmp(hdr, "GIF89a", 6) == 0) {
+    const uint16_t w = le16(hdr + 6);
+    const uint16_t h = le16(hdr + 8);
+    if (w > 0 && h > 0) {
+      out->kind = ImageInfo::Kind::Gif;
+      out->width = w;
+      out->height = h;
+    }
+    scratch.release(marked);
+    return BookStatus::Ok;
+  }
+
+  // BMP: 'BM' file header, DIB header size LE32 at offset 14. Win
+  // BITMAPINFOHEADER and later (>= 40, incl. V4/V5) keep LE32 dims at 18/22
+  // (height signed: negative = top-down). OS/2 BITMAPCOREHEADER (12) uses
+  // unsigned LE16 dims at 14/16.
+  if (hdr[0] == 'B' && hdr[1] == 'M') {
+    const uint32_t dibSize = le32(hdr + 14);
+    if (dibSize == 12) {
+      const uint16_t w = le16(hdr + 18);
+      const uint16_t h = le16(hdr + 20);
+      if (w > 0 && h > 0) {
+        out->kind = ImageInfo::Kind::Bmp;
+        out->width = w;
+        out->height = h;
+      }
+    } else if (dibSize >= 40) {
+      const uint32_t dw = le32(hdr + 18);
+      const int32_t sH = static_cast<int32_t>(le32(hdr + 22));
+      const int32_t dh = sH < 0 ? -sH : sH;  // top-down BMP: height negative
+      if (dw > 0 && dh > 0 && dw <= 0xFFFF && dh <= 0xFFFF) {
+        out->kind = ImageInfo::Kind::Bmp;
+        out->width = static_cast<uint16_t>(dw);
+        out->height = static_cast<uint16_t>(dh);
+      }
     }
     scratch.release(marked);
     return BookStatus::Ok;

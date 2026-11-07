@@ -1726,11 +1726,14 @@ void testImages() {
                                                   opened.scratch, sink, nullptr)),
            static_cast<int>(BookStatus::Ok));
 
-  // Two placed images (PNG + JPEG); the GIF was skipped without failing.
-  CHECK_EQ(sink.count, 2u);
+  // Four placed images (PNG + JPEG + GIF + BMP); the missing file is still
+  // skipped without failing, regardless of its (probeable) extension.
+  CHECK_EQ(sink.count, 4u);
   CHECK(std::strstr(sink.text, "Text before the picture.") != nullptr);
   CHECK(std::strstr(sink.text, "Text at the end.") != nullptr);
   if (sink.count < 2) return;  // CHECK doesn't abort — don't walk off the array
+
+  // GIF and BMP now probe to real dimensions, so both reserve layout space.
 
   // 64x48 fits without scaling; centered in the 752 px content box.
   const PageImage& png = sink.images[0];
@@ -1790,6 +1793,35 @@ void testImages() {
     opened.scratch.release(marked);
   }
 
+  // GIF and BMP probe to real dimensions now — reserved, not skipped.
+  const PageImage* gif = nullptr;
+  const PageImage* bmp = nullptr;
+  for (uint32_t i = 2; i < sink.count; ++i) {
+    if (std::strstr(sink.images[i].href, ".gif") != nullptr) gif = &sink.images[i];
+    if (std::strstr(sink.images[i].href, ".bmp") != nullptr) bmp = &sink.images[i];
+  }
+  CHECK(gif != nullptr);
+  if (gif != nullptr) {
+    CHECK_EQ(gif->width, 64);
+    CHECK_EQ(gif->height, 48);
+  }
+  CHECK(bmp != nullptr);
+  if (bmp != nullptr) {
+    CHECK_EQ(bmp->width, 64);
+    CHECK_EQ(bmp->height, 48);
+  }
+  // The SDK does not decode GIF/BMP: render reports Unsupported and no rows
+  // are emitted; painting them is the host app's job.
+  if (gif != nullptr && bmp != nullptr) {
+    static GrayCapture noRows;
+    const int pngStatus = static_cast<int>(ImageRenderer::render(
+        opened.source, opened.book.zip(), *gif, opened.scratch, GrayCapture::onRow, &noRows));
+    CHECK_EQ(pngStatus, static_cast<int>(BookStatus::Unsupported));
+    const int bmpStatus = static_cast<int>(ImageRenderer::render(
+        opened.source, opened.book.zip(), *bmp, opened.scratch, GrayCapture::onRow, &noRows));
+    CHECK_EQ(bmpStatus, static_cast<int>(BookStatus::Unsupported));
+  }
+
   // Dither helper: solid black and solid white rows.
   {
     uint8_t gray[16];
@@ -1838,6 +1870,48 @@ void testPlainText() {
   CHECK(std::strstr(sink.text, "Third one ends") != nullptr);
   CHECK(std::strstr(sink.text, "\xEF\xBB\xBF") == nullptr);  // BOM skipped
   CHECK_EQ(scratch.used(), 0u);
+}
+
+void testProbeGifBmp() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  struct Case {
+    const char* href;
+    ImageInfo::Kind kind;
+    uint16_t w;
+    uint16_t h;
+  };
+  const Case cases[] = {
+      {"OEBPS/images/pattern.gif", ImageInfo::Kind::Gif, 64, 48},
+      {"OEBPS/images/pattern.bmp", ImageInfo::Kind::Bmp, 64, 48},
+      // Top-down BMP: height field negative — dims are the absolute value.
+      {"OEBPS/images/pattern_tdb.bmp", ImageInfo::Kind::Bmp, 64, 48},
+      // OS/2 BITMAPCOREHEADER: 12-byte DIB, LE16 dims at offsets 18/20.
+      {"OEBPS/images/pattern_core.bmp", ImageInfo::Kind::Bmp, 24, 18},
+  };
+  for (const Case& c : cases) {
+    const ZipEntry* entry = opened.book.zip().find(c.href);
+    CHECK(entry != nullptr);
+    if (entry == nullptr) continue;
+    ImageInfo info;
+    CHECK_EQ(static_cast<int>(probeImage(opened.source, *entry, opened.scratch, &info)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK_EQ(static_cast<int>(info.kind), static_cast<int>(c.kind));
+    CHECK_EQ(info.width, c.w);
+    CHECK_EQ(info.height, c.h);
+  }
+
+  // Non-image data probes to Unknown (skip, not failure): the ch5 page body.
+  const ZipEntry* notImage = opened.book.zip().find("OEBPS/text/ch5.xhtml");
+  CHECK(notImage != nullptr);
+  if (notImage != nullptr) {
+    ImageInfo info;
+    CHECK_EQ(static_cast<int>(probeImage(opened.source, *notImage, opened.scratch, &info)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK_EQ(static_cast<int>(info.kind), static_cast<int>(ImageInfo::Kind::Unknown));
+  }
+  CHECK_EQ(opened.scratch.used(), 0u);
 }
 
 // Progressive JPEG (SOF2): TJpgDec cannot decode it, so the renderer's
@@ -2702,6 +2776,7 @@ int main(int argc, char** argv) {
   testCharacterAndWordSpacing();
   testWidowOrphan();
   testImages();
+  testProbeGifBmp();
   testProgressiveJpeg();
   testImagePrescanMemory();
   testCjk();

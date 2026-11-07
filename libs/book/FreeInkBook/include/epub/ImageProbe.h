@@ -4,8 +4,9 @@
 //
 // Layout needs intrinsic dimensions to reserve space for an image without
 // decoding it. The probe streams just enough of the entry to find them:
-// the PNG IHDR (fixed offset) or the first JPEG SOF marker (walking segment
-// lengths, capped). Decoding happens later, at render time.
+// the PNG IHDR (fixed offset), the first JPEG SOF marker (walking segment
+// lengths, capped), the GIF logical-screen descriptor, or the BMP DIB
+// header. Decoding happens later, at render time.
 
 #include <stdint.h>
 
@@ -18,7 +19,7 @@ namespace freeink {
 namespace book {
 
 struct ImageInfo {
-  enum class Kind : uint8_t { Unknown = 0, Png, Jpeg };
+  enum class Kind : uint8_t { Unknown = 0, Png, Jpeg, Gif, Bmp };
   Kind kind = Kind::Unknown;
   uint16_t width = 0;
   uint16_t height = 0;
@@ -26,8 +27,9 @@ struct ImageInfo {
 };
 
 // Scratch is released before returning. Returns Ok with kind=Unknown for
-// formats the engine does not handle (GIF, SVG, WebP) — the caller skips the
-// image rather than failing the chapter.
+// formats the SDK does not decode (SVG, WebP) — the caller skips the image
+// rather than failing the chapter. GIF/BMP dimensions are recognized here
+// (probe only); rendering them is the host application's job.
 BookStatus probeImage(BookSource& source, const ZipEntry& entry, Arena& scratch,
                       ImageInfo* out);
 
