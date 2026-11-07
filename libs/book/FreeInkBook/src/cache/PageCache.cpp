@@ -74,7 +74,10 @@ constexpr uint32_t kRuleRecSize = 7;
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 15;  // 15: LayoutParams gains characterSpacingPx /
+constexpr uint32_t kLayoutRevision = 16;  // 16: ImageProbe recognizes GIF/BMP dims — pages
+                                          //  carrying them now reserve image space; cached
+                                          //  pages built before the bump permanently skip them
+                                          //  15: LayoutParams gains characterSpacingPx /
                                           //  wordSpacingPx, applied in advanceFor
                                           //  14: FtFont kerning adds GPOS pair-adjustment
                                           //  fallback (fonts kerned only via GPOS now
