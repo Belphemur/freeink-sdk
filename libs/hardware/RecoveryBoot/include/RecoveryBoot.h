@@ -10,8 +10,14 @@
 // (the recovery flasher itself, the editor, the reader, ...).
 //
 // Convention: the recovery / "escape hatch" firmware lives in OTA slot 0 (ota_0,
-// the default upload offset 0x10000). Held at reset, the combo Back + Up repoints
-// otadata at slot 0 and reboots into it.
+// the default upload offset 0x10000). Held at reset, the combo repoints otadata
+// at slot 0 and reboots into it.
+//
+// The combo is board-specific: boardCombo() resolves the ACTIVE profile's pair —
+// Back + Up on ADC-ladder boards (the classic Xteink layout), Power + Next on
+// the X4 Pro (its two other keys are GPIO0, a boot strap that must not be held
+// at reset, and touch-only back/confirm). Pass a pair explicitly through
+// SdUpdateOptions to override it for an SD update.
 //
 // It is always safe to call unconditionally and early — it does nothing unless
 // ALL of these hold: the combo is pressed, slot 0 contains a valid app image, and
@@ -43,6 +49,14 @@ namespace recovery {
 // immediately (no reboot) in every other case.
 void checkBootCombo();
 
+// The board's recovery combo, resolved from the ACTIVE BoardConfig profile.
+// X4 Pro: Power + Next (BTN_POWER + BTN_DOWN). Every other profile: Back + Up.
+struct RecoveryCombo {
+  int8_t button1;
+  int8_t button2;  // -1 = single-button latch
+};
+RecoveryCombo boardCombo();
+
 struct SdUpdateOptions {
   // SD path checked for a firmware image while the combo is held.
   const char* path = "/update.bin";
@@ -53,12 +67,11 @@ struct SdUpdateOptions {
   // Rename the image to "<path>.flashed" after a successful flash so holding
   // the combo through the post-flash reset can't flash the same file again.
   bool renameOnSuccess = false;
-  // The combo, as InputManager button indices. The default Back + Up matches
-  // checkBootCombo(); boards without those keys (e.g. up/down/power-only
-  // side-button layouts) pass whichever pair their profile actually maps.
-  // Set button2 = -1 for a single-button latch.
-  int8_t button1 = InputManager::BTN_BACK;
-  int8_t button2 = InputManager::BTN_UP;
+  // The combo, as InputManager button indices. The default -1 -1 resolves to
+  // the ACTIVE board's boardCombo() (Back + Up on ADC-ladder boards, Power +
+  // Next on the X4 Pro). Set button2 = -1 for a single-button latch.
+  int8_t button1 = -1;
+  int8_t button2 = -1;
 };
 
 // Combo-latched SD update: when the combo is held at reset, look for

@@ -15,16 +15,23 @@ namespace freeink {
 namespace recovery {
 namespace {
 
-// --- Recovery combo: Back + Up (default) ------------------------------------
-// The two buttons sit on different ADC ladders (Back on GPIO1, Up on GPIO2),
-// which is the only kind of two-button combo the ladder can report at once —
-// buttons sharing a pin (e.g. Back+Right) collapse to a single reading. Reading
-// through InputManager keeps the board's calibrated ranges (and works on the
-// digital-button boards too) instead of hard-coding ADC thresholds here.
+// --- Recovery combo ----------------------------------------------------------
+// On ADC-ladder boards the default Back + Up sit on different ladders (Back on
+// GPIO1, Up on GPIO2), which is the only kind of two-button combo the ladder
+// can report at once — buttons sharing a pin (e.g. Back+Right) collapse to a
+// single reading. Digital-button boards are exempt: every key is its own GPIO,
+// so any pair can be held together. That matters for the X4 Pro, whose profile
+// picks Power + Next: its Left key is GPIO0, a boot strap that must not be
+// held at reset (it would enter ROM download mode), and Back/Confirm are the
+// GT911's capacitive Home key + touch. Reading through InputManager keeps each
+// board's calibrated ranges / input style instead of hard-coding thresholds
+// here.
 //
-// We don't need BoardConfig::selectDevice() to have run first: the Xteink X3 and
-// X4 share an identical input config, so the default-active profile already reads
-// the ladder correctly. That lets this run as the first line of setup().
+// We don't need BoardConfig::selectDevice() to have run first: boardCombo()
+// only reads ACTIVE.board, which starts at DEFAULT_DEVICE. On single-device
+// binaries that is the device; on multi-device binaries the consumer calls
+// selectDevice() during its own hardware detection — before this would matter,
+// since it reads only the enum, not pins.
 constexpr int kSettleSamples = 16;  // max polls while debounce warms up
 constexpr int kConfirmSamples = 5;  // consecutive holds required (~30 ms)
 
@@ -131,6 +138,16 @@ bool trySdUpdateAndReboot(const SdUpdateOptions& options) {
 
 }  // namespace
 
+RecoveryCombo boardCombo() {
+  switch (BoardConfig::ACTIVE.board) {
+    case BoardConfig::Board::XteinkX4Pro:
+      // Power (GPIO3) + Next (GPIO7): Left is the GPIO0 strap (see above).
+      return {InputManager::BTN_POWER, InputManager::BTN_DOWN};
+    default:
+      return {InputManager::BTN_BACK, InputManager::BTN_UP};
+  }
+}
+
 bool switchBootPartition(const esp_partition_t* dest) {
   if (!dest) return false;
   const esp_partition_t* otadata =
@@ -180,12 +197,16 @@ bool switchBootPartition(const esp_partition_t* dest) {
 }
 
 void checkBootCombo() {
-  if (!comboHeld(InputManager::BTN_BACK, InputManager::BTN_UP)) return;
+  const RecoveryCombo combo = boardCombo();
+  if (!comboHeld(combo.button1, combo.button2)) return;
   switchToSlot0AndReboot();
 }
 
 void checkBootCombo(const SdUpdateOptions& options) {
-  if (!comboHeld(options.button1, options.button2)) return;
+  const RecoveryCombo auto_ = boardCombo();
+  const int8_t b1 = options.button1 < 0 ? auto_.button1 : options.button1;
+  const int8_t b2 = options.button1 < 0 ? auto_.button2 : options.button2;
+  if (!comboHeld(b1, b2)) return;
   if (trySdUpdateAndReboot(options)) return;  // reboots on success
   switchToSlot0AndReboot();
 }
