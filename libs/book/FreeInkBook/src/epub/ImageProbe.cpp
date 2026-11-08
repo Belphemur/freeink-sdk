@@ -119,8 +119,10 @@ BookStatus probeImage(BookSource& source, const ZipEntry& entry, Arena& scratch,
     } else if (dibSize >= 40) {
       const uint32_t dw = le32(hdr + 18);
       const int32_t sH = static_cast<int32_t>(le32(hdr + 22));
-      const int32_t dh = sH < 0 ? -sH : sH;  // top-down BMP: height negative
-      if (dw > 0 && dh > 0 && dw <= 0xFFFF && dh <= 0xFFFF) {
+      // Top-down BMP: height negative. Mirror the positive bound on the
+      // negative side BEFORE negating — -INT32_MIN is signed-overflow UB.
+      if (dw > 0 && dw <= 0xFFFF && sH != 0 && sH <= 0xFFFF && sH >= -0xFFFF) {
+        const int32_t dh = sH < 0 ? -sH : sH;
         out->kind = ImageInfo::Kind::Bmp;
         out->width = static_cast<uint16_t>(dw);
         out->height = static_cast<uint16_t>(dh);

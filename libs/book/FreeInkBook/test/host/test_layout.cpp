@@ -1887,6 +1887,9 @@ void testProbeGifBmp() {
       {"OEBPS/images/pattern.bmp", ImageInfo::Kind::Bmp, 64, 48},
       // Top-down BMP: height field negative — dims are the absolute value.
       {"OEBPS/images/pattern_tdb.bmp", ImageInfo::Kind::Bmp, 64, 48},
+      // Top-down BMP with height INT32_MIN: outside the +/-0xFFFF bound,
+      // probed as Unknown (negating INT32_MIN would be signed-overflow UB).
+      {"OEBPS/images/pattern_tdb_min.bmp", ImageInfo::Kind::Unknown, 0, 0},
       // OS/2 BITMAPCOREHEADER: 12-byte DIB, LE16 dims at offsets 18/20.
       {"OEBPS/images/pattern_core.bmp", ImageInfo::Kind::Bmp, 24, 18},
   };

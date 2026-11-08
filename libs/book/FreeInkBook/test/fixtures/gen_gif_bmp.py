@@ -6,6 +6,9 @@ pattern.gif : valid GIF87a, 64x48, 2-color global color table, single
               uncompressed form (valid for standard decoders).
 pattern.bmp : BITMAPINFOHEADER (40-byte DIB), 24bpp, bottom-up.
 pattern_tdb.bmp : same, top-down (negative height field).
+pattern_tdb_min.bmp : top-down with height field INT32_MIN (0x80000000) —
+              out of the +/-0xFFFF bound, must probe as Unknown (the probe
+              may not negate INT32_MIN: signed-overflow UB).
 pattern_core.bmp : OS/2 BITMAPCOREHEADER (12-byte DIB), 24bpp, 24x18.
 
 Same pattern as gen_test_image.py: left half white, right half black top /
@@ -116,4 +119,5 @@ if __name__ == "__main__":
     write(sys.argv[1] + "/pattern.gif", gen_gif())
     write(sys.argv[1] + "/pattern.bmp", bmp_dib40(H))
     write(sys.argv[1] + "/pattern_tdb.bmp", bmp_dib40(-H))
+    write(sys.argv[1] + "/pattern_tdb_min.bmp", bmp_dib40(-(2**31)))
     write(sys.argv[1] + "/pattern_core.bmp", bmp_core(24, 18))
