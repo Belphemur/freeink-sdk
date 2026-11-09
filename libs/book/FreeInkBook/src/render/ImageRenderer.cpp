@@ -32,6 +32,8 @@ struct RowScaler {
   uint32_t nextDst = 0;
   bool stopped = false;
   bool failed = false;
+  // renderSourceRows mode: no averaging, rows pass straight through.
+  bool passThrough = false;
 
   void resetAccum() {
     memset(sums, 0, static_cast<size_t>(dstW) * sizeof(uint32_t));
@@ -54,6 +56,7 @@ struct RowScaler {
   // Feeds one completed source row; emits output rows as their source bands
   // complete.
   bool feedSourceRow(uint32_t srcY, const uint8_t* gray) {
+    if (passThrough) return rowFn(user, static_cast<uint16_t>(srcY), gray, srcW);
     // Emit any output rows whose source band ended before this row.
     while (nextDst < dstH &&
            srcY >= static_cast<uint64_t>(nextDst + 1) * srcH / dstH) {
@@ -100,6 +103,9 @@ struct PngState {
   uint8_t* srcRow = nullptr;   // srcW grayscale accumulation
   uint32_t currentY = 0;
   bool unsupported = false;    // interlaced
+  bool dimsSent = false;
+  SourceDimsFn dimsFn = nullptr;
+  void* dimsUser = nullptr;
 };
 
 void pngInitCallback(pngle_t* pngle, uint32_t w, uint32_t h) {
@@ -107,6 +113,14 @@ void pngInitCallback(pngle_t* pngle, uint32_t w, uint32_t h) {
   (void)w;
   (void)h;
   if (pngle_get_ihdr(pngle)->interlace != 0) state->unsupported = true;
+  // Pass-through: report the streamed dims once, before the first row.
+  if (state->scaler.passThrough && !state->dimsSent && !state->scaler.stopped) {
+    state->dimsSent = true;
+    if (state->dimsFn != nullptr &&
+        !state->dimsFn(state->dimsUser, state->scaler.srcW, state->scaler.srcH)) {
+      state->scaler.stopped = true;
+    }
+  }
 }
 
 void pngDrawCallback(pngle_t* pngle, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
@@ -126,7 +140,7 @@ void pngDrawCallback(pngle_t* pngle, uint32_t x, uint32_t y, uint32_t w, uint32_
 
 BookStatus renderPng(BookSource& source, const ZipEntry& entry, const PageImage& image,
                      uint16_t srcW, uint16_t srcH, Arena& scratch, ImageRowFn rowFn,
-                     void* user) {
+                     void* user, bool passThrough, SourceDimsFn dimsFn, void* dimsUser) {
   PngState state;
   state.scaler.srcW = srcW;
   state.scaler.srcH = srcH;
@@ -134,6 +148,9 @@ BookStatus renderPng(BookSource& source, const ZipEntry& entry, const PageImage&
   state.scaler.dstH = image.height;
   state.scaler.rowFn = rowFn;
   state.scaler.user = user;
+  state.scaler.passThrough = passThrough;
+  state.dimsFn = dimsFn;
+  state.dimsUser = dimsUser;
   state.srcRow = static_cast<uint8_t*>(scratch.alloc(srcW, 1));
   uint8_t* readBuf = static_cast<uint8_t*>(scratch.alloc(4096, 1));
   if (!initScaler(state.scaler, scratch) || state.srcRow == nullptr || readBuf == nullptr) {
@@ -187,8 +204,19 @@ struct JpegState {
   uint32_t bandTop = 0;         // source y of band row 0
   uint32_t bandFilled = 0;      // rows known to be complete (top-based)
   bool ioError = false;
+  bool dimsSent = false;
+  SourceDimsFn dimsFn = nullptr;
+  void* dimsUser = nullptr;
 
   static constexpr uint32_t kBandRows = 16;
+
+  // Pass-through: report the streamed dims once (baseline JPEG arrives here
+  // with the post-pow-2 dims already known — the probe cannot predict them).
+  void reportDims() {
+    if (dimsSent || dimsFn == nullptr) return;
+    dimsSent = true;
+    if (!dimsFn(dimsUser, scaler.srcW, scaler.srcH)) scaler.stopped = true;
+  }
 
   void flushBandRows(uint32_t upToSrcY) {  // exclusive
     while (bandTop < upToSrcY && !scaler.stopped) {
@@ -237,7 +265,8 @@ int jpegOutput(JDEC* jd, void* bitmap, JRECT* rect) {
 }
 
 BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage& image,
-                      Arena& scratch, ImageRowFn rowFn, void* user) {
+                      Arena& scratch, ImageRowFn rowFn, void* user, bool passThrough,
+                      SourceDimsFn dimsFn, void* dimsUser) {
   JpegState state;
   state.skipBuf = static_cast<uint8_t*>(scratch.alloc(1024, 1));
   void* work = scratch.alloc(8 * 1024, alignof(max_align_t));
@@ -269,9 +298,13 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
   state.scaler.dstH = image.height < srcH ? image.height : srcH;
   state.scaler.rowFn = rowFn;
   state.scaler.user = user;
+  state.scaler.passThrough = passThrough;
+  state.dimsFn = dimsFn;
+  state.dimsUser = dimsUser;
   state.bandW = srcW;
   state.band = static_cast<uint8_t*>(scratch.alloc(srcW * JpegState::kBandRows, 1));
   if (!initScaler(state.scaler, scratch) || state.band == nullptr) return BookStatus::OutOfMemory;
+  if (passThrough) state.reportDims();  // consumer may stop the stream right here
 
   const JRESULT jr = jd_decomp(&jd, jpegOutput, scale);
   if (state.ioError) return BookStatus::IoError;
@@ -398,6 +431,7 @@ struct ProgResample {
   ImageRowFn rowFn = nullptr;
   void* user = nullptr;
   bool stopped = false;
+  bool passThrough = false;
 
   static uint32_t stepFp(uint16_t src, uint16_t dst) {
     return (src <= 1 || dst <= 1) ? 0
@@ -416,6 +450,7 @@ struct ProgResample {
   }
 
   bool feed(const uint8_t* srcRow, uint32_t srcY) {
+    if (passThrough) return rowFn(user, static_cast<uint16_t>(srcY), srcRow, srcW);
     scaleRow(srcRow, currRow);
     const uint32_t step = stepFp(srcH, dstH);
     while (nextOut < dstH) {
@@ -444,6 +479,7 @@ struct ProgResample {
   }
 
   bool finish() {
+    if (passThrough) return true;  // every source row was fed directly
     while (nextOut < dstH && prevY >= 0) {
       if (!rowFn(user, static_cast<uint16_t>(nextOut), prevRow, dstW)) {
         stopped = true;
@@ -457,7 +493,8 @@ struct ProgResample {
 
 BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
                                  const PageImage& image, Arena& scratch, ImageRowFn rowFn,
-                                 void* user) {
+                                 void* user, bool passThrough, SourceDimsFn dimsFn,
+                                 void* dimsUser) {
   ZipEntryReader reader;
   BookStatus status = reader.open(source, entry, scratch);
   if (status != BookStatus::Ok) return status;
@@ -621,6 +658,7 @@ BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
   rs.dstH = image.height;
   rs.rowFn = rowFn;
   rs.user = user;
+  rs.passThrough = passThrough;
   rs.prevRow = static_cast<uint8_t*>(scratch.alloc(image.width, 1));
   rs.currRow = static_cast<uint8_t*>(scratch.alloc(image.width, 1));
   rs.outRow = static_cast<uint8_t*>(scratch.alloc(image.width, 1));
@@ -628,6 +666,11 @@ BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
   if (rs.prevRow == nullptr || rs.currRow == nullptr || rs.outRow == nullptr ||
       rowBuf == nullptr) {
     return BookStatus::OutOfMemory;
+  }
+  // Pass-through: report the streamed dims once (each row is one DC-block
+  // row, blocksW wide — the app's scaler sees 8x8-block averages).
+  if (passThrough && dimsFn != nullptr && !dimsFn(dimsUser, blocksW, blocksH)) {
+    return BookStatus::Ok;  // consumer stopped before any row
   }
 
   int32_t pred[4] = {0, 0, 0, 0};
@@ -724,18 +767,64 @@ BookStatus ImageRenderer::render(BookSource& source, const ZipCatalog& zip,
     switch (info.kind) {
       case ImageInfo::Kind::Png:
         status = renderPng(source, *entry, image, info.width, info.height, scratch, rowFn,
-                           user);
+                           user, false, nullptr, nullptr);
         break;
       case ImageInfo::Kind::Jpeg:
         status = info.progressive
-                     ? renderJpegProgressive(source, *entry, image, scratch, rowFn, user)
-                     : renderJpeg(source, *entry, image, scratch, rowFn, user);
+                     ? renderJpegProgressive(source, *entry, image, scratch, rowFn, user,
+                                             false, nullptr, nullptr)
+                     : renderJpeg(source, *entry, image, scratch, rowFn, user, false, nullptr,
+                                  nullptr);
         break;
       case ImageInfo::Kind::Gif:
       case ImageInfo::Kind::Bmp:
       case ImageInfo::Kind::Unknown:
         // Probed but not decoded by the SDK — the host app renders these
         // with its own converters.
+        status = BookStatus::Unsupported;
+        break;
+    }
+  }
+  scratch.release(marked);
+  return status;
+}
+
+BookStatus ImageRenderer::renderSourceRows(BookSource& source, const ZipCatalog& zip, const char* href,
+                                           const uint16_t dstW, const uint16_t dstH, Arena& scratch,
+                                           SourceDimsFn dimsFn, void* dimsUser, ImageRowFn rowFn,
+                                           void* user) {
+  if (rowFn == nullptr) return BookStatus::Unsupported;
+  const ZipEntry* entry = zip.find(href);
+  if (entry == nullptr) return BookStatus::NotFound;
+
+  // Same decode stack as render(), with the scalers bypassed. dstW/dstH only
+  // steer the baseline JPEG power-of-two pre-scale (decode memory), exactly
+  // like render()'s placement dims do.
+  PageImage image{};
+  image.href = href != nullptr ? href : "";
+  image.x = 0;
+  image.y = 0;
+  image.width = dstW;
+  image.height = dstH;
+
+  const size_t marked = scratch.mark();
+  ImageInfo info;
+  BookStatus status = probeImage(source, *entry, scratch, &info);
+  if (status == BookStatus::Ok) {
+    switch (info.kind) {
+      case ImageInfo::Kind::Png:
+        status = renderPng(source, *entry, image, info.width, info.height, scratch, rowFn,
+                           user, true, dimsFn, dimsUser);
+        break;
+      case ImageInfo::Kind::Jpeg:
+        status = info.progressive
+                     ? renderJpegProgressive(source, *entry, image, scratch, rowFn, user,
+                                             true, dimsFn, dimsUser)
+                     : renderJpeg(source, *entry, image, scratch, rowFn, user, true, dimsFn,
+                                  dimsUser);
+        break;
+      default:
+        // Gif/Bmp/Unknown are decoded by the host app's converters, not here.
         status = BookStatus::Unsupported;
         break;
     }

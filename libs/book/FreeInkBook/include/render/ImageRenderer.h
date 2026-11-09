@@ -30,6 +30,10 @@ namespace book {
 // (0 = black, 255 = white) and is valid only during the call.
 using ImageRowFn = bool (*)(void* user, uint16_t y, const uint8_t* gray, uint16_t width);
 
+// Reports the streamed source-row dimensions (one call, before the first
+// row). Return false to stop rendering early.
+using SourceDimsFn = bool (*)(void* user, uint16_t srcW, uint16_t srcH);
+
 class ImageRenderer {
  public:
   // Renders `image` (a placement produced by layout or read from the page
@@ -38,6 +42,19 @@ class ImageRenderer {
   // heap for its scanline buffer.
   static BookStatus render(BookSource& source, const ZipCatalog& zip, const PageImage& image,
                            Arena& scratch, ImageRowFn rowFn, void* user);
+
+  // Pass-through mode for callers that do their own rescaling (TTF reader's
+  // app-side DPID scaler, design docs/design/2026-11-09-ttf-image-dpid-clahe.md):
+  // streams the DECODED, UNSCALED grayscale source rows of the PNG/JPEG at
+  // `href` to `rowFn` (rows are `srcW` wide; progressive JPEG delivers one
+  // DC-block row per call, so the "pixels" are 8x8-block averages). The
+  // streamed dims are reported once via `dimsFn` before the first row —
+  // baseline JPEG's power-of-two pre-scale is picked from `dstW`/`dstH`
+  // exactly as `render` would pick it. No averaging or interpolation runs
+  // here and `render`'s default behavior is unchanged.
+  static BookStatus renderSourceRows(BookSource& source, const ZipCatalog& zip, const char* href, uint16_t dstW,
+                                     uint16_t dstH, Arena& scratch, SourceDimsFn dimsFn, void* dimsUser,
+                                     ImageRowFn rowFn, void* user);
 };
 
 // Quantizes one grayscale row to 1 bit per pixel (MSB first, 1 = black)
