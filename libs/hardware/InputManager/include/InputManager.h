@@ -654,8 +654,11 @@ class InputManager {
   // INT-high wake handshake; also the self-heal ladder's recovery step.
   bool gt911WakeHandshake();
   // Self-heal ladder (design 2026-11-09-gt911-park-recovery.md §3.2): heals a
-  // controller considered awake that stopped answering on I2C.
+  // controller considered awake that stopped answering on I2C. The *_Missing
+  // tail re-runs a failed re-probe at the rate limit once the address is gone.
   void gt911SelfHeal(unsigned long now);
+  void gt911SelfHealMissing(unsigned long now);
+  void gt911LadderReprobe(unsigned long now);
 #if FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
   bool gt911WriteReg(uint16_t reg, const uint8_t* buf, uint8_t len);
   // Put the INT line in low-level hold mode so it can serve as a light-sleep
@@ -750,7 +753,8 @@ class InputManager {
   unsigned long gt911SleepEnteredAt =
       0; // sleep command sent; gate wake ≥ 58 ms after (§8.1.d)
   uint8_t gt911ReadFails = 0;        // consecutive failed status polls (self-heal ladder)
-  unsigned long gt911ReprobeAt = 0;  // earliest next rate-limited beginGt911() re-probe
+  unsigned long gt911ReprobeAt = 0;  // earliest next rate-limited beginGt911() re-probe;
+                                     // valid only while gt911WakeBlocked is set
   bool gt911WakeBlocked = false;     // wake handshake failed; ladder moves on to re-probe
   unsigned long touchReleaseAt = 0;
   bool touchPressed = false;

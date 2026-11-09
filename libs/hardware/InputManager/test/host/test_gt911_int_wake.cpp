@@ -48,7 +48,11 @@ void testSentSleepCommandParksRegardlessOfProbe() {
   Wire.forceProbeStatus = -1;
   // The wake handshake clears the parked state again.
   assert(in.exitGt911Sleep() && !in.isTouchAsleep());
+#if FREEINK_GT911_INT_WAKE
+  assert(gpioModes[INT_PIN] == INPUT_PULLUP);  // level-wake pin re-armed
+#else
   assert(gpioModes[INT_PIN] == INPUT);
+#endif
 
   // Probe anomaly: parked too, with the code logged.
   Wire.forceProbeStatus = 4;
@@ -126,6 +130,73 @@ void testPollSelfHealLadder() {
   assert(loggedInfos == infos3 + 1);
   Wire.failReads = false;  // knob owns the poll loop: restore for later tests
 }
+
+// A failed re-probe strands gt911Addr at 0, where no read can count anymore;
+// the missing-controller tail must re-run the re-probe at the rate limit and
+// recover for a chip that comes back.
+void testFailedReprobeRetriesUntilTheChipReturns() {
+  Wire.loadFactory(1);
+  InputManager in;
+  boot(in);
+  poll(in);  // healthy baseline
+
+  // Handshake fails: ladder moves to the re-probe.
+  Wire.failReads = true;
+  for (int i = 0; i < 4; ++i) poll(in);
+  poll(in);
+  assert(in.gt911WakeBlocked && !in.isTouchAsleep());
+
+  // At the rate window the re-probe runs — with the chip gone it leaves the
+  // address unresolved and the ladder must keep retrying, not strand touch.
+  fakeNow += InputManager::GT911_REPROBE_INTERVAL_MS;
+  Wire.busDead = true;  // chip truly unreachable at that attempt
+  const unsigned errs0 = loggedErrors;
+  for (int i = 0; i < 4; ++i) poll(in);  // counter 2..4, silent
+  poll(in);
+  assert(loggedErrors == errs0 + 1 && in.gt911Addr == 0 && in.gt911WakeBlocked);
+
+  // Inside the window: one missing-controller pass, nothing.
+  const unsigned errs1 = loggedErrors;
+  poll(in);
+  assert(loggedErrors == errs1);
+
+  // Chip comes back: the next rate window re-probes; the re-probe poll
+  // returns before reading, and the following healthy read clears the ladder.
+  Wire.busDead = false;
+  Wire.failReads = false;
+  fakeNow += InputManager::GT911_REPROBE_INTERVAL_MS;
+  poll(in);
+  assert(in.gt911Addr != 0 && !in.isTouchAsleep());
+  Wire.report(0);
+  poll(in);
+  assert(!in.gt911WakeBlocked && in.gt911ReprobeAt == 0 && in.gt911ReadFails == 0);
+}
+
+#if FREEINK_GT911_INT_WAKE
+// A handshake that cannot clear the controller's latched report must not
+// re-arm the level wake; the fault machinery clears it on a later poll, and
+// a clean clear restores the configured INT mode with its pull-up.
+void testHandshakeLiftsFaultOnlyOnCleanClear() {
+  Wire.loadFactory(1);
+  InputManager in;
+  boot(in);
+
+  Wire.report(0x81);  // pending report
+  Wire.busDead = true;
+  poll(in);           // latches the status fault, INT withdrawn
+  Wire.busDead = false;
+  assert(in.touchWakeIrqPin() == -1 && in.gt911StatusFault);
+
+  Wire.failStatusClears = 1;
+  assert(in.gt911WakeHandshake());  // read works, clear NACKs
+  assert(in.gt911StatusFault && in.touchWakeIrqPin() == -1);
+
+  Wire.failStatusClears = 0;
+  assert(in.gt911WakeHandshake());
+  assert(!in.gt911StatusFault && in.touchWakeIrqPin() == INT_PIN);
+  assert(gpioModes[INT_PIN] == INPUT_PULLUP);
+}
+#endif
 #if FREEINK_GT911_INT_WAKE
 void testPatchAppliedOncePerBootWhenDroppedOnReset() {
   Wire.loadFactory(1);  // falling edge, the X4 Pro factory mode
@@ -380,7 +451,9 @@ void testFlagOffLeavesConfigAlone() {
 int main() {
   testSentSleepCommandParksRegardlessOfProbe();
   testPollSelfHealLadder();
+  testFailedReprobeRetriesUntilTheChipReturns();
 #if FREEINK_GT911_INT_WAKE
+  testHandshakeLiftsFaultOnlyOnCleanClear();
   testPatchAppliedOncePerBootWhenDroppedOnReset();
   testRebeginRefusedWithdrawsPin();
   testNoWriteWhenModeAlreadyLowLevel();

@@ -3373,7 +3373,12 @@ void InputManager::pollGt911(const unsigned long now) {
   }
   lastGt911Poll = now;
 
+  // Ladder tail: the controller is unaddressable after a failed re-probe
+  // (gt911Addr == 0); the rate-limited full re-probe below is the only step
+  // left until the chip answers. A begin() that never resolved an address
+  // stays a no-op (gt911WakeBlocked is never armed there).
   if (gt911Addr == 0) {
+    gt911SelfHealMissing(now);
     return;
   }
   uint8_t status = 0;
@@ -3732,11 +3737,21 @@ bool InputManager::gt911WakeHandshake() {
     if (gt911ReadReg(0x814E, &status, 1)) {
       gt911Asleep.store(false, std::memory_order_release);
       gt911SleepEnteredAt = 0;
-      gt911ClearStatus(); // drop any stale frame latched across sleep
 #if FREEINK_GT911_INT_WAKE
-      // The handshake just proved 0x814E reachable: a fault latched by the
-      // read failures that led here must not keep the INT withdrawn.
-      gt911SetStatusFault(false);
+      const bool cleared = gt911ClearStatus(); // stale frame latched across sleep
+      // Only a confirmed clear re-arms the level wake: a failed clear leaves
+      // the latched report asserting INT, and the fault machinery (which
+      // withdraws the pin on it) re-clears on the next poll.
+      if (cleared) {
+        gt911SetStatusFault(false);
+      }
+      // The wake pulse left the pin driven: restore the level-wake mode's
+      // pull-up the controller was configured with.
+      if (touchWakeIrqUsable) {
+        pinMode(t.irq, INPUT_PULLUP);
+      }
+#else
+      gt911ClearStatus(); // drop any stale frame latched across sleep
 #endif
       GT911_LOG_INF("GT911 wake, resuming poll (responsive after %lu ms)",
                     static_cast<unsigned long>(millis() - wakeStart));
@@ -3762,17 +3777,15 @@ void InputManager::gt911SelfHeal(const unsigned long now) {
     return;
   }
   gt911ReadFails = 0;
-  // Between a failed handshake and its scheduled re-probe the only action is
-  // waiting: a dead bus gets no hammering, and only the blocked re-probe
-  // branch below or a chip that comes back on its own (successful read) can
-  // leave this state again.
-  if (static_cast<long>(now - gt911ReprobeAt) < 0) {
+  // While the ladder is blocked on a failed handshake/re-probe the deadline
+  // holds the next step off: a dead bus gets no hammering. The blocked state
+  // always carries a valid deadline (set when it was entered), so this wrap
+  // math never sees the zero "not scheduled" value.
+  if (gt911WakeBlocked && static_cast<long>(now - gt911ReprobeAt) < 0) {
     return;
   }
   if (gt911WakeBlocked) {
-    gt911ReprobeAt = now + GT911_REPROBE_INTERVAL_MS; // rate limit holds for every attempt
-    GT911_LOG_ERR("GT911 wake handshake failed; re-probing the bus");
-    beginGt911();
+    gt911LadderReprobe(now);
     return;
   }
   GT911_LOG_INF("GT911 poll: %u failed reads; running the INT wake handshake",
@@ -3782,6 +3795,42 @@ void InputManager::gt911SelfHeal(const unsigned long now) {
   }
   gt911WakeBlocked = true;
   gt911ReprobeAt = now + GT911_REPROBE_INTERVAL_MS;
+}
+
+// Ladder tail (owner round on PR freeink-sdk#42): a failed re-probe leaves
+// the controller unaddressable (gt911Addr == 0), so pollGt911() has no reads
+// left to count. The blocked ladder re-runs the full re-probe at the rate
+// limit until the chip answers again, instead of stranding touch until a
+// device reset.
+void InputManager::gt911SelfHealMissing(const unsigned long now) {
+  if (!gt911WakeBlocked || static_cast<long>(now - gt911ReprobeAt) < 0) {
+    return;
+  }
+  gt911LadderReprobe(now);
+}
+
+// The re-probe step of the ladder. The chip is being reset, so its latched
+// contact state is gone with it: drop the latched home-key down-state so the
+// recovery frame cannot synthesize a stale long-press or tap edge (a found
+// controller reports an idle frame first, which resolves any real release).
+// Hold the bus lock across the re-init of a shared peripheral; a no-op on
+// boards that don't enable it.
+void InputManager::gt911LadderReprobe(const unsigned long now) {
+  gt911ReprobeAt = now + GT911_REPROBE_INTERVAL_MS; // rate limit holds for every attempt
+  GT911_LOG_ERR("GT911 controller unresponsive; re-probing (retries once per minute)");
+  touchHomeKeyDown = false;
+  touchHomeKeyDownAt = 0;
+  {
+    const freeink::I2cBusLock busLock;
+    beginGt911();
+  }
+  // beginGt911() marks touch data disabled when the address probe failed, and
+  // that gate is BEFORE pollGt911()'s ladder tail. While the blocked ladder
+  // is still retrying, keep the poll path alive so the rate-limited attempt
+  // can actually run; the next success re-arms everything through beginGt911.
+  if (gt911Addr == 0) {
+    touchDataEnabled = true;
+  }
 }
 
 #else // !FREEINK_TOUCH_GT911: this build compiles touch but no GT911 — the toggle stays a no-op
