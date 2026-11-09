@@ -274,13 +274,21 @@ class InputManager {
   // resolved (gt911Addr != 0) are affected — other configurations are no-ops
   // (return false, state untouched).
   //
-  // setTouchSleep(true): drives INT low, writes the sleep command (0x05 to
-  // 0x8040), then does a single status read. The datasheet no longer publishes
-  // the register map, so the opcode follows the Goodix reference-driver
-  // convention and MUST be verified on hardware before merging (see
-  // docs/design/2026-09-24-gt911-idle-sleep.md §4). A controller that ACKs the
-  // post-command read did not enter sleep; state stays awake and the low-power
-  // poll throttle keeps applying.
+  // setTouchSleep(true): drives INT low, then writes the sleep command (0x05
+  // to 0x8040). The datasheet no longer publishes the register map, so the
+  // opcode follows the Goodix reference-driver convention and MUST be verified
+  // on hardware before merging (see docs/design/2026-09-24-gt911-idle-sleep.md
+  // §4). Once the command write ACKs, the controller is parked — the ACK probe
+  // that follows is a diagnostic only, because it races the controller's
+  // sleep-transition window and can ACK after the chip has already left the
+  // bus (docs/design/2026-11-09-gt911-park-recovery.md §2). Only a NACKed
+  // (unsent) command leaves the state awake.
+  //
+  // While the controller is considered awake, pollGt911() self-heals one that
+  // stopped answering on I2C: GT911_READ_FAIL_LADDER consecutive failed status
+  // reads trigger one INT-high wake handshake; if that finds no ACK within its
+  // window, beginGt911() re-probes the bus at most once per
+  // GT911_REPROBE_INTERVAL_MS (2026-11-09-gt911-park-recovery.md §3.2).
   //
   // wakeTouch(): the wake side. Drives INT high for ~3 ms, returns the pin to
   // input, then waits up to 200 ms (datasheet response deadline) for the status
@@ -643,6 +651,14 @@ class InputManager {
   bool runGt911TouchCmd(uint8_t requestedCmd);
   void enterGt911Sleep();
   bool exitGt911Sleep();
+  // INT-high wake handshake; also the self-heal ladder's recovery step.
+  bool gt911WakeHandshake();
+  // Self-heal ladder (design 2026-11-09-gt911-park-recovery.md §3.2): heals a
+  // controller considered awake that stopped answering on I2C. The *_Missing
+  // tail re-runs a failed re-probe at the rate limit once the address is gone.
+  void gt911SelfHeal(unsigned long now);
+  void gt911SelfHealMissing(unsigned long now);
+  void gt911LadderReprobe(unsigned long now);
 #if FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
   bool gt911WriteReg(uint16_t reg, const uint8_t* buf, uint8_t len);
   // Put the INT line in low-level hold mode so it can serve as a light-sleep
@@ -736,6 +752,10 @@ class InputManager {
       false}; // GT911 in Sleep mode: no polling, no home key
   unsigned long gt911SleepEnteredAt =
       0; // sleep command sent; gate wake ≥ 58 ms after (§8.1.d)
+  uint8_t gt911ReadFails = 0;        // consecutive failed status polls (self-heal ladder)
+  unsigned long gt911ReprobeAt = 0;  // earliest next rate-limited beginGt911() re-probe;
+                                     // valid only while gt911WakeBlocked is set
+  bool gt911WakeBlocked = false;     // wake handshake failed; ladder moves on to re-probe
   unsigned long touchReleaseAt = 0;
   bool touchPressed = false;
   bool touchPressedEvent = false;
@@ -815,6 +835,13 @@ class InputManager {
   // Touch INT (GPIO10) still wakes the SoC; this only slows the I2C re-poll so
   // we aren't hammering the bus ~20x/s when nothing is happening.
   static constexpr unsigned long GT911_LOW_POWER_POLL_MS = 100;
+
+  // Self-heal ladder for a controller considered awake whose status reads keep
+  // failing (2026-11-09-gt911-park-recovery.md §3.2): one INT wake handshake
+  // after GT911_READ_FAIL_LADDER failed reads, then a full bus re-probe at
+  // most once per GT911_REPROBE_INTERVAL_MS.
+  static constexpr uint8_t GT911_READ_FAIL_LADDER = 5;
+  static constexpr unsigned long GT911_REPROBE_INTERVAL_MS = 60000;
 
   static const char *BUTTON_NAMES[];
   static bool s_sharedConfirmPowerShortPressEmitsPower;
