@@ -3661,32 +3661,30 @@ void InputManager::enterGt911Sleep() {
     gt911SleepEnteredAt = millis();
   }
 
-  // One ACK probe decides the outcome. Deliberately NOT gt911ReadReg(): the
-  // helper also fails on a short data-phase read, which is a transaction
-  // anomaly on a still-ACKing controller and must not park it. A sleeping
-  // controller drops off the bus entirely, so only the ADDRESS-phase NACK
-  // here is the sleep signal (datasheet §8.1.d); anything else stays on the
-  // uncertainty path — gt911Asleep remains false and the low-power poll
-  // throttle keeps applying.
-  //
-  // Wire::endTransmission() codes: 0 = ACK (still awake), 2 = NACK on the
-  // ADDRESS phase (the sleep signal), 1/3/4/5 = data-too-long / NACK on the
-  // data phase / other error / bus timeout. Only code 2 proves the controller
-  // dropped off the bus; every other non-zero code is a transaction anomaly
-  // that leaves the controller's state UNKNOWN and must not park it.
+  // Probe result, kept as a diagnostic only: once the command is SENT the
+  // controller is parked (design 2026-11-09-gt911-park-recovery.md §3.1). The
+  // probe runs ~100 µs after the command, inside the controller's transition
+  // window — an ACK does not prove the controller is still awake, and an
+  // anomaly proves nothing either way. Treating a sent command as "not
+  // confirmed" left misclassified controllers unreachable until a chip reset:
+  // the app's wake path is gated on isTouchAsleep() and the periodic re-park
+  // NACKs before the probe ever runs again.
   uint8_t probeStatus = 0;
   if (sent) {
     Wire.beginTransmission(gt911Addr);
     Wire.write(0x81);
     Wire.write(0x4E);
     probeStatus = Wire.endTransmission();
-  }
-  if (sent && probeStatus == 2) {
+    if (probeStatus == 2) {
+      GT911_LOG_INF("GT911 sleep entered (bus silent until wake)");
+    } else {
+      GT911_LOG_INF("GT911 sleep entered; probe code %u",
+                    static_cast<unsigned>(probeStatus));
+    }
     gt911Asleep.store(true, std::memory_order_release);
-    GT911_LOG_INF("GT911 sleep entered (bus silent until wake)");
     return;
   }
-  GT911_LOG_INF("GT911 sleep not confirmed (probe code %u); staying awake", static_cast<unsigned>(probeStatus));
+  GT911_LOG_INF("GT911 sleep command NACKed; staying awake");
   if (t.irq >= 0) {
     pinMode(t.irq, INPUT); // controller is awake: stop contending on INT
   }

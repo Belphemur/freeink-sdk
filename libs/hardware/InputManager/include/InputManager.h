@@ -274,13 +274,15 @@ class InputManager {
   // resolved (gt911Addr != 0) are affected — other configurations are no-ops
   // (return false, state untouched).
   //
-  // setTouchSleep(true): drives INT low, writes the sleep command (0x05 to
-  // 0x8040), then does a single status read. The datasheet no longer publishes
-  // the register map, so the opcode follows the Goodix reference-driver
-  // convention and MUST be verified on hardware before merging (see
-  // docs/design/2026-09-24-gt911-idle-sleep.md §4). A controller that ACKs the
-  // post-command read did not enter sleep; state stays awake and the low-power
-  // poll throttle keeps applying.
+  // setTouchSleep(true): drives INT low, then writes the sleep command (0x05
+  // to 0x8040). The datasheet no longer publishes the register map, so the
+  // opcode follows the Goodix reference-driver convention and MUST be verified
+  // on hardware before merging (see docs/design/2026-09-24-gt911-idle-sleep.md
+  // §4). Once the command write ACKs, the controller is parked — the ACK probe
+  // that follows is a diagnostic only, because it races the controller's
+  // sleep-transition window and can ACK after the chip has already left the
+  // bus (docs/design/2026-11-09-gt911-park-recovery.md §2). Only a NACKed
+  // (unsent) command leaves the state awake.
   //
   // wakeTouch(): the wake side. Drives INT high for ~3 ms, returns the pin to
   // input, then waits up to 200 ms (datasheet response deadline) for the status

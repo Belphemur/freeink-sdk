@@ -29,6 +29,7 @@ struct WireStub {
   // --- fault knobs ----------------------------------------------------------
   bool busDead = false;           // every transfer NACKs
   unsigned failStatusClears = 0;  // next N writes to 0x814E NACK
+  int8_t forceProbeStatus = -1;   // the sleep-entry ACK probe returns this (>= 0)
 
   // --- counters -------------------------------------------------------------
   unsigned configWriteTxns = 0;  // write transactions touching 0x8047..0x8100
@@ -58,7 +59,7 @@ struct WireStub {
     tx.insert(tx.end(), v, v + n);
     return n;
   }
-  int endTransmission(bool = true) {
+  int endTransmission(bool stop = true) {
     if (tx.size() >= 2) {
       const uint16_t reg = static_cast<uint16_t>(tx[0] << 8 | tx[1]);
       if (tx.size() == 2) {
@@ -68,6 +69,11 @@ struct WireStub {
       }
     }
     if (busDead || txAddr != address) return 2;
+    // The sleep-entry ACK probe: a bare register write to 0x814E with stop. The
+    // reads go through requestFrom and keep their own knob (failReads).
+    if (forceProbeStatus >= 0 && stop && tx.size() == 2 && tx[0] == 0x81 && tx[1] == 0x4E) {
+      return forceProbeStatus;
+    }
     if (tx.empty()) return 0;  // address probe
     const uint16_t reg = static_cast<uint16_t>(tx[0] << 8 | tx[1]);
     ptr = reg;

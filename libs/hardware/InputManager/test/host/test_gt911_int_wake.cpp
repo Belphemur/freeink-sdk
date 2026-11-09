@@ -3,7 +3,9 @@
 // status clear, and the I2C-failure fallback (retry, then withdraw the INT as a
 // wake source until the status register is reachable again). Built once with
 // the flag and once without; without it the driver must not touch the config.
+#define private public
 #include <InputManager.h>
+#undef private
 #include <Logging.h>
 #include <Wire.h>
 
@@ -27,6 +29,39 @@ void boot(InputManager& in) {
 void poll(InputManager& in) {
   fakeNow += 20;
   in.update();
+}
+
+// --- park entry (2026-11-09-gt911-park-recovery.md §3.1) -------------------
+// A SENT sleep command parks the controller whatever the post-command probe
+// says; only a NACKed (unsent) command stays awake.
+void testSentSleepCommandParksRegardlessOfProbe() {
+  Wire.loadFactory(1);
+  InputManager in;
+  boot(in);
+
+  // The probe ACKs — the exact racing outcome that left touch dead until a
+  // chip reset before the fix.
+  Wire.forceProbeStatus = 0;
+  in.enterGt911Sleep();
+  assert(in.isTouchAsleep());
+  assert(std::strstr(lastLog, "sleep entered") != nullptr);
+  Wire.forceProbeStatus = -1;
+  // The wake handshake clears the parked state again.
+  assert(in.exitGt911Sleep() && !in.isTouchAsleep());
+  assert(gpioModes[INT_PIN] == INPUT);
+
+  // Probe anomaly: parked too, with the code logged.
+  Wire.forceProbeStatus = 4;
+  in.enterGt911Sleep();
+  assert(in.isTouchAsleep() && std::strstr(lastLog, "probe code 4") != nullptr);
+  Wire.forceProbeStatus = -1;
+  assert(in.exitGt911Sleep());
+
+  // A NACKed command was never sent: uncontroversially stay awake.
+  Wire.busDead = true;
+  in.enterGt911Sleep();
+  assert(!in.isTouchAsleep() && std::strstr(lastLog, "NACKed") != nullptr);
+  Wire.busDead = false;
 }
 
 #if FREEINK_GT911_INT_WAKE
@@ -261,6 +296,7 @@ void testNotReadyLatchedStatusIsCleared() {
   poll(in);
   assert(Wire.statusReadAttempts == 1 && Wire.statusClearAttempts == 0);
 }
+
 #else
 void testFlagOffLeavesConfigAlone() {
   Wire.loadFactory(1);
@@ -280,6 +316,7 @@ void testFlagOffLeavesConfigAlone() {
 }  // namespace
 
 int main() {
+  testSentSleepCommandParksRegardlessOfProbe();
 #if FREEINK_GT911_INT_WAKE
   testPatchAppliedOncePerBootWhenDroppedOnReset();
   testRebeginRefusedWithdrawsPin();
