@@ -64,6 +64,68 @@ void testSentSleepCommandParksRegardlessOfProbe() {
   Wire.busDead = false;
 }
 
+// --- poll self-heal ladder (§3.2) ------------------------------------------
+// Failed 0x814E reads fire the INT wake handshake after 5, a failed handshake
+// schedules the rate-limited beginGt911() re-probe, and a read that works
+// resets every step.
+void testPollSelfHealLadder() {
+  Wire.loadFactory(1);
+  InputManager in;
+  boot(in);
+  poll(in);  // healthy baseline
+
+  // Data phase dead (write phase ACKs): 4 failed polls stay silent.
+  Wire.failReads = true;
+  const unsigned infos0 = loggedInfos;
+  for (int i = 0; i < 4; ++i) poll(in);
+  assert(loggedInfos == infos0 && in.gt911ReadFails == 4);
+
+  // The 5th fires the handshake; the chip never ACKs, so it times out (the
+  // timeout error is the last line logged).
+  const unsigned errs0 = loggedErrors;
+  poll(in);
+  assert(loggedInfos == infos0 + 1);
+  assert(loggedErrors == errs0 + 1 && std::strstr(lastLog, "wake timeout") != nullptr);
+  assert(in.gt911WakeBlocked && !in.isTouchAsleep() && in.gt911ReadFails == 0);
+
+  // Rate limit: further failures inside the window do nothing.
+  const unsigned infos1 = loggedInfos;
+  const unsigned errs1 = loggedErrors;
+  for (int i = 0; i < 6; ++i) poll(in);
+  assert(loggedInfos == infos1 && loggedErrors == errs1 && in.gt911WakeBlocked);
+
+  // After the deadline the next step is the re-probe; the address probe ACKs
+  // again, so the controller comes back.
+  fakeNow += InputManager::GT911_REPROBE_INTERVAL_MS;
+  const unsigned infos2 = loggedInfos;
+  const unsigned errs2 = loggedErrors;
+  // Gate-blocked ladder steps reset the counter, so counts here run 2..4:
+  // three silent polls, then the fire.
+  for (int i = 0; i < 3; ++i) poll(in);
+  assert(loggedInfos == infos2 && loggedErrors == errs2);  // still gated
+  poll(in);
+  assert(loggedErrors == errs2 + 1);  // the re-probe's LOG_ERR
+#if FREEINK_GT911_INT_WAKE
+  // Its re-configure rewrote the log line on the INT-wake build.
+  assert(std::strstr(lastLog, "patched this boot") != nullptr);
+#else
+  assert(std::strstr(lastLog, "re-probing") != nullptr);
+#endif
+
+  // A good read after the re-probe leaves the ladder fully idle.
+  Wire.failReads = false;
+  Wire.report(0);
+  poll(in);
+  assert(!in.gt911WakeBlocked && in.gt911ReprobeAt == 0 && in.gt911ReadFails == 0);
+  assert(!in.isTouchAsleep() && in.gt911Addr != 0);
+
+  // And the ladder starts over cleanly from the reset state.
+  Wire.failReads = true;
+  const unsigned infos3 = loggedInfos;
+  for (int i = 0; i < 5; ++i) poll(in);
+  assert(loggedInfos == infos3 + 1);
+  Wire.failReads = false;  // knob owns the poll loop: restore for later tests
+}
 #if FREEINK_GT911_INT_WAKE
 void testPatchAppliedOncePerBootWhenDroppedOnReset() {
   Wire.loadFactory(1);  // falling edge, the X4 Pro factory mode
@@ -317,6 +379,7 @@ void testFlagOffLeavesConfigAlone() {
 
 int main() {
   testSentSleepCommandParksRegardlessOfProbe();
+  testPollSelfHealLadder();
 #if FREEINK_GT911_INT_WAKE
   testPatchAppliedOncePerBootWhenDroppedOnReset();
   testRebeginRefusedWithdrawsPin();

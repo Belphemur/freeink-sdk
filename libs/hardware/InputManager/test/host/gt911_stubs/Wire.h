@@ -30,6 +30,7 @@ struct WireStub {
   bool busDead = false;           // every transfer NACKs
   unsigned failStatusClears = 0;  // next N writes to 0x814E NACK
   int8_t forceProbeStatus = -1;   // the sleep-entry ACK probe returns this (>= 0)
+  bool failReads = false;         // requestFrom of the status register returns 0 bytes
 
   // --- counters -------------------------------------------------------------
   unsigned configWriteTxns = 0;  // write transactions touching 0x8047..0x8100
@@ -93,7 +94,7 @@ struct WireStub {
   uint8_t requestFrom(uint8_t a, uint8_t n, uint8_t) {
     rx.clear();
     rxPos = 0;
-    if (busDead || a != address) return 0;
+    if (busDead || (failReads && ptr == STATUS) || a != address) return 0;
     if (ptr >= CFG && ptr <= CHK) ++configReads;
     rx.assign(mem.begin() + ptr, mem.begin() + ptr + n);
     ptr = static_cast<uint16_t>(ptr + n);

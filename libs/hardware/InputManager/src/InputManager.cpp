@@ -3383,6 +3383,7 @@ void InputManager::pollGt911(const unsigned long now) {
   const bool statusRead = gt911ReadReg(0x814E, &status, 1);
 #endif
   if (!statusRead) {
+    gt911SelfHeal(now);
     // Keep the last complete frame while the single-touch state remains
     // latched. Clearing only this snapshot makes a transient I2C failure look
     // like a multi-contact release to multi-touch consumers, which can split one
@@ -3390,6 +3391,10 @@ void InputManager::pollGt911(const unsigned long now) {
     // the snapshot together with the rest of the touch state.
     return;
   }
+  // A read that works ends every ladder episode; nothing is pending again.
+  gt911ReadFails = 0;
+  gt911WakeBlocked = false;
+  gt911ReprobeAt = 0;
 
   // Capacitive home key long-press (status bit 0x10). Fire from the LATCHED
   // down-state + wall clock, BEFORE the buffer-ready gate below: a motionless
@@ -3694,6 +3699,13 @@ bool InputManager::exitGt911Sleep() {
   if (!gt911Asleep.load(std::memory_order_acquire)) {
     return true; // already awake
   }
+  return gt911WakeHandshake();
+}
+
+// INT-high wake handshake (datasheet §8.1.d). exitGt911Sleep() guards it with
+// the asleep state; pollGt911()'s self-heal ladder also runs it when a
+// controller considered awake stops answering on I2C.
+bool InputManager::gt911WakeHandshake() {
   const auto &t = BoardConfig::ACTIVE.touch;
   // Datasheet §8.1.d: attempts to leave sleep within 58 ms of the sleep
   // command are unreliable — hold here until the window closes.
@@ -3721,6 +3733,11 @@ bool InputManager::exitGt911Sleep() {
       gt911Asleep.store(false, std::memory_order_release);
       gt911SleepEnteredAt = 0;
       gt911ClearStatus(); // drop any stale frame latched across sleep
+#if FREEINK_GT911_INT_WAKE
+      // The handshake just proved 0x814E reachable: a fault latched by the
+      // read failures that led here must not keep the INT withdrawn.
+      gt911SetStatusFault(false);
+#endif
       GT911_LOG_INF("GT911 wake, resuming poll (responsive after %lu ms)",
                     static_cast<unsigned long>(millis() - wakeStart));
       return true;
@@ -3731,6 +3748,40 @@ bool InputManager::exitGt911Sleep() {
   // bus; the caller retries wakeTouch() on its next activity event.
   GT911_LOG_ERR("GT911 wake timeout: no ACK within 200 ms");
   return false;
+}
+
+// Self-heal ladder (design 2026-11-09-gt911-park-recovery.md §3.2): a
+// controller considered awake whose 0x814E status reads keep failing gets one
+// INT-high wake handshake after GT911_READ_FAIL_LADDER consecutive failures; a
+// handshake that finds no ACK within its window schedules the full
+// beginGt911() re-probe, rate-limited to once per GT911_REPROBE_INTERVAL_MS.
+// Covers the remaining dead-state variants: NACKed park retries, chip
+// self-sleep, and an ignored wake handshake. Counters only — no allocation.
+void InputManager::gt911SelfHeal(const unsigned long now) {
+  if (++gt911ReadFails < GT911_READ_FAIL_LADDER) {
+    return;
+  }
+  gt911ReadFails = 0;
+  // Between a failed handshake and its scheduled re-probe the only action is
+  // waiting: a dead bus gets no hammering, and only the blocked re-probe
+  // branch below or a chip that comes back on its own (successful read) can
+  // leave this state again.
+  if (static_cast<long>(now - gt911ReprobeAt) < 0) {
+    return;
+  }
+  if (gt911WakeBlocked) {
+    gt911ReprobeAt = now + GT911_REPROBE_INTERVAL_MS; // rate limit holds for every attempt
+    GT911_LOG_ERR("GT911 wake handshake failed; re-probing the bus");
+    beginGt911();
+    return;
+  }
+  GT911_LOG_INF("GT911 poll: %u failed reads; running the INT wake handshake",
+                static_cast<unsigned>(GT911_READ_FAIL_LADDER));
+  if (gt911WakeHandshake()) {
+    return; // recovered; the next successful read clears the ladder state
+  }
+  gt911WakeBlocked = true;
+  gt911ReprobeAt = now + GT911_REPROBE_INTERVAL_MS;
 }
 
 #else // !FREEINK_TOUCH_GT911: this build compiles touch but no GT911 — the toggle stays a no-op
