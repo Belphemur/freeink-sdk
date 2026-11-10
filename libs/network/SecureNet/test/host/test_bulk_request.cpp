@@ -55,6 +55,8 @@ bool SecureClient::tls13Available() { return true; }
 bool hostResolves(const char*) { return true; }
 }  // namespace freeink
 
+void testOverlongHeaderLineFollowsRedirect();
+
 void reset(std::initializer_list<const char*> replies) {
   assert(liveReservations == 0);
   reservations = 0;
@@ -157,4 +159,41 @@ int main() {
     assert(FakeNet::hosts().size() == 2 && FakeNet::replies().size() == 1);
   }
   puts("bulk request timing, failure, cancellation and retry ok");
+  testOverlongHeaderLineFollowsRedirect();
+}
+
+// Regression: a single response-header line longer than a 4 KB MAX_LINE used
+// to abort the entire request mid-headers (readLine failed -> sendRequestOnce
+// returned -1). GitHub's release-asset 302 carries such a line today (~4.2 KB
+// Content-Security-Policy next to a ~0.9 KB Location), which killed every
+// DevOTA manifest fetch. The aggregate header budget, not the per-line cap,
+// is the guard that matters here.
+void testOverlongHeaderLineFollowsRedirect() {
+  std::string csp(4174, 'c');
+  std::string reply302 = "HTTP/1.1 302 Found\r\nContent-Security-Policy: " + csp +
+                         "\r\nLocation: https://a/real-asset\r\nContent-Length: 5\r\n\r\nnonce";
+  reset({reply302.c_str(), "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nmanifest{}"});
+  {
+    freeink::SecureHttpClient http;
+    http.setFollowRedirects(3);
+    assert(http.begin("https://a/redirect"));
+    const int st = http.GET();
+    assert(st == 200 && http.getString() == "manifest{}");
+    assert(FakeNet::requests().size() == 2);
+    assert(FakeNet::requests()[1].find("GET /real-asset ") != std::string::npos);
+    assert(liveReservations == 0);
+  }
+  // An over-long data line is still fatal: the aggregate check alone lets a
+  // hostile peer stream an endless header into the 8 KB budget one segment at
+  // a time, so the per-line cap stays the backstop. Here the second line of
+  // the status-line read path is a single 9 KB header: it must fail the
+  // request again.
+  static const std::string junkReply = "HTTP/1.1 200 OK\r\nX-Junk: " + std::string(9000, 'z') + "\r\n\r\nbad";
+  reset({junkReply.c_str()});
+  {
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/junk"));
+    assert(http.GET() < 0);
+  }
+  puts("overlong header line + redirect ok");
 }

@@ -627,7 +627,15 @@ class SecureHttpClient {
   // connection mid-stream; 2 KB removed the stall. Stack-allocated in the
   // body readers, so kept modest.
   static constexpr size_t READ_CHUNK = 2048;
-  static constexpr size_t MAX_LINE = 4096;  // header / chunk-size line cap
+  // Per-response-line cap, tied to the aggregate response-header budget
+  // (headerBytes > 8192 in sendRequestOnce): a GitHub release download
+  // answers its 302 with a single Content-Security-Policy line of ~4.2 KB,
+  // and a MAX_LINE of 4 KB aborted every such request mid-headers (readLine
+  // failed, sendRequestOnce surfaced status -1) even though the total header
+  // block fit comfortably. 8 KB lets that line through while keeping the
+  // outer budget authoritative; the status line stays guarded by the same
+  // cap, which no compliant server can approach.
+  static constexpr size_t MAX_LINE = 8192;  // header / chunk-size line cap
 
   // Kept-alive connection state. _conn points at _secure or _plain while a
   // connection is held open, and null otherwise.
