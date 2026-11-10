@@ -8,6 +8,10 @@
 #include <tjpgd.h>
 
 #include "epub/ImageProbe.h"
+#if __has_include("ProgressiveJpeg.h")
+#include "ProgressiveJpeg.h"  // full-fidelity progressive decode (optional dep)
+#define TJFB_HAVE_PROGRESSIVE_FULL 1
+#endif
 
 
 namespace freeink {
@@ -314,15 +318,22 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
 }
 
 
-// --- progressive JPEG: DC-only first-scan decode -------------------------------
+// --- progressive JPEG ----------------------------------------------------------
 //
-// Full progressive decode needs every DCT coefficient buffered (megabytes) —
-// off the table on MCU targets. But the FIRST scan of a progressive JPEG is
-// always a DC scan, and a block's DC coefficient IS its 8x8 average. Decoding
-// just that scan streams like a baseline image and yields a correct 1/8-scale
-// grayscale picture, which bilinear resampling maps onto the placement box.
-// (Same strategy CrossPoint/JPEGDEC use.) Chroma DC values are entropy-decoded
-// to keep the bitstream in sync but never used — output is luma only.
+// When the ProgressiveJpeg decoder is linked (the app ships it as a libdep;
+// optional per install), pass-through (renderSourceRows, the
+// app-side-scaler path) decodes full-fidelity luma from ALL scans — the
+// coefficient store is ~2 B/pixel, a fit for the 8 MB PSRAM decode budget —
+// and hands the unscaled source rows to the app scaler. Anything the full
+// decoder cannot start (store too big, parse/feature miss) falls back to the
+// old DC-only first-scan rendering below so the placement still paints; the
+// PageRenderer path (`render`, passThrough=false) keeps the DC-only contract
+// unchanged.
+//
+// The DC-only decoder below decodes only the FIRST scan of a progressive
+// JPEG (block DCT averages = a correct 1/8-scale picture, chroma DC values
+// entropy-decoded to keep the bitstream in sync but never used — output is
+// luma only) — the fallback and the PageRenderer contract.
 
 struct ProgHuff {
   uint8_t counts[17] = {0};     // codes per length 1..16
@@ -490,6 +501,75 @@ struct ProgResample {
     return true;
   }
 };
+
+// Pass-through state for the full-fidelity ProgressiveJpeg decode.
+#if TJFB_HAVE_PROGRESSIVE_FULL
+struct PjState {
+  ZipEntryReader* reader = nullptr;
+  bool ioError = false;
+};
+
+int32_t pjReadZip(void* ctx, uint8_t* dst, uint32_t n) {
+  auto* st = static_cast<PjState*>(ctx);
+  const int32_t got = st->reader->read(dst, n);
+  if (got < 0) st->ioError = true;
+  return got;
+}
+
+// Full-fidelity luma from all scans (libs/assets/ProgressiveJpeg). The
+// coefficient store (~2 B/pixel) survives the whole stream, so rows emit
+// only after the last scan. Every begin()/decode() memory or stream failure
+// falls back to the DC-only path below — the OOM store is freed inside
+// ProgressiveJpeg's destructor, so the retry costs no held memory.
+BookStatus renderJpegProgressiveFull(BookSource& source, const ZipEntry& entry,
+                                     Arena& scratch, ImageRowFn rowFn,
+                                     void* user, SourceDimsFn dimsFn,
+                                     void* dimsUser, RenderPollFn pollFn,
+                                     void* pollUser, bool& usedFull) {
+  usedFull = false;
+  const size_t marked = scratch.mark();
+  PjState st;
+  freeink::ProgressiveJpeg pj;
+  {
+    ZipEntryReader header;
+    st.reader = &header;
+    const BookStatus hs = header.open(source, entry, scratch);
+    if (hs != BookStatus::Ok) {
+      scratch.release(marked);
+      return hs;
+    }
+    const freeink::ProgressiveJpeg::Status bs = pj.begin(&pjReadZip, &st);
+    scratch.release(marked);
+    if (bs != freeink::ProgressiveJpeg::Status::Ok) return BookStatus::OutOfMemory;  // DC fallback
+  }
+  if (dimsFn != nullptr && !dimsFn(dimsUser, pj.width(), pj.height())) {
+    return BookStatus::Ok;  // consumer stopped before any row
+  }
+  const size_t marked2 = scratch.mark();
+  ZipEntryReader body;
+  st.reader = &body;
+  const BookStatus os = body.open(source, entry, scratch);
+  if (os != BookStatus::Ok) {
+    scratch.release(marked2);
+    return os;
+  }
+  const freeink::ProgressiveJpeg::Status status = pj.decode(&pjReadZip, &st, rowFn, user, pollFn, pollUser);
+  scratch.release(marked2);
+  switch (status) {
+    case freeink::ProgressiveJpeg::Status::Ok:
+    case freeink::ProgressiveJpeg::Status::Stopped:
+      usedFull = true;  // rows streamed (or the consumer stopped inside)
+      return BookStatus::Ok;
+    case freeink::ProgressiveJpeg::Status::OutOfMemory:
+    case freeink::ProgressiveJpeg::Status::Unsupported:
+    case freeink::ProgressiveJpeg::Status::ParseError:
+      return BookStatus::OutOfMemory;  // DC fallback covers every retry case
+    case freeink::ProgressiveJpeg::Status::IoError:
+      return st.ioError ? BookStatus::IoError : BookStatus::ParseError;
+  }
+  return BookStatus::ParseError;
+}
+#endif  // TJFB_HAVE_PROGRESSIVE_FULL
 
 BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
                                  const PageImage& image, Arena& scratch, ImageRowFn rowFn,
@@ -793,6 +873,14 @@ BookStatus ImageRenderer::renderSourceRows(BookSource& source, const ZipCatalog&
                                            const uint16_t dstW, const uint16_t dstH, Arena& scratch,
                                            SourceDimsFn dimsFn, void* dimsUser, ImageRowFn rowFn,
                                            void* user) {
+  return renderSourceRows(source, zip, href, dstW, dstH, scratch, dimsFn, dimsUser, rowFn, user, nullptr,
+                          nullptr);
+}
+
+BookStatus ImageRenderer::renderSourceRows(BookSource& source, const ZipCatalog& zip, const char* href,
+                                           const uint16_t dstW, const uint16_t dstH, Arena& scratch,
+                                           SourceDimsFn dimsFn, void* dimsUser, ImageRowFn rowFn,
+                                           void* user, RenderPollFn pollFn, void* pollUser) {
   if (rowFn == nullptr) return BookStatus::Unsupported;
   const ZipEntry* entry = zip.find(href);
   if (entry == nullptr) return BookStatus::NotFound;
@@ -817,6 +905,24 @@ BookStatus ImageRenderer::renderSourceRows(BookSource& source, const ZipCatalog&
                            user, true, dimsFn, dimsUser);
         break;
       case ImageInfo::Kind::Jpeg:
+#if TJFB_HAVE_PROGRESSIVE_FULL
+        if (info.progressive) {
+          // Full-fidelity first: the store (~2 B/pixel) carries all scans.
+          // OutOfMemory (or a parse/feature miss) falls back to the DC-only
+          // first-scan path so the placement still paints.
+          bool usedFull = false;
+          const BookStatus full = renderJpegProgressiveFull(source, *entry, scratch, rowFn, user, dimsFn,
+                                                            dimsUser, pollFn, pollUser, usedFull);
+          if (full == BookStatus::Ok) {
+            status = full;
+            break;
+          }
+          if (full != BookStatus::OutOfMemory) {
+            status = full;  // IO errors must not hide behind the fallback
+            break;
+          }
+        }
+#endif
         status = info.progressive
                      ? renderJpegProgressive(source, *entry, image, scratch, rowFn, user,
                                              true, dimsFn, dimsUser)
