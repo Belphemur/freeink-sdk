@@ -9,7 +9,8 @@
     }
   ],
   "dependencies": {
-    "FreeInkFont": "*"
+    "FreeInkFont": "*",
+    "ProgressiveJpeg": "*"
   },
   "platforms": "*",
   "frameworks": "*",

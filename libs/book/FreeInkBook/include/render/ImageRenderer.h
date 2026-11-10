@@ -34,6 +34,12 @@ using ImageRowFn = bool (*)(void* user, uint16_t y, const uint8_t* gray, uint16_
 // row). Return false to stop rendering early.
 using SourceDimsFn = bool (*)(void* user, uint16_t srcW, uint16_t srcH);
 
+// Cooperative abort for a decode that cannot surface progress through the
+// row callback (the full-fidelity progressive path holds its whole
+// coefficient store until the last scan; the app's worker polls between
+// scans and per emitted block row). Return true = stop the decode.
+using RenderPollFn = bool (*)(void* user);
+
 class ImageRenderer {
  public:
   // Renders `image` (a placement produced by layout or read from the page
@@ -46,15 +52,25 @@ class ImageRenderer {
   // Pass-through mode for callers that do their own rescaling (TTF reader's
   // app-side DPID scaler, design docs/design/2026-11-09-ttf-image-dpid-clahe.md):
   // streams the DECODED, UNSCALED grayscale source rows of the PNG/JPEG at
-  // `href` to `rowFn` (rows are `srcW` wide; progressive JPEG delivers one
-  // DC-block row per call, so the "pixels" are 8x8-block averages). The
-  // streamed dims are reported once via `dimsFn` before the first row —
-  // baseline JPEG's power-of-two pre-scale is picked from `dstW`/`dstH`
-  // exactly as `render` would pick it. No averaging or interpolation runs
-  // here and `render`'s default behavior is unchanged.
+  // `href` to `rowFn` (rows are `srcW` wide). Progressive JPEGs decode at
+  // FULL resolution through libs/assets/ProgressiveJpeg (all scans; the
+  // coefficient store is ~2 B/pixel on the app's PSRAM budget) with the
+  // DC-only block-average renderer as the out-of-memory fallback so an
+  // oversized store cannot stall the placement. The streamed dims are
+  // reported once via `dimsFn` before the first row — baseline JPEG's
+  // power-of-two pre-scale is picked from `dstW`/`dstH` exactly as `render`
+  // would pick it. No averaging or interpolation runs here and `render`'s
+  // default behavior is unchanged.
   static BookStatus renderSourceRows(BookSource& source, const ZipCatalog& zip, const char* href, uint16_t dstW,
                                      uint16_t dstH, Arena& scratch, SourceDimsFn dimsFn, void* dimsUser,
                                      ImageRowFn rowFn, void* user);
+  // Same, plus a cooperative abort hook (RenderPollFn) that reaches decodes
+  // whose progress cannot surface through rowFn — today the full-fidelity
+  // progressive path (no rows until the last scan). Other decoders stream
+  // per-row and ignore it.
+  static BookStatus renderSourceRows(BookSource& source, const ZipCatalog& zip, const char* href, uint16_t dstW,
+                                     uint16_t dstH, Arena& scratch, SourceDimsFn dimsFn, void* dimsUser,
+                                     ImageRowFn rowFn, void* user, RenderPollFn pollFn, void* pollUser);
 };
 
 // Quantizes one grayscale row to 1 bit per pixel (MSB first, 1 = black)

@@ -22,6 +22,11 @@ class ProgressiveJpeg {
   using ReadFn = int32_t (*)(void* ctx, uint8_t* dst, uint32_t n);
   // One output row of `width` 8-bit luma values; return false to stop.
   using RowFn = bool (*)(void* user, uint16_t y, const uint8_t* row, uint16_t width);
+  // Cooperative abort during the (whole-stream) coefficient decode: true =
+  // stop. Checked between scans, per MCU row and per emitted block row — a
+  // full-frame store means no row callbacks until the last scan, so a
+  // worker cancellation would otherwise wait the whole stream out.
+  using PollFn = bool (*)(void* user);
 
   ProgressiveJpeg() = default;
   ~ProgressiveJpeg();
@@ -39,6 +44,9 @@ class ProgressiveJpeg {
   // Decodes the whole stream from its first byte (rewind the source after
   // begin()), then emits rows 0..height-1 in order.
   Status decode(ReadFn read, void* ctx, RowFn row, void* user);
+  // Same with a cooperative abort poll (see PollFn). Stopped aborts leave
+  // the coefficient store half-refined: the caller drops the instance.
+  Status decode(ReadFn read, void* ctx, RowFn row, void* user, PollFn poll, void* pollUser);
 
  private:
   struct Reader;
@@ -48,7 +56,7 @@ class ProgressiveJpeg {
   void scan(Reader& r, const Comp* comps, uint8_t ns, const uint8_t* idx, const Huff& acTable, const Huff* dc,
             const uint8_t* td, uint8_t ss, uint8_t se, uint8_t ah, uint8_t al, uint16_t restartInterval,
             uint16_t mcusX, uint16_t mcusY);
-  Status emit(RowFn rowFn, void* user);
+  Status emit(RowFn rowFn, void* user, PollFn poll, void* pollUser);
   void release();
 
   uint16_t _width = 0;

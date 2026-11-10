@@ -109,6 +109,9 @@ struct ProgressiveJpeg::Reader {
   uint32_t bits = 0;
   int bitCount = 0;
   int marker = 0;  // marker met inside entropy data; bits read as 0 after it
+  PollFn poll = nullptr;
+  void* pollUser = nullptr;
+  bool pollStop = false;
 
   int raw() {
     if (pos >= len) {
@@ -191,6 +194,15 @@ struct ProgressiveJpeg::Reader {
     return -1;
   }
 
+  bool stop() {
+    if (pollStop) return true;
+    if (poll != nullptr && poll(pollUser)) {
+      pollStop = true;
+      return true;
+    }
+    return false;
+  }
+
   // Discards entropy data up to the next marker other than RSTn; 0 at end of data.
   int nextMarker() {
     bitCount = 0;
@@ -257,15 +269,23 @@ ProgressiveJpeg::Status ProgressiveJpeg::begin(ReadFn read, void* ctx) {
 }
 
 ProgressiveJpeg::Status ProgressiveJpeg::decode(ReadFn read, void* ctx, RowFn rowFn, void* user) {
+  return decode(read, ctx, rowFn, user, nullptr, nullptr);
+}
+
+ProgressiveJpeg::Status ProgressiveJpeg::decode(ReadFn read, void* ctx, RowFn rowFn, void* user, PollFn poll,
+                                                void* pollUser) {
   if (!_coef) return Status::Unsupported;
   memset(_coef, 0, static_cast<size_t>(_blocksW) * _blocksH * 64 * sizeof(int16_t));
   Reader r(read, ctx);
+  r.poll = poll;
+  r.pollUser = pollUser;
   const Status status = parse(r, false);
-  return status == Status::Ok ? emit(rowFn, user) : status;
+  return status == Status::Ok ? emit(rowFn, user, poll, pollUser) : status;
 }
 
 ProgressiveJpeg::Status ProgressiveJpeg::parse(Reader& r, bool headerOnly) {
   uint8_t soi[2];
+  if (r.stop()) return Status::Stopped;
   if (!r.bytes(soi, 2) || soi[0] != 0xFF || soi[1] != 0xD8) return r.ioError ? Status::IoError : Status::ParseError;
 
   Huff dc[4], ac[4];
@@ -276,6 +296,7 @@ ProgressiveJpeg::Status ProgressiveJpeg::parse(Reader& r, bool headerOnly) {
   int pending = 0;
 
   for (;;) {
+    if (r.stop()) return Status::Stopped;
     int m = pending;
     pending = 0;
     if (!m) {
@@ -389,6 +410,7 @@ ProgressiveJpeg::Status ProgressiveJpeg::parse(Reader& r, bool headerOnly) {
       r.startEntropy();
       if (idx[0] == 0 || ns > 1) scan(r, comps, ns, idx, ss ? ac[ta[0]] : dc[td[0]], dc, td, ss, se, ah, al,
                                       restartInterval, mcusX, mcusY);
+      if (r.stop()) return Status::Stopped;
       pending = r.nextMarker();
       if (!pending) break;
     } else if (!r.skip(len)) {
@@ -414,6 +436,7 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
   const int32_t p1 = 1 << al;
 
   for (uint32_t uy = 0; uy < unitsH; ++uy) {
+    if (r.stop()) return;
     for (uint32_t ux = 0; ux < unitsW; ++ux) {
       if (restartInterval && sinceRestart == restartInterval) {
         if (!r.restart()) return;
@@ -518,13 +541,17 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
   }
 }
 
-ProgressiveJpeg::Status ProgressiveJpeg::emit(RowFn rowFn, void* user) {
+ProgressiveJpeg::Status ProgressiveJpeg::emit(RowFn rowFn, void* user, PollFn poll, void* pollUser) {
   const uint32_t stride = static_cast<uint32_t>(_blocksW) * 8;
   uint8_t* strip = static_cast<uint8_t*>(malloc(stride * 8));
   if (!strip) return Status::OutOfMemory;
   Status status = Status::Ok;
   const uint16_t* qt = _qt[_lumaTq];
   for (uint32_t by = 0; by * 8 < _height && status == Status::Ok; ++by) {
+    if (poll != nullptr && poll(pollUser)) {
+      status = Status::Stopped;
+      break;
+    }
     for (uint32_t bx = 0; bx < _blocksW; ++bx)
       idctBlock(_coef + (static_cast<size_t>(by) * _blocksW + bx) * 64, qt, strip + bx * 8, stride);
     for (uint32_t y = 0; y < 8 && by * 8 + y < _height; ++y) {
