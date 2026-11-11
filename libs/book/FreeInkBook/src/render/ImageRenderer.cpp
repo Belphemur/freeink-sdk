@@ -130,7 +130,7 @@ void pngInitCallback(pngle_t* pngle, uint32_t w, uint32_t h) {
   if (state->scaler.passThrough && !state->dimsSent && !state->scaler.stopped) {
     state->dimsSent = true;
     if (state->dimsFn != nullptr &&
-        !state->dimsFn(state->dimsUser, state->scaler.srcW, state->scaler.srcH)) {
+        !state->dimsFn(state->dimsUser, state->scaler.srcW, state->scaler.srcH, /*scaleReduced=*/false)) {
       state->scaler.stopped = true;
     }
   }
@@ -218,6 +218,7 @@ struct JpegState {
   uint32_t bandFilled = 0;      // rows known to be complete (top-based)
   bool ioError = false;
   bool dimsSent = false;
+  bool scaleReduced = false;  // arena forced a step below the preferred scale
   SourceDimsFn dimsFn = nullptr;
   void* dimsUser = nullptr;
 
@@ -228,7 +229,7 @@ struct JpegState {
   void reportDims() {
     if (dimsSent || dimsFn == nullptr) return;
     dimsSent = true;
-    if (!dimsFn(dimsUser, scaler.srcW, scaler.srcH)) scaler.stopped = true;
+    if (!dimsFn(dimsUser, scaler.srcW, scaler.srcH, scaleReduced)) scaler.stopped = true;
   }
 
   void flushBandRows(uint32_t upToSrcY) {  // exclusive
@@ -306,6 +307,7 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
          (jd.height >> (scale + 1)) >= (image.height * 3) / 2) {
     ++scale;
   }
+  const uint8_t preferredScale = scale;
   // The fidelity-preferred scale keeps the widest band (srcW * kBandRows);
   // a caller arena that cannot hold it must not lose the page. Step to a
   // smaller decode that still covers the placement (the pre-1.5x pick) and
@@ -336,6 +338,9 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
     if (state.band != nullptr && initScaler(state.scaler, scratch)) break;
     scratch.release(bandMark);
   }
+  // The arena-retry loop may have stepped past the preferred scale — report
+  // it so the consumer can refuse to cache a reduced-detail decode.
+  state.scaleReduced = scale > preferredScale;
   if (passThrough) state.reportDims();  // consumer may stop the stream right here
 
   const JRESULT jr = jd_decomp(&jd, jpegOutput, scale);
@@ -591,7 +596,10 @@ BookStatus renderJpegProgressiveFull(BookSource& source, const ZipEntry& entry,
       auto* self = static_cast<DimsOnce*>(u);
       if (!self->sent) {
         self->sent = true;
-        if (self->fn != nullptr && !self->fn(self->user, self->dimW, self->dimH)) return false;
+        // The full-fidelity path never steps the scale — only the DC
+        // fallback's 1/8 dims differ, and the consumer detects those from
+        // the reported dims themselves.
+        if (self->fn != nullptr && !self->fn(self->user, self->dimW, self->dimH, /*scaleReduced=*/false)) return false;
       }
       return self->rowFn(self->rowUser, y, gray, width);
     }
@@ -809,7 +817,7 @@ BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
   }
   // Pass-through: report the streamed dims once (each row is one DC-block
   // row, blocksW wide — the app's scaler sees 8x8-block averages).
-  if (passThrough && dimsFn != nullptr && !dimsFn(dimsUser, blocksW, blocksH)) {
+  if (passThrough && dimsFn != nullptr && !dimsFn(dimsUser, blocksW, blocksH, /*scaleReduced=*/false)) {
     return BookStatus::Ok;  // consumer stopped before any row
   }
 

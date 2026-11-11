@@ -1979,9 +1979,11 @@ void testJpegScaleArenaRetry() {
 
   struct DimsCapture {
     uint16_t w = 0, h = 0;
-    static bool onDims(void* user, uint16_t srcW, uint16_t srcH) {
+    bool reduced = false;
+    static bool onDims(void* user, uint16_t srcW, uint16_t srcH, bool scaleReduced) {
       static_cast<DimsCapture*>(user)->w = srcW;
       static_cast<DimsCapture*>(user)->h = srcH;
+      static_cast<DimsCapture*>(user)->reduced = scaleReduced;
       return true;
     }
   } dims;
@@ -2000,6 +2002,7 @@ void testJpegScaleArenaRetry() {
     opened.scratch.release(marked);
     CHECK_EQ(dims.w, 256);
     CHECK_EQ(dims.h, 256);
+    CHECK(!dims.reduced);  // the preferred pick must not report a reduction
     CHECK_EQ(cap.width, 256);
     CHECK_EQ(cap.rows, 256);  // the scale-1 decode emits 256 rows
   }
@@ -2018,6 +2021,7 @@ void testJpegScaleArenaRetry() {
              static_cast<int>(BookStatus::Ok));
     CHECK_EQ(dims.w, 128);
     CHECK_EQ(dims.h, 128);
+    CHECK(dims.reduced);  // the arena-driven step-down must be reported
     CHECK_EQ(cap.width, 128);
     CHECK_EQ(cap.rows, 128);  // the retried scale-2 decode emits 128 rows
     CHECK(tiny.highWater() <= sizeof(tinyBuf));

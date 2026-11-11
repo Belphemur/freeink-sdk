@@ -31,8 +31,12 @@ namespace book {
 using ImageRowFn = bool (*)(void* user, uint16_t y, const uint8_t* gray, uint16_t width);
 
 // Reports the streamed source-row dimensions (one call, before the first
-// row). Return false to stop rendering early.
-using SourceDimsFn = bool (*)(void* user, uint16_t srcW, uint16_t srcH);
+// row). `scaleReduced` is true when the caller arena could not hold the
+// preferred decode and the renderer stepped TJpgDec's power-of-two scale
+// down (baseline JPEG only; a caller that sizes its buffers from the
+// reported dims is unaffected — the reported dims ARE the placed ones).
+// Return false to stop rendering early.
+using SourceDimsFn = bool (*)(void* user, uint16_t srcW, uint16_t srcH, bool scaleReduced);
 
 // Cooperative abort for a decode that cannot surface progress through the
 // row callback (the full-fidelity progressive path holds its whole

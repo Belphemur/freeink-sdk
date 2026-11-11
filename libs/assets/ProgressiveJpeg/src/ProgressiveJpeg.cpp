@@ -446,6 +446,11 @@ ProgressiveJpeg::Status ProgressiveJpeg::parse(Reader& r, bool headerOnly) {
       return Status::ParseError;
     }
   }
+  // A read callback failure inside a scan reaches the marker loop as "no
+  // next marker" and used to fall through to Ok (frame seen) — the caller
+  // would then emit partial coefficient rows and could cache them. A
+  // truncated STREAM (eof, no ioError) still decodes what arrived by design.
+  if (r.ioError) return Status::IoError;
   return frame ? Status::Ok : Status::ParseError;
 }
 
