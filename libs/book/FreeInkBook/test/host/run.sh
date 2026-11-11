@@ -51,6 +51,14 @@ Image.open(d + "/pattern.png").convert("RGB").save(d + "/pattern_prog.jpg",
                                                    progressive=True, quality=92)
 PYEOF2
 
+# 512x512 baseline JPEG for the pre-scale arena-retry test (yuvj420p keeps
+# the chroma sampling TJpgDec accepts; skipped when no converter exists).
+IMGDIR="$BUILD_DIR/fixtures/minimal/OEBPS/images"
+if command -v ffmpeg >/dev/null 2>&1; then
+  ffmpeg -y -loglevel error -i "$IMGDIR/pattern.png" -vf scale=512:512 \
+    -pix_fmt yuvj420p "$IMGDIR/pattern_512.jpg" || true
+fi
+
 # make_epub <stage-dir> <out.epub> <compression-flag>
 make_epub() {
   (cd "$1" \
@@ -59,6 +67,12 @@ make_epub() {
 }
 make_epub "$BUILD_DIR/fixtures/minimal" minimal.epub -9
 make_epub "$BUILD_DIR/fixtures/minimal" stored.epub -0
+# Stored twin for the JPEG arena-retry test (the zip shim above always
+# deflates; the test needs an entry with no 32 KB inflate window).
+python3 ../fixtures/gen_stored_epub.py "$BUILD_DIR/fixtures/minimal" \
+  "$BUILD_DIR/fixtures/stored512.epub"
+ls "$BUILD_DIR/fixtures/minimal/OEBPS/images/pattern_512.jpg" >/dev/null 2>&1 \
+  || echo "note: pattern_512.jpg absent — testJpegScaleArenaRetry will skip"
 make_epub "$BUILD_DIR/fixtures/ncxonly" ncxonly.epub -9
 head -c 4096 /dev/zero > "$BUILD_DIR/fixtures/garbage.bin"
 python3 ../fixtures/gen_omnibus.py "$BUILD_DIR/fixtures/omnibus.epub" 1700 >/dev/null

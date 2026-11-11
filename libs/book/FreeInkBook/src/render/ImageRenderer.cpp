@@ -306,22 +306,36 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
          (jd.height >> (scale + 1)) >= (image.height * 3) / 2) {
     ++scale;
   }
-  const uint16_t srcW = static_cast<uint16_t>(jd.width >> scale);
-  const uint16_t srcH = static_cast<uint16_t>(jd.height >> scale);
-  if (srcW == 0 || srcH == 0) return BookStatus::Unsupported;
-
-  state.scaler.srcW = srcW;
-  state.scaler.srcH = srcH;
-  state.scaler.dstW = image.width < srcW ? image.width : srcW;
-  state.scaler.dstH = image.height < srcH ? image.height : srcH;
-  state.scaler.rowFn = rowFn;
-  state.scaler.user = user;
-  state.scaler.passThrough = passThrough;
-  state.dimsFn = dimsFn;
-  state.dimsUser = dimsUser;
-  state.bandW = srcW;
-  state.band = static_cast<uint8_t*>(scratch.alloc(srcW * JpegState::kBandRows, 1));
-  if (!initScaler(state.scaler, scratch) || state.band == nullptr) return BookStatus::OutOfMemory;
+  // The fidelity-preferred scale keeps the widest band (srcW * kBandRows);
+  // a caller arena that cannot hold it must not lose the page. Step to a
+  // smaller decode that still covers the placement (the pre-1.5x pick) and
+  // only report OutOfMemory when even that does not fit.
+  const size_t bandMark = scratch.mark();
+  uint16_t srcW = 0;
+  uint16_t srcH = 0;
+  for (;; ++scale) {
+    if (scale > 3) return BookStatus::OutOfMemory;
+    srcW = static_cast<uint16_t>(jd.width >> scale);
+    srcH = static_cast<uint16_t>(jd.height >> scale);
+    if (srcW == 0 || srcH == 0) return BookStatus::Unsupported;
+    // A retried scale may only shrink while it still fills the placement.
+    if (scale > 0 && (srcW < image.width || srcH < image.height)) {
+      return BookStatus::OutOfMemory;
+    }
+    state.scaler.srcW = srcW;
+    state.scaler.srcH = srcH;
+    state.scaler.dstW = image.width < srcW ? image.width : srcW;
+    state.scaler.dstH = image.height < srcH ? image.height : srcH;
+    state.scaler.rowFn = rowFn;
+    state.scaler.user = user;
+    state.scaler.passThrough = passThrough;
+    state.dimsFn = dimsFn;
+    state.dimsUser = dimsUser;
+    state.bandW = srcW;
+    state.band = static_cast<uint8_t*>(scratch.alloc(srcW * JpegState::kBandRows, 1));
+    if (state.band != nullptr && initScaler(state.scaler, scratch)) break;
+    scratch.release(bandMark);
+  }
   if (passThrough) state.reportDims();  // consumer may stop the stream right here
 
   const JRESULT jr = jd_decomp(&jd, jpegOutput, scale);
