@@ -1250,7 +1250,7 @@ void FtFont::ensureGposLoaded() {
         tableSize <= kMaxGsubBytes) {
       gposTable_ = table;
       gposTableSize_ = tableSize;
-      findSfntTable(fontData_, fontDataSize_, kTagGdef, &gdefTable_, &gdefTableSize_);
+      findSfntTable(fontData_, fontDataSize_, kTagGdef, &gdefTable_, &gdefTableSize_, activeFaceIndex_);
     }
     return;
   }
