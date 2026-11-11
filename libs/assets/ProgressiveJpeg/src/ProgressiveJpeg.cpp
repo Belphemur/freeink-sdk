@@ -47,6 +47,24 @@ void freeStore(void* p) {
 #endif
 }
 
+// Internal-RAM twin of the store pool: the emit strip's fallback when the
+// store pool cannot serve it (host targets: the same plain heap).
+void* allocInternal(size_t bytes) {
+#if FREEINK_PJ_HEAP_CAPS
+  return heap_caps_calloc(1, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#else
+  return calloc(1, bytes);
+#endif
+}
+
+void freeInternal(void* p) {
+#if FREEINK_PJ_HEAP_CAPS
+  heap_caps_free(p);
+#else
+  free(p);
+#endif
+}
+
 // Separable 8x8 inverse DCT: kIdct[x][u] = C(u)/2 * cos((2x+1)u*pi/16).
 const float* idctTable() {
   static float t[64];
@@ -557,10 +575,18 @@ ProgressiveJpeg::Status ProgressiveJpeg::emit(RowFn rowFn, void* user, PollFn po
   // The emit strip lives in the same store pool as the coefficient store: an
   // internal-heap malloc of stride*8 (11+ KB on a 1400-wide frame) can fail
   // under internal-DRAM fragmentation while the PSRAM-backed decode is fine,
-  // which would needlessly drop the page to the DC-only fallback.
+  // which would needlessly drop the page to the DC-only fallback. The store
+  // pool itself can also be full (the coefficient store still holds it), so
+  // fall back to internal RAM before giving up — a strip served from either
+  // pool keeps the full decode.
+  bool stripFromStore = true;
   uint8_t* strip = static_cast<uint8_t*>(allocStore(stride * 8));
   if (!strip) {
-    PJ_LOG_WRN("emit strip %lu KiB store-alloc failed - DC fallback",
+    stripFromStore = false;
+    strip = static_cast<uint8_t*>(allocInternal(stride * 8));
+  }
+  if (!strip) {
+    PJ_LOG_WRN("emit strip %lu KiB alloc failed (store + internal) - DC fallback",
                static_cast<unsigned long>(stride * 8 / 1024));
     return Status::OutOfMemory;
   }
@@ -580,7 +606,11 @@ ProgressiveJpeg::Status ProgressiveJpeg::emit(RowFn rowFn, void* user, PollFn po
       }
     }
   }
-  freeStore(strip);
+  if (stripFromStore) {
+    freeStore(strip);
+  } else {
+    freeInternal(strip);
+  }
   return status;
 }
 
