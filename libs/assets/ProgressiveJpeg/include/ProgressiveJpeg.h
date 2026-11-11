@@ -32,6 +32,10 @@ class ProgressiveJpeg {
   ~ProgressiveJpeg();
   ProgressiveJpeg(const ProgressiveJpeg&) = delete;
   ProgressiveJpeg& operator=(const ProgressiveJpeg&) = delete;
+  // Components in the frame header (valid after begin()). A full-decode
+  // failure is reported with this so the caller's fallback log can say what
+  // kind of stream it gave up on.
+  uint8_t ncomp() const { return _ncomp; }
 
   // Reads the stream up to its frame header and allocates the coefficient
   // store. Unsupported for anything but a progressive Huffman JPEG.
@@ -63,6 +67,7 @@ class ProgressiveJpeg {
   uint16_t _height = 0;
   uint16_t _blocksW = 0;  // luma blocks per row in the store (MCU-padded)
   uint16_t _blocksH = 0;
+  uint8_t _ncomp = 0;
   int16_t* _coef = nullptr;
   uint16_t _qt[4][64] = {};  // quantizers in zigzag order
   uint8_t _lumaTq = 0;

@@ -13,6 +13,15 @@
 #define TJFB_HAVE_PROGRESSIVE_FULL 1
 #endif
 
+// Logging: the firmware's Logging.h facility when the consumer provides it;
+// silent fallback otherwise (same convention as InputManager).
+#if __has_include(<Logging.h>)
+#include <Logging.h>
+#define PJ_LOG_WRN(...) LOG_WRN("PJPG", __VA_ARGS__)
+#else
+#define PJ_LOG_WRN(...) ((void)0)
+#endif
+
 
 namespace freeink {
 namespace book {
@@ -286,28 +295,47 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
   }
 
   // Use TJpgDec's power-of-two downscale to get close to the target size
-  // cheaply; the RowScaler handles the remainder.
+  // cheaply; the RowScaler handles the remainder. A half-scale decode that
+  // lands within 1.5x of the target forces the scaler to re-resample a
+  // 1.0-1.1x reduction — every 1.5px ink line lands on the blocky power-of-
+  // two grid and comes out stair-stepped (the 2026-11-10 fidelity soak's
+  // "Lego" blocks). Only step the scale when the halved dims still leave a
+  // 1.5x margin on both axes; else decode at full resolution.
   uint8_t scale = 0;
-  while (scale < 3 && (jd.width >> (scale + 1)) >= image.width &&
-         (jd.height >> (scale + 1)) >= image.height) {
+  while (scale < 3 && (jd.width >> (scale + 1)) >= (image.width * 3) / 2 &&
+         (jd.height >> (scale + 1)) >= (image.height * 3) / 2) {
     ++scale;
   }
-  const uint16_t srcW = static_cast<uint16_t>(jd.width >> scale);
-  const uint16_t srcH = static_cast<uint16_t>(jd.height >> scale);
-  if (srcW == 0 || srcH == 0) return BookStatus::Unsupported;
-
-  state.scaler.srcW = srcW;
-  state.scaler.srcH = srcH;
-  state.scaler.dstW = image.width < srcW ? image.width : srcW;
-  state.scaler.dstH = image.height < srcH ? image.height : srcH;
-  state.scaler.rowFn = rowFn;
-  state.scaler.user = user;
-  state.scaler.passThrough = passThrough;
-  state.dimsFn = dimsFn;
-  state.dimsUser = dimsUser;
-  state.bandW = srcW;
-  state.band = static_cast<uint8_t*>(scratch.alloc(srcW * JpegState::kBandRows, 1));
-  if (!initScaler(state.scaler, scratch) || state.band == nullptr) return BookStatus::OutOfMemory;
+  // The fidelity-preferred scale keeps the widest band (srcW * kBandRows);
+  // a caller arena that cannot hold it must not lose the page. Step to a
+  // smaller decode that still covers the placement (the pre-1.5x pick) and
+  // only report OutOfMemory when even that does not fit.
+  const size_t bandMark = scratch.mark();
+  uint16_t srcW = 0;
+  uint16_t srcH = 0;
+  for (;; ++scale) {
+    if (scale > 3) return BookStatus::OutOfMemory;
+    srcW = static_cast<uint16_t>(jd.width >> scale);
+    srcH = static_cast<uint16_t>(jd.height >> scale);
+    if (srcW == 0 || srcH == 0) return BookStatus::Unsupported;
+    // A retried scale may only shrink while it still fills the placement.
+    if (scale > 0 && (srcW < image.width || srcH < image.height)) {
+      return BookStatus::OutOfMemory;
+    }
+    state.scaler.srcW = srcW;
+    state.scaler.srcH = srcH;
+    state.scaler.dstW = image.width < srcW ? image.width : srcW;
+    state.scaler.dstH = image.height < srcH ? image.height : srcH;
+    state.scaler.rowFn = rowFn;
+    state.scaler.user = user;
+    state.scaler.passThrough = passThrough;
+    state.dimsFn = dimsFn;
+    state.dimsUser = dimsUser;
+    state.bandW = srcW;
+    state.band = static_cast<uint8_t*>(scratch.alloc(srcW * JpegState::kBandRows, 1));
+    if (state.band != nullptr && initScaler(state.scaler, scratch)) break;
+    scratch.release(bandMark);
+  }
   if (passThrough) state.reportDims();  // consumer may stop the stream right here
 
   const JRESULT jr = jd_decomp(&jd, jpegOutput, scale);
@@ -368,7 +396,7 @@ struct ProgJpeg {
   }
 
   // One entropy-coded bit; FF00 unstuffed, markers latch into pendingMarker.
-  int bit() {
+  int nextBit() {
     if (bitCount == 0) {
       int b = rawByte();
       if (b < 0) return -1;
@@ -392,7 +420,7 @@ struct ProgJpeg {
   int decodeHuff(const ProgHuff& t) {
     uint32_t code = 0;
     for (int len = 1; len <= 16; ++len) {
-      const int b = bit();
+      const int b = nextBit();
       if (b < 0) return -1;
       code = (code << 1) | static_cast<uint32_t>(b);
       if (t.counts[len] != 0 && code < static_cast<uint32_t>(t.firstCode[len]) + t.counts[len]) {
@@ -406,7 +434,7 @@ struct ProgJpeg {
   int32_t receiveExtend(int s, bool* ok) {
     int32_t v = 0;
     for (int i = 0; i < s; ++i) {
-      const int b = bit();
+      const int b = nextBit();
       if (b < 0) {
         *ok = false;
         return 0;
@@ -540,11 +568,40 @@ BookStatus renderJpegProgressiveFull(BookSource& source, const ZipEntry& entry,
     }
     const freeink::ProgressiveJpeg::Status bs = pj.begin(&pjReadZip, &st);
     scratch.release(marked);
-    if (bs != freeink::ProgressiveJpeg::Status::Ok) return BookStatus::OutOfMemory;  // DC fallback
+    if (bs != freeink::ProgressiveJpeg::Status::Ok) {
+      PJ_LOG_WRN("full decode begin failed (status %d, ncomp %u) - DC fallback", static_cast<int>(bs),
+                 static_cast<unsigned>(pj.ncomp()));
+      return BookStatus::OutOfMemory;  // DC fallback
+    }
   }
-  if (dimsFn != nullptr && !dimsFn(dimsUser, pj.width(), pj.height())) {
-    return BookStatus::Ok;  // consumer stopped before any row
-  }
+  // The dims report is deferred to the FIRST EMITTED ROW (the PNG path's
+  // dimsSent shape): a decode that dies mid-stream (store OOM, parse miss)
+  // must not have already reported the full frame dims — the DC-only
+  // fallback reports its own 1/8-scale dims, and a consumer that sized its
+  // state on the first report would see a width change mid-decode (the
+  // app's row sink refuses widths other than the attached scaler's).
+  struct DimsOnce {
+    SourceDimsFn fn;
+    void* user;
+    uint16_t dimW = 0, dimH = 0;  // the frame header's dims (from begin())
+    bool sent = false;
+    ImageRowFn rowFn = nullptr;
+    void* rowUser = nullptr;
+    static bool onRow(void* u, const uint16_t y, const uint8_t* gray, const uint16_t width) {
+      auto* self = static_cast<DimsOnce*>(u);
+      if (!self->sent) {
+        self->sent = true;
+        if (self->fn != nullptr && !self->fn(self->user, self->dimW, self->dimH)) return false;
+      }
+      return self->rowFn(self->rowUser, y, gray, width);
+    }
+  } dimsOnce;
+  dimsOnce.fn = dimsFn;
+  dimsOnce.user = dimsUser;
+  dimsOnce.dimW = pj.width();
+  dimsOnce.dimH = pj.height();
+  dimsOnce.rowFn = rowFn;
+  dimsOnce.rowUser = user;
   const size_t marked2 = scratch.mark();
   ZipEntryReader body;
   st.reader = &body;
@@ -553,7 +610,8 @@ BookStatus renderJpegProgressiveFull(BookSource& source, const ZipEntry& entry,
     scratch.release(marked2);
     return os;
   }
-  const freeink::ProgressiveJpeg::Status status = pj.decode(&pjReadZip, &st, rowFn, user, pollFn, pollUser);
+  const freeink::ProgressiveJpeg::Status status =
+      pj.decode(&pjReadZip, &st, DimsOnce::onRow, &dimsOnce, pollFn, pollUser);
   scratch.release(marked2);
   switch (status) {
     case freeink::ProgressiveJpeg::Status::Ok:
@@ -563,6 +621,8 @@ BookStatus renderJpegProgressiveFull(BookSource& source, const ZipEntry& entry,
     case freeink::ProgressiveJpeg::Status::OutOfMemory:
     case freeink::ProgressiveJpeg::Status::Unsupported:
     case freeink::ProgressiveJpeg::Status::ParseError:
+      PJ_LOG_WRN("full decode failed (status %d, ncomp %u) - DC fallback", static_cast<int>(status),
+                 static_cast<unsigned>(pj.ncomp()));
       return BookStatus::OutOfMemory;  // DC fallback covers every retry case
     case freeink::ProgressiveJpeg::Status::IoError:
       return st.ioError ? BookStatus::IoError : BookStatus::ParseError;

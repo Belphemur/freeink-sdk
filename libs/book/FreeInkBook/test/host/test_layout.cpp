@@ -1955,6 +1955,75 @@ void testProgressiveJpeg() {
   CHECK(cap.pixels[24 * 64 + 4] < cap.pixels[24 * 64 + 27]);
 }
 
+// Baseline JPEG pre-scale: the fidelity 1.5x rule picks the widest band
+// (srcW * kBandRows); when a caller arena cannot hold it, the renderer must
+// step to a smaller power-of-two decode that still covers the placement
+// instead of losing the page to OutOfMemory (review 2026-11-11).
+void testJpegScaleArenaRetry() {
+  OpenedBook opened;
+  // stored512.epub: every entry STORED, so the render needs no 32 KB
+  // inflate window and a tiny scratch arena is meaningful.
+  CHECK(opened.open("stored512.epub"));
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/images/pattern_512.jpg");
+  if (entry == nullptr) {
+    std::printf("  (512px JPEG fixture absent — no converter; skipped)\n");
+    return;
+  }
+  ImageInfo info;
+  CHECK_EQ(static_cast<int>(probeImage(opened.source, *entry, opened.scratch, &info)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(static_cast<int>(info.kind), static_cast<int>(ImageInfo::Kind::Jpeg));
+  CHECK(!info.progressive);
+  CHECK_EQ(info.width, 512);
+  CHECK_EQ(info.height, 512);
+
+  struct DimsCapture {
+    uint16_t w = 0, h = 0;
+    static bool onDims(void* user, uint16_t srcW, uint16_t srcH) {
+      static_cast<DimsCapture*>(user)->w = srcW;
+      static_cast<DimsCapture*>(user)->h = srcH;
+      return true;
+    }
+  } dims;
+  static GrayCapture cap;
+
+  // Roomy arena: the fidelity pick survives — 512x512 into 128x128 keeps
+  // scale 1 (256x256 decode; halving again would drop the 1.5x margin).
+  {
+    cap = GrayCapture{};
+    dims = DimsCapture{};
+    const size_t marked = opened.scratch.mark();
+    CHECK_EQ(static_cast<int>(ImageRenderer::renderSourceRows(
+                 opened.source, opened.book.zip(), "OEBPS/images/pattern_512.jpg", 128, 128,
+                 opened.scratch, DimsCapture::onDims, &dims, GrayCapture::onRow, &cap)),
+             static_cast<int>(BookStatus::Ok));
+    opened.scratch.release(marked);
+    CHECK_EQ(dims.w, 256);
+    CHECK_EQ(dims.h, 256);
+    CHECK_EQ(cap.width, 256);
+    CHECK_EQ(cap.rows, 256);  // the scale-1 decode emits 256 rows
+  }
+
+  // Tight arena: 13 KiB holds skipBuf + work + the scale-2 band (128*16)
+  // + scaler state, but not the scale-1 band (256*16). Pre-fix this
+  // returned OutOfMemory; now it steps to scale 2 and still renders.
+  static uint8_t tinyBuf[13 * 1024];
+  {
+    Arena tiny(tinyBuf, sizeof(tinyBuf));
+    cap = GrayCapture{};
+    dims = DimsCapture{};
+    CHECK_EQ(static_cast<int>(ImageRenderer::renderSourceRows(
+                 opened.source, opened.book.zip(), "OEBPS/images/pattern_512.jpg", 128, 128,
+                 tiny, DimsCapture::onDims, &dims, GrayCapture::onRow, &cap)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK_EQ(dims.w, 128);
+    CHECK_EQ(dims.h, 128);
+    CHECK_EQ(cap.width, 128);
+    CHECK_EQ(cap.rows, 128);  // the retried scale-2 decode emits 128 rows
+    CHECK(tiny.highWater() <= sizeof(tinyBuf));
+  }
+}
+
 // Hebrew fixture chapter (ch7): RTL paragraphs with an embedded Latin word,
 // a number, and mirrored parentheses, plus one all-Latin paragraph. Runs are
 // stored in VISUAL order (UAX #9 L2 down to the character), so a plain
@@ -2781,6 +2850,7 @@ int main(int argc, char** argv) {
   testImages();
   testProbeGifBmp();
   testProgressiveJpeg();
+  testJpegScaleArenaRetry();
   testImagePrescanMemory();
   testCjk();
   testPlainText();

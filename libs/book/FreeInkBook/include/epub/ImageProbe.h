@@ -24,6 +24,7 @@ struct ImageInfo {
   uint16_t width = 0;
   uint16_t height = 0;
   bool progressive = false;  // JPEG SOF2 — needs the DC-only decode path
+  uint8_t jpegComponents = 0;  // JPEG SOF component count (grayscale = 1)
 };
 
 // Scratch is released before returning. Returns Ok with kind=Unknown for

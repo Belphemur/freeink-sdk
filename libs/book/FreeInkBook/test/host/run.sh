@@ -51,6 +51,14 @@ Image.open(d + "/pattern.png").convert("RGB").save(d + "/pattern_prog.jpg",
                                                    progressive=True, quality=92)
 PYEOF2
 
+# 512x512 baseline JPEG for the pre-scale arena-retry test (yuvj420p keeps
+# the chroma sampling TJpgDec accepts; skipped when no converter exists).
+IMGDIR="$BUILD_DIR/fixtures/minimal/OEBPS/images"
+if command -v ffmpeg >/dev/null 2>&1; then
+  ffmpeg -y -loglevel error -i "$IMGDIR/pattern.png" -vf scale=512:512 \
+    -pix_fmt yuvj420p "$IMGDIR/pattern_512.jpg" || true
+fi
+
 # make_epub <stage-dir> <out.epub> <compression-flag>
 make_epub() {
   (cd "$1" \
@@ -59,6 +67,12 @@ make_epub() {
 }
 make_epub "$BUILD_DIR/fixtures/minimal" minimal.epub -9
 make_epub "$BUILD_DIR/fixtures/minimal" stored.epub -0
+# Stored twin for the JPEG arena-retry test (the zip shim above always
+# deflates; the test needs an entry with no 32 KB inflate window).
+python3 ../fixtures/gen_stored_epub.py "$BUILD_DIR/fixtures/minimal" \
+  "$BUILD_DIR/fixtures/stored512.epub"
+ls "$BUILD_DIR/fixtures/minimal/OEBPS/images/pattern_512.jpg" >/dev/null 2>&1 \
+  || echo "note: pattern_512.jpg absent — testJpegScaleArenaRetry will skip"
 make_epub "$BUILD_DIR/fixtures/ncxonly" ncxonly.epub -9
 head -c 4096 /dev/zero > "$BUILD_DIR/fixtures/garbage.bin"
 python3 ../fixtures/gen_omnibus.py "$BUILD_DIR/fixtures/omnibus.epub" 1700 >/dev/null
@@ -70,7 +84,12 @@ python3 ../fixtures/gen_omnibus.py "$BUILD_DIR/fixtures/omnibus.epub" 1700 >/dev
 # include path for third_party/expat is dropped so <expat.h> resolves to the
 # system headers (mirrors the CrossPoint firmware consumption mode; verified
 # by checking the linked XML_* symbols match the system expat).
-INCLUDES="-I../../include -I../../third_party/miniz/include -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb -I../../../../font/FreeInkFont/include -I../../../../font/FreeInkFont/third_party/stb"
+# ProgressiveJpeg is an optional dep of the renderer: when its headers are
+# reachable the full-fidelity progressive path compiles in (TJFB_HAVE_
+# PROGRESSIVE_FULL); without it that dispatcher arm drops out and pollFn/
+# pollUser go unused (-Werror). Always expose it here so the host suite
+# covers the full decode path.
+INCLUDES="-I../../include -I../../../../assets/ProgressiveJpeg/include -I../../third_party/miniz/include -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb -I../../../../font/FreeInkFont/include -I../../../../font/FreeInkFont/third_party/stb"
 VENDOR_SRCS="miniz_impl miniz_cores_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl"
 if [ -n "$FREEINK_BOOK_EXTERNAL_EXPAT" ]; then
   CC_FLAGS="-O1 -std=c99 -DFREEINK_BOOK_EXTERNAL_EXPAT=1 $INCLUDES"
@@ -89,7 +108,8 @@ done
 CORE_SRCS="../../src/FreeInkBook.cpp ../../src/BookCatalog.cpp ../../src/epub/ZipCatalog.cpp ../../src/epub/XmlSax.cpp \
   ../../src/epub/PackageParsers.cpp ../../src/epub/ImageProbe.cpp ../../src/text/EntityFilter.cpp \
   ../../src/text/Hyphenator.cpp ../../src/css/Css.cpp ../../src/layout/ChapterLayout.cpp \
-  ../../src/cache/PageCache.cpp ../../src/render/ImageRenderer.cpp ../../../../font/FreeInkFont/src/TtfFont.cpp ../../src/render/PageRenderer.cpp"
+  ../../src/cache/PageCache.cpp ../../src/render/ImageRenderer.cpp ../../../../font/FreeInkFont/src/TtfFont.cpp ../../src/render/PageRenderer.cpp \
+  ../../../../assets/ProgressiveJpeg/src/ProgressiveJpeg.cpp"
 
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_freeinkbook.cpp "$BUILD_DIR"/obj/*.o $LD_LIBS \
