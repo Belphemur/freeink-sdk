@@ -13,6 +13,15 @@
 #define TJFB_HAVE_PROGRESSIVE_FULL 1
 #endif
 
+// Logging: the firmware's Logging.h facility when the consumer provides it;
+// silent fallback otherwise (same convention as InputManager).
+#if __has_include(<Logging.h>)
+#include <Logging.h>
+#define PJ_LOG_WRN(...) LOG_WRN("PJPG", __VA_ARGS__)
+#else
+#define PJ_LOG_WRN(...) ((void)0)
+#endif
+
 
 namespace freeink {
 namespace book {
@@ -286,10 +295,15 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
   }
 
   // Use TJpgDec's power-of-two downscale to get close to the target size
-  // cheaply; the RowScaler handles the remainder.
+  // cheaply; the RowScaler handles the remainder. A half-scale decode that
+  // lands within 1.5x of the target forces the scaler to re-resample a
+  // 1.0-1.1x reduction — every 1.5px ink line lands on the blocky power-of-
+  // two grid and comes out stair-stepped (the 2026-11-10 fidelity soak's
+  // "Lego" blocks). Only step the scale when the halved dims still leave a
+  // 1.5x margin on both axes; else decode at full resolution.
   uint8_t scale = 0;
-  while (scale < 3 && (jd.width >> (scale + 1)) >= image.width &&
-         (jd.height >> (scale + 1)) >= image.height) {
+  while (scale < 3 && (jd.width >> (scale + 1)) >= (image.width * 3) / 2 &&
+         (jd.height >> (scale + 1)) >= (image.height * 3) / 2) {
     ++scale;
   }
   const uint16_t srcW = static_cast<uint16_t>(jd.width >> scale);
@@ -540,11 +554,40 @@ BookStatus renderJpegProgressiveFull(BookSource& source, const ZipEntry& entry,
     }
     const freeink::ProgressiveJpeg::Status bs = pj.begin(&pjReadZip, &st);
     scratch.release(marked);
-    if (bs != freeink::ProgressiveJpeg::Status::Ok) return BookStatus::OutOfMemory;  // DC fallback
+    if (bs != freeink::ProgressiveJpeg::Status::Ok) {
+      PJ_LOG_WRN("full decode begin failed (status %d, ncomp %u) - DC fallback", static_cast<int>(bs),
+                 static_cast<unsigned>(pj.ncomp()));
+      return BookStatus::OutOfMemory;  // DC fallback
+    }
   }
-  if (dimsFn != nullptr && !dimsFn(dimsUser, pj.width(), pj.height())) {
-    return BookStatus::Ok;  // consumer stopped before any row
-  }
+  // The dims report is deferred to the FIRST EMITTED ROW (the PNG path's
+  // dimsSent shape): a decode that dies mid-stream (store OOM, parse miss)
+  // must not have already reported the full frame dims — the DC-only
+  // fallback reports its own 1/8-scale dims, and a consumer that sized its
+  // state on the first report would see a width change mid-decode (the
+  // app's row sink refuses widths other than the attached scaler's).
+  struct DimsOnce {
+    SourceDimsFn fn;
+    void* user;
+    uint16_t dimW = 0, dimH = 0;  // the frame header's dims (from begin())
+    bool sent = false;
+    ImageRowFn rowFn = nullptr;
+    void* rowUser = nullptr;
+    static bool onRow(void* u, const uint16_t y, const uint8_t* gray, const uint16_t width) {
+      auto* self = static_cast<DimsOnce*>(u);
+      if (!self->sent) {
+        self->sent = true;
+        if (self->fn != nullptr && !self->fn(self->user, self->dimW, self->dimH)) return false;
+      }
+      return self->rowFn(self->rowUser, y, gray, width);
+    }
+  } dimsOnce;
+  dimsOnce.fn = dimsFn;
+  dimsOnce.user = dimsUser;
+  dimsOnce.dimW = pj.width();
+  dimsOnce.dimH = pj.height();
+  dimsOnce.rowFn = rowFn;
+  dimsOnce.rowUser = user;
   const size_t marked2 = scratch.mark();
   ZipEntryReader body;
   st.reader = &body;
@@ -553,7 +596,8 @@ BookStatus renderJpegProgressiveFull(BookSource& source, const ZipEntry& entry,
     scratch.release(marked2);
     return os;
   }
-  const freeink::ProgressiveJpeg::Status status = pj.decode(&pjReadZip, &st, rowFn, user, pollFn, pollUser);
+  const freeink::ProgressiveJpeg::Status status =
+      pj.decode(&pjReadZip, &st, DimsOnce::onRow, &dimsOnce, pollFn, pollUser);
   scratch.release(marked2);
   switch (status) {
     case freeink::ProgressiveJpeg::Status::Ok:
@@ -563,6 +607,8 @@ BookStatus renderJpegProgressiveFull(BookSource& source, const ZipEntry& entry,
     case freeink::ProgressiveJpeg::Status::OutOfMemory:
     case freeink::ProgressiveJpeg::Status::Unsupported:
     case freeink::ProgressiveJpeg::Status::ParseError:
+      PJ_LOG_WRN("full decode failed (status %d, ncomp %u) - DC fallback", static_cast<int>(status),
+                 static_cast<unsigned>(pj.ncomp()));
       return BookStatus::OutOfMemory;  // DC fallback covers every retry case
     case freeink::ProgressiveJpeg::Status::IoError:
       return st.ioError ? BookStatus::IoError : BookStatus::ParseError;

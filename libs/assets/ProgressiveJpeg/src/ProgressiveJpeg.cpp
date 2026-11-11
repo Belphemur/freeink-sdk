@@ -38,6 +38,15 @@ void freeStore(void* p) {
 #endif
 }
 
+// Logging: the firmware's Logging.h facility when the consumer provides it;
+// silent fallback otherwise (same convention as InputManager).
+#if __has_include(<Logging.h>)
+#include <Logging.h>
+#define PJ_LOG_WRN(...) LOG_WRN("PJPG", __VA_ARGS__)
+#else
+#define PJ_LOG_WRN(...) ((void)0)
+#endif
+
 // Separable 8x8 inverse DCT: kIdct[x][u] = C(u)/2 * cos((2x+1)u*pi/16).
 const float* idctTable() {
   static float t[64];
@@ -252,6 +261,7 @@ ProgressiveJpeg::~ProgressiveJpeg() { release(); }
 void ProgressiveJpeg::release() {
   if (_coef) freeStore(_coef);
   _coef = nullptr;
+  _ncomp = 0;
 }
 
 size_t ProgressiveJpeg::storeBytes(uint16_t w, uint16_t h, uint8_t hmax, uint8_t vmax) {
@@ -365,6 +375,7 @@ ProgressiveJpeg::Status ProgressiveJpeg::parse(Reader& r, bool headerOnly) {
       }
       // Luma at full resolution is what the store holds.
       if (comps[0].h != hmax || comps[0].v != vmax) return Status::Unsupported;
+      _ncomp = ncomp;
       for (uint8_t c = 0; c < ncomp; ++c) {
         comps[c].blocksW = static_cast<uint16_t>(((w * comps[c].h + hmax - 1) / hmax + 7) / 8);
         comps[c].blocksH = static_cast<uint16_t>(((h * comps[c].v + vmax - 1) / vmax + 7) / 8);
@@ -543,8 +554,16 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
 
 ProgressiveJpeg::Status ProgressiveJpeg::emit(RowFn rowFn, void* user, PollFn poll, void* pollUser) {
   const uint32_t stride = static_cast<uint32_t>(_blocksW) * 8;
-  uint8_t* strip = static_cast<uint8_t*>(malloc(stride * 8));
-  if (!strip) return Status::OutOfMemory;
+  // The emit strip lives in the same store pool as the coefficient store: an
+  // internal-heap malloc of stride*8 (11+ KB on a 1400-wide frame) can fail
+  // under internal-DRAM fragmentation while the PSRAM-backed decode is fine,
+  // which would needlessly drop the page to the DC-only fallback.
+  uint8_t* strip = static_cast<uint8_t*>(allocStore(stride * 8));
+  if (!strip) {
+    PJ_LOG_WRN("emit strip %lu KiB store-alloc failed - DC fallback",
+               static_cast<unsigned long>(stride * 8 / 1024));
+    return Status::OutOfMemory;
+  }
   Status status = Status::Ok;
   const uint16_t* qt = _qt[_lumaTq];
   for (uint32_t by = 0; by * 8 < _height && status == Status::Ok; ++by) {
@@ -561,7 +580,7 @@ ProgressiveJpeg::Status ProgressiveJpeg::emit(RowFn rowFn, void* user, PollFn po
       }
     }
   }
-  free(strip);
+  freeStore(strip);
   return status;
 }
 

@@ -172,12 +172,13 @@ BookStatus probeImage(BookSource& source, const ZipEntry& entry, Arena& scratch,
       const bool isSof = (marker >= 0xC0 && marker <= 0xCF) && marker != 0xC4 &&
                          marker != 0xC8 && marker != 0xCC;
       if (isSof) {
-        uint8_t sof[5];
-        if (next(sof, 5)) {
+        uint8_t sof[6];
+        if (next(sof, 6)) {
           out->kind = ImageInfo::Kind::Jpeg;
           out->height = be16(sof + 1);
           out->width = be16(sof + 3);
           out->progressive = marker == 0xC2;
+          out->jpegComponents = sof[5];
         }
         break;
       }
