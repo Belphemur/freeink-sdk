@@ -9,6 +9,15 @@
 #define FREEINK_PJ_HEAP_CAPS 1
 #endif
 
+// Logging: the firmware's Logging.h facility when the consumer provides it;
+// silent fallback otherwise (same convention as InputManager).
+#if __has_include(<Logging.h>)
+#include <Logging.h>
+#define PJ_LOG_WRN(...) LOG_WRN("PJPG", __VA_ARGS__)
+#else
+#define PJ_LOG_WRN(...) ((void)0)
+#endif
+
 namespace freeink {
 
 namespace {
@@ -37,15 +46,6 @@ void freeStore(void* p) {
   free(p);
 #endif
 }
-
-// Logging: the firmware's Logging.h facility when the consumer provides it;
-// silent fallback otherwise (same convention as InputManager).
-#if __has_include(<Logging.h>)
-#include <Logging.h>
-#define PJ_LOG_WRN(...) LOG_WRN("PJPG", __VA_ARGS__)
-#else
-#define PJ_LOG_WRN(...) ((void)0)
-#endif
 
 // Separable 8x8 inverse DCT: kIdct[x][u] = C(u)/2 * cos((2x+1)u*pi/16).
 const float* idctTable() {
@@ -158,7 +158,7 @@ struct ProgressiveJpeg::Reader {
     marker = 0;
   }
 
-  int bit() {
+  int nextBit() {
     if (bitCount == 0) {
       int b = 0;
       if (!marker) {
@@ -185,7 +185,7 @@ struct ProgressiveJpeg::Reader {
 
   int32_t get(int n) {
     int32_t v = 0;
-    for (int i = 0; i < n; ++i) v = (v << 1) | bit();
+    for (int i = 0; i < n; ++i) v = (v << 1) | nextBit();
     return v;
   }
 
@@ -194,7 +194,7 @@ struct ProgressiveJpeg::Reader {
   int huff(const Huff& h) {
     int32_t code = 0;
     for (int len = 1; len <= 16; ++len) {
-      code = (code << 1) | bit();
+      code = (code << 1) | nextBit();
       if (code <= h.maxCode[len]) {
         const int32_t i = h.valPtr[len] + code - h.minCode[len];
         return i >= 0 && i < 256 ? h.symbols[i] : -1;
@@ -475,7 +475,7 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
                 if (t < 0 || t > 15) return;
                 pred[i] += Reader::extend(r.get(t), t);
                 blk[0] = static_cast<int16_t>(pred[i] * p1);
-              } else if (r.bit()) {
+              } else if (r.nextBit()) {
                 blk[0] = static_cast<int16_t>(blk[0] | p1);
               }
               continue;
@@ -507,7 +507,7 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
             // AC refinement: one correction bit per nonzero coefficient in the
             // band, new coefficients placed after `run` zero ones.
             auto refine = [&](int16_t& coef) {
-              if (r.bit() && (coef & p1) == 0) coef = static_cast<int16_t>(coef + (coef > 0 ? p1 : -p1));
+              if (r.nextBit() && (coef & p1) == 0) coef = static_cast<int16_t>(coef + (coef > 0 ? p1 : -p1));
             };
             int k = ss;
             if (eobrun) {
@@ -530,7 +530,7 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
                 }
               } else {
                 if (s != 1) return;
-                value = r.bit() ? p1 : -p1;
+                value = r.nextBit() ? p1 : -p1;
               }
               while (k <= se) {
                 int16_t& coef = blk[k++];

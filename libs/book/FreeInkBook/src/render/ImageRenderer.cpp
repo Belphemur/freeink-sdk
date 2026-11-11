@@ -382,7 +382,7 @@ struct ProgJpeg {
   }
 
   // One entropy-coded bit; FF00 unstuffed, markers latch into pendingMarker.
-  int bit() {
+  int nextBit() {
     if (bitCount == 0) {
       int b = rawByte();
       if (b < 0) return -1;
@@ -406,7 +406,7 @@ struct ProgJpeg {
   int decodeHuff(const ProgHuff& t) {
     uint32_t code = 0;
     for (int len = 1; len <= 16; ++len) {
-      const int b = bit();
+      const int b = nextBit();
       if (b < 0) return -1;
       code = (code << 1) | static_cast<uint32_t>(b);
       if (t.counts[len] != 0 && code < static_cast<uint32_t>(t.firstCode[len]) + t.counts[len]) {
@@ -420,7 +420,7 @@ struct ProgJpeg {
   int32_t receiveExtend(int s, bool* ok) {
     int32_t v = 0;
     for (int i = 0; i < s; ++i) {
-      const int b = bit();
+      const int b = nextBit();
       if (b < 0) {
         *ok = false;
         return 0;
