@@ -2,7 +2,7 @@
 
 // FreeInk SDK — streaming image rendering for FreeInkBook (Phase 4b).
 //
-// Decodes a container image (PNG via pngle, JPEG via TJpgDec) and delivers
+// Decodes a container image (PNG via pngle, JPEG via JPEGDEC) and delivers
 // it as 8-bit grayscale rows already scaled (nearest-neighbor, no upscaling
 // beyond the requested placement) to the caller, top to bottom. The full
 // image never exists in memory: PNG decodes scanline-by-scanline, JPEG in
@@ -32,7 +32,7 @@ using ImageRowFn = bool (*)(void* user, uint16_t y, const uint8_t* gray, uint16_
 
 // Reports the streamed source-row dimensions (one call, before the first
 // row). `scaleReduced` is true when the caller arena could not hold the
-// preferred decode and the renderer stepped TJpgDec's power-of-two scale
+// preferred decode and the renderer stepped JPEGDEC's power-of-two scale
 // down (baseline JPEG only; a caller that sizes its buffers from the
 // reported dims is unaffected — the reported dims ARE the placed ones).
 // Return false to stop rendering early.

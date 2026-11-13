@@ -95,6 +95,14 @@ class ZipEntryReader {
 
   BookStatus open(BookSource& source, const ZipEntry& entry, Arena& scratch);
   int32_t read(void* dst, uint32_t len);
+  // Restarts the stream at absolute offset `pos` (0 = entry start). Stored
+  // entries seek directly (the source is random access); deflated entries
+  // rewind the inflate state and re-walk, discarding output, until the
+  // position is reached — JPEGDEC's header scan seeks only a few KiB into
+  // the entry (marker segments exceeding its 2 KiB buffer), so the re-walk
+  // is bounded in practice. False when `pos` is past the entry or the
+  // re-walk hits a stream error.
+  bool seek(uint32_t pos);
   uint32_t totalProduced() const { return produced_; }
   bool isOpen() const { return opened_; }
   // Null until open() succeeded; owned copy of the entry passed to open().
