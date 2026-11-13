@@ -832,7 +832,6 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
       bus.data(imagePacket + 9 + i * GRAY_LUT_LEN, GRAY_LUT_LEN);
     }
   } else if (image) {
->>>>>>> upstream/main
     for (int i = 0; i < 5; i++) {
       bus.cmd(kQualityLutReg[i]);
       bus.data(kQualityBank.data[i], GRAY_LUT_LEN);
