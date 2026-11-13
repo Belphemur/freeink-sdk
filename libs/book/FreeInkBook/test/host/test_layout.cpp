@@ -7,8 +7,17 @@
 #include <FreeInkBook.h>
 #include <cache/PageCache.h>
 #include <epub/ImageProbe.h>
+#include <epub/ZipCatalog.h>
 #include <layout/ChapterLayout.h>
 #include <render/ImageRenderer.h>
+
+// Oracle for the wide-progressive tile-assembly test: the raw vendored
+// decoder, included only by host tests (the include path carries
+// third_party/jpegdec/src). Same stdlib-branch guard as ImageRenderer.cpp.
+#if !defined(ARDUINO) && !defined(__MACH__) && !defined(ESP_PLATFORM) && !defined(__LINUX__)
+#define __LINUX__ 1
+#endif
+#include <JPEGDEC.h>
 
 #include <cstdio>
 #include <cstring>
@@ -2149,6 +2158,189 @@ void testJpegFixtureParity() {
   scratch.release(marked);
 }
 
+// Wide progressive JPEG (8208x16): at the DC fallback's 1/8 scale JPEGDEC's
+// 1000-MCU draw cap splits every block row across two horizontal tiles
+// (x=0 w=1000, x=1000 w=26). The renderer must assemble the full 1026-wide
+// row before resampling — feeding each tile as a full row corrupts rows and
+// reads past the tile buffer. The oracle decodes the same entry with raw
+// JPEGDEC and assembles the tiles manually; the renderer's output at a 1:1
+// placement (identity resample) must match it byte for byte.
+void testProgJpegWideTiles() {
+  static HostFileSource source;
+  if (!source.open(fixture("images.epub"))) {
+    std::printf("  (fixture JPEG pages absent — skipped)\n");
+    return;
+  }
+  static uint8_t wideScratchBuf[512 * 1024];
+  Arena scratch{wideScratchBuf, sizeof(wideScratchBuf)};
+  const size_t marked = scratch.mark();
+  ZipCatalog zip;
+  CHECK_EQ(static_cast<int>(zip.open(source, scratch)), static_cast<int>(BookStatus::Ok));
+  const ZipEntry* entry = zip.find("OEBPS/images/wide_prog.jpeg");
+  CHECK(entry != nullptr);
+  if (entry == nullptr) return;
+  ImageInfo info;
+  CHECK_EQ(static_cast<int>(probeImage(source, *entry, scratch, &info)), static_cast<int>(BookStatus::Ok));
+  CHECK(info.progressive);
+  CHECK_EQ(info.width, 8208);
+  CHECK_EQ(info.height, 16);
+
+  // Oracle: raw JPEGDEC over the entry bytes; record each draw's (x, y,
+  // width, rows) and place every row fragment at its true offset.
+  static uint8_t jpegBytes[64 * 1024];
+  static uint8_t grid[2][1026];
+  struct TileSink {
+    uint32_t draws = 0;
+    static int onDraw(JPEGDRAW* p) {
+      auto* self = static_cast<TileSink*>(p->pUser);
+      ++self->draws;
+      const uint8_t* src = reinterpret_cast<const uint8_t*>(p->pPixels);
+      const uint16_t stride = static_cast<uint16_t>(p->iWidth);
+      for (int r = 0; r < p->iHeight; ++r) {
+        std::memcpy(grid[p->y + r] + p->x, src + static_cast<size_t>(r) * stride,
+                    static_cast<size_t>(p->iWidthUsed));
+      }
+      return 1;
+    }
+  } sink;
+  {
+    ZipEntryReader reader;
+    CHECK_EQ(static_cast<int>(reader.open(source, *entry, scratch)), static_cast<int>(BookStatus::Ok));
+    int32_t got = 0;
+    while ((got = reader.read(jpegBytes, sizeof(jpegBytes))) > 0) {
+    }
+    CHECK(got == 0);  // clean end of stream
+  }
+  JPEGDEC raw;
+  CHECK_EQ(raw.openRAM(jpegBytes, sizeof(jpegBytes), TileSink::onDraw), 1);
+  raw.setPixelType(EIGHT_BIT_GRAYSCALE);
+  raw.setUserPointer(&sink);
+  CHECK_EQ(raw.decode(0, 0, JPEG_SCALE_EIGHTH), 1);
+  // Two tiles per row is what makes the fixture a tile-assembly test.
+  CHECK_EQ(sink.draws, 4u);
+
+  // The renderer at a 1:1 placement resamples identically, so its rows must
+  // equal the assembled grid exactly.
+  PageImage img{};
+  img.href = "OEBPS/images/wide_prog.jpeg";
+  img.width = 1026;
+  img.height = 2;
+  static GrayCapture cap;
+  cap = GrayCapture{};
+  CHECK_EQ(static_cast<int>(ImageRenderer::render(source, zip, img, scratch, GrayCapture::onRow, &cap)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(cap.width, 1026);
+  CHECK_EQ(cap.rows, 2);
+  for (int y = 0; y < 2; ++y) {
+    CHECK_EQ(std::memcmp(cap.pixels + y * 1026, grid[y], 1026), 0);
+  }
+  scratch.release(marked);
+}
+
+// Malformed JPEG header (SOF length never delivered): jpegDecOpen returns
+// null on header rejection, and the callers must surface ParseError — not
+// OutOfMemory, which callers retry against.
+void testJpegParseErrorStatus() {
+  OpenedBook opened;
+  CHECK(opened.open("images.epub"));
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/images/broken.jpg");
+  CHECK(entry != nullptr);
+  if (entry == nullptr) return;
+  ImageInfo info;
+  CHECK_EQ(static_cast<int>(probeImage(opened.source, *entry, opened.scratch, &info)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(static_cast<int>(info.kind), static_cast<int>(ImageInfo::Kind::Jpeg));
+  CHECK(info.progressive);  // the fixture is a truncated progressive SOF
+
+  PageImage img{};
+  img.href = "OEBPS/images/broken.jpg";
+  img.width = 32;
+  img.height = 16;
+  static GrayCapture noRows;
+  noRows = GrayCapture{};
+  const BookStatus st =
+      ImageRenderer::render(opened.source, opened.book.zip(), img, opened.scratch, GrayCapture::onRow, &noRows);
+  CHECK_EQ(static_cast<int>(st), static_cast<int>(BookStatus::ParseError));
+  CHECK_EQ(noRows.rows, 0);
+}
+
+// Odd-dimension baseline JPEG at forced HALF/QUARTER/EIGHTH pre-scales:
+// JPEGDEC 1.8.5 trims the last MCU row/column against the CEIL scaled dims
+// (jpeg.inl iCurW/iCurH = (dim + (1<<shift) - 1) >> shift), so delivery is
+// exactly the renderer's srcW/srcH. Pinned so a future repin that changes
+// the rounding fails here instead of feeding a stale/unwritten band row.
+void testJpegOddDimScalePins() {
+  OpenedBook opened;
+  CHECK(opened.open("images.epub"));
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/images/odd_dim.jpeg");
+  CHECK(entry != nullptr);
+  if (entry == nullptr) return;
+  ImageInfo info;
+  CHECK_EQ(static_cast<int>(probeImage(opened.source, *entry, opened.scratch, &info)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(static_cast<int>(info.kind), static_cast<int>(ImageInfo::Kind::Jpeg));
+  CHECK(!info.progressive);
+  CHECK_EQ(info.width, 511);
+  CHECK_EQ(info.height, 397);
+
+  struct DimsCapture {
+    uint16_t w = 0, h = 0;
+    static bool onDims(void* user, uint16_t srcW, uint16_t srcH, bool) {
+      static_cast<DimsCapture*>(user)->w = srcW;
+      static_cast<DimsCapture*>(user)->h = srcH;
+      return true;
+    }
+  } dims;
+  static GrayCapture cap;
+
+  // 128x128 placement -> HALF: srcW/srcH = (511+1)>>1 x (397+1)>>1 = 256x199.
+  {
+    cap = GrayCapture{};
+    dims = DimsCapture{};
+    const size_t marked = opened.scratch.mark();
+    CHECK_EQ(static_cast<int>(ImageRenderer::renderSourceRows(
+                 opened.source, opened.book.zip(), "OEBPS/images/odd_dim.jpeg", 128, 128,
+                 opened.scratch, DimsCapture::onDims, &dims, GrayCapture::onRow, &cap)),
+             static_cast<int>(BookStatus::Ok));
+    opened.scratch.release(marked);
+    CHECK_EQ(dims.w, 256);
+    CHECK_EQ(dims.h, 199);
+    CHECK_EQ(cap.width, 256);
+    CHECK_EQ(cap.rows, 199);  // ceil(397/2), floor would be 198
+    // Diagonal gradient: the last delivered row must be real content, not a
+    // stale band slot from 16 rows up.
+    CHECK(cap.pixels[198 * 256] > cap.pixels[0]);
+  }
+  // 64x64 placement -> QUARTER: 128x100 (ceil(397/4), floor 99).
+  {
+    cap = GrayCapture{};
+    dims = DimsCapture{};
+    const size_t marked = opened.scratch.mark();
+    CHECK_EQ(static_cast<int>(ImageRenderer::renderSourceRows(
+                 opened.source, opened.book.zip(), "OEBPS/images/odd_dim.jpeg", 64, 64,
+                 opened.scratch, DimsCapture::onDims, &dims, GrayCapture::onRow, &cap)),
+             static_cast<int>(BookStatus::Ok));
+    opened.scratch.release(marked);
+    CHECK_EQ(dims.w, 128);
+    CHECK_EQ(dims.h, 100);
+    CHECK_EQ(cap.rows, 100);
+  }
+  // 32x32 placement -> EIGHTH: 64x50 (ceil(397/8), floor 49).
+  {
+    cap = GrayCapture{};
+    dims = DimsCapture{};
+    const size_t marked = opened.scratch.mark();
+    CHECK_EQ(static_cast<int>(ImageRenderer::renderSourceRows(
+                 opened.source, opened.book.zip(), "OEBPS/images/odd_dim.jpeg", 32, 32,
+                 opened.scratch, DimsCapture::onDims, &dims, GrayCapture::onRow, &cap)),
+             static_cast<int>(BookStatus::Ok));
+    opened.scratch.release(marked);
+    CHECK_EQ(dims.w, 64);
+    CHECK_EQ(dims.h, 50);
+    CHECK_EQ(cap.rows, 50);
+  }
+}
+
 // Hebrew fixture chapter (ch7): RTL paragraphs with an embedded Latin word,
 // a number, and mirrored parentheses, plus one all-Latin paragraph. Runs are
 // stored in VISUAL order (UAX #9 L2 down to the character), so a plain
@@ -2977,6 +3169,9 @@ int main(int argc, char** argv) {
   testProgressiveJpeg();
   testJpegScaleArenaRetry();
   testJpegFixtureParity();
+  testProgJpegWideTiles();
+  testJpegParseErrorStatus();
+  testJpegOddDimScalePins();
   testImagePrescanMemory();
   testCjk();
   testPlainText();

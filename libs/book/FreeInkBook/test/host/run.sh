@@ -82,7 +82,13 @@ if [ -f ../fixtures/images/00004.jpeg ]; then
   rm -rf "$IMG_STAGE"
   mkdir -p "$IMG_STAGE/META-INF" "$IMG_STAGE/OEBPS/images" "$IMG_STAGE/OEBPS/text"
   cp ../fixtures/images/00004.jpeg ../fixtures/images/00005.jpeg \
-     ../fixtures/images/00006.jpeg "$IMG_STAGE/OEBPS/images/"
+     ../fixtures/images/00006.jpeg ../fixtures/images/wide_prog.jpeg \
+     ../fixtures/images/odd_dim.jpeg "$IMG_STAGE/OEBPS/images/"
+  # Malformed JPEG header: SOI + a progressive SOF whose declared length is
+  # never delivered (padded to the probe's 26-byte minimum). The probe still
+  # reports a Jpeg; the renderer must surface ParseError, not OutOfMemory.
+  printf '\377\330\377\302\000\017\010\000\020\040\003\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000' \
+    > "$IMG_STAGE/OEBPS/images/broken.jpg"
   printf 'application/epub+zip' > "$IMG_STAGE/mimetype"
   cat > "$IMG_STAGE/META-INF/container.xml" <<'EOF2'
 <?xml version="1.0"?>
@@ -107,8 +113,12 @@ EOF2
     <item id="img4" href="images/00004.jpeg" media-type="image/jpeg"/>
     <item id="img5" href="images/00005.jpeg" media-type="image/jpeg"/>
     <item id="img6" href="images/00006.jpeg" media-type="image/jpeg"/>
+    <item id="img7" href="images/wide_prog.jpeg" media-type="image/jpeg"/>
+    <item id="img8" href="images/odd_dim.jpeg" media-type="image/jpeg"/>
+    <item id="img9" href="images/broken.jpg" media-type="image/jpeg"/>
   </manifest>
-  <spine><itemref idref="nav"/><itemref idref="p4"/><itemref idref="p5"/><itemref idref="p6"/></spine>
+  <spine><itemref idref="nav"/><itemref idref="p4"/><itemref idref="p5"/><itemref idref="p6"/> \
+         <itemref idref="p7"/><itemref idref="p8"/><itemref idref="p9"/></spine>
 </package>
 EOF2
   cat > "$IMG_STAGE/OEBPS/nav.xhtml" <<'EOF2'
@@ -123,6 +133,22 @@ EOF2
 <body><img src="../images/0000$n.jpeg"/></body></html>
 EOF2
   done
+  # p7 wide progressive, p8 odd-dim baseline, p9 malformed header.
+  cat > "$IMG_STAGE/OEBPS/text/p7.xhtml" <<'EOF2'
+<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>p7</title></head>
+<body><img src="../images/wide_prog.jpeg"/></body></html>
+EOF2
+  cat > "$IMG_STAGE/OEBPS/text/p8.xhtml" <<'EOF2'
+<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>p8</title></head>
+<body><img src="../images/odd_dim.jpeg"/></body></html>
+EOF2
+  cat > "$IMG_STAGE/OEBPS/text/p9.xhtml" <<'EOF2'
+<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>p9</title></head>
+<body><img src="../images/broken.jpg"/></body></html>
+EOF2
   make_epub "$IMG_STAGE" images.epub -0
   rm -rf "$IMG_STAGE"
 else

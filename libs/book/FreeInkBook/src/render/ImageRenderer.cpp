@@ -22,6 +22,19 @@
 #endif
 #include "JPEGDEC.h"
 #define TJFB_HAVE_JPEGDEC 1
+
+// The renderer's decode contracts assume the vendored 1.8.5 header
+// (third_party/jpegdec; gitlink pinned in the SDK .gitmodules). On device
+// this SDK exports no JPEGDEC symbols (src/vendor/jpegdec_impl.cpp compiles
+// empty under ARDUINO), so ImageRenderer is compiled and linked against
+// whatever JPEGDEC revision the consumer supplies — a different revision can
+// silently change row-emission and tile behaviour. Pin the ABI-relevant
+// constants here so a mismatch fails at compile time; bump these pins when
+// repinning the submodule and re-verify the row-emission contract.
+static_assert(JPEG_SCALE_HALF == 2 && JPEG_SCALE_QUARTER == 4 && JPEG_SCALE_EIGHTH == 8,
+              "JPEGDEC scale-option values drifted from the vendored 1.8.5 pin");
+static_assert(FILE_HIGHWATER == 1536 && MAX_BUFFERED_PIXELS == 2048,
+              "JPEGDEC stream/buffer constants drifted from the vendored 1.8.5 pin");
 #endif
 
 #include "epub/ImageProbe.h"
@@ -254,6 +267,7 @@ void freeJpegDecMem(void* p) {
 // RAII guard: the heap JPEGDEC object must be freed on every exit path.
 struct JpegDecHandle {
   JPEGDEC* jpeg = nullptr;
+  bool allocFail = false;  // null return was an allocation failure, not a header rejection
   ~JpegDecHandle() {
     if (jpeg != nullptr) freeJpegDecMem(jpeg);
   }
@@ -305,6 +319,14 @@ struct JpegState {
   void* dimsUser = nullptr;
 
   static constexpr uint32_t kBandRows = 16;
+  // Highest source row backed by decoded data (draw callbacks are
+  // top→bottom). JPEGDEC 1.8.5 trims the last MCU row/column against the
+  // CEIL scaled dims (jpeg.inl: iCurW/iCurH = (dim + (1<<shift) - 1) >>
+  // shift, jd.iWidthUsed/iHeight clamped to them), so delivery is exactly
+  // srcW/srcH — but the final flush only feeds rows this watermark covers,
+  // so a future revision delivering fewer rows cannot flush stale band
+  // slots (testJpegOddDimScalePins guards the contract).
+  uint32_t bandWritten = 0;
 
   // Pass-through: report the streamed dims once (baseline JPEG arrives here
   // with the post-pow-2 dims already known — the probe cannot predict them).
@@ -346,16 +368,24 @@ int jpegDecDrawToBand(JPEGDRAW* pDraw) {
     memcpy(dst, src, rw);
     src += stride;
   }
+  if (bottom + 1 > state->bandWritten) state->bandWritten = bottom + 1;
   return 1;
 }
 
 // Opens the heap JPEGDEC object over `reader`. Returns nullptr with
-// *outSource.ioError set on a stream failure; the handle's destructor frees.
+// *outSource.ioError set on a stream failure and *outAllocFail set when the
+// JPEGDEC object itself could not be allocated; a null return with neither
+// set means JPEGDEC rejected the header (malformed/unsupported), which is
+// a parse error — never memory pressure. The handle's destructor frees.
 JPEGDEC* jpegDecOpen(const ZipEntry& entry, ZipEntryReader& reader, JpegDecSource* outSource,
-                     JPEG_DRAW_CALLBACK* drawFn) {
+                     JPEG_DRAW_CALLBACK* drawFn, bool* outAllocFail) {
+  *outAllocFail = false;
   outSource->reader = &reader;
   void* mem = allocJpegDecMem(sizeof(JPEGDEC));
-  if (mem == nullptr) return nullptr;
+  if (mem == nullptr) {
+    *outAllocFail = true;
+    return nullptr;
+  }
   JPEGDEC* jpeg = new (mem) JPEGDEC();
   if (jpeg->open(outSource, static_cast<int>(entry.uncompressedSize), jpegDecClose, jpegDecRead, jpegDecSeek,
                  drawFn) != 1) {
@@ -377,9 +407,12 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
 
   JpegDecSource src;
   JpegDecHandle handle;
-  handle.jpeg = jpegDecOpen(entry, reader, &src, jpegDecDrawToBand);
+  handle.jpeg = jpegDecOpen(entry, reader, &src, jpegDecDrawToBand, &handle.allocFail);
   if (handle.jpeg == nullptr) {
-    return src.ioError ? BookStatus::IoError : BookStatus::OutOfMemory;
+    if (src.ioError) return BookStatus::IoError;
+    // Header rejection is a parse failure; only a real allocation failure
+    // is memory pressure (callers retry OutOfMemory, not ParseError).
+    return handle.allocFail ? BookStatus::OutOfMemory : BookStatus::ParseError;
   }
   JPEGDEC& jpeg = *handle.jpeg;
 
@@ -444,7 +477,12 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
   // DecodeJPEG returns 1 on a completed (or draw-aborted) decode, 0 on a
   // decode error. An aborted draw set scaler.stopped via the row callback.
   if (rc == 0 && !state.scaler.stopped) return BookStatus::ParseError;
-  if (!state.scaler.stopped) state.flushBandRows(srcH);
+  // Flush only rows the decode actually delivered: JPEGDEC 1.8.5 delivers
+  // exactly srcH (see JpegState::bandWritten), so this equals srcH — a
+  // future revision delivering fewer rows must not flush stale slots.
+  if (!state.scaler.stopped) {
+    state.flushBandRows(state.bandWritten < srcH ? state.bandWritten : srcH);
+  }
   return BookStatus::Ok;
 }
 
@@ -655,9 +693,16 @@ BookStatus renderJpegProgressiveFull(BookSource& source, const ZipEntry& entry,
 
 // Streaming DC-row state for the fallback: JPEGDEC emits the 1/8 image in
 // MCU groups (a group can span several block rows); each group's rows are
-// dense 8-bit rows of iWidthUsed valid columns, iWidth-strided.
+// dense 8-bit rows of iWidthUsed valid columns, iWidth-strided. A draw only
+// covers the MCU group's columns, so a wide image (blocks beyond JPEGDEC's
+// iMaxMCUs draw cap, jpeg.inl iMCUCount) splits one row across several
+// horizontal tiles — each draw is a fragment, never a full row.
 struct ProgDrawState {
   ProgResample* rs = nullptr;
+  uint8_t* rowBuf = nullptr;  // rs->srcW wide: the full row assembled across tiles
+  uint32_t asmY = 0;          // src row currently being assembled
+  uint16_t asmFilled = 0;     // columns written into rowBuf so far
+  bool haveRow = false;
   bool stopped = false;
 };
 
@@ -665,14 +710,39 @@ int progDecDrawRow(JPEGDRAW* pDraw) {
   auto* st = static_cast<ProgDrawState*>(pDraw->pUser);
   if (st->stopped) return 0;
   if (pDraw->iHeight <= 0 || pDraw->iWidthUsed <= 0) return 1;
+  const uint32_t left = static_cast<uint32_t>(pDraw->x);
   const uint16_t stride = static_cast<uint16_t>(pDraw->iWidth);
   const uint8_t* src = reinterpret_cast<const uint8_t*>(pDraw->pPixels);
   for (int r = 0; r < pDraw->iHeight; ++r) {
-    if (!st->rs->feed(src, static_cast<uint32_t>(pDraw->y) + static_cast<uint32_t>(r))) {
-      st->stopped = true;  // consumer stopped (pass-through stop or row stop)
+    const uint32_t y = static_cast<uint32_t>(pDraw->y) + static_cast<uint32_t>(r);
+    if (st->haveRow && st->asmY != y) {
+      // JPEGDEC tiles a row contiguously left→right and completes it before
+      // the next row starts; an incomplete row here means a stream we
+      // cannot assemble — stop rather than feed wrong rows.
+      st->stopped = true;
       return 0;
     }
-    src += stride;
+    if (!st->haveRow) {
+      st->haveRow = true;
+      st->asmY = y;
+      st->asmFilled = 0;
+    }
+    if (left != st->asmFilled || left + static_cast<uint32_t>(pDraw->iWidthUsed) > st->rs->srcW) {
+      st->stopped = true;  // non-contiguous or overhanging tile fragment
+      return 0;
+    }
+    memcpy(st->rowBuf + left, src + static_cast<size_t>(r) * stride,
+           static_cast<size_t>(pDraw->iWidthUsed));
+    st->asmFilled = static_cast<uint16_t>(left + pDraw->iWidthUsed);
+    if (st->asmFilled >= st->rs->srcW) {
+      // The row is complete: the resampler gets full-width rows only.
+      st->haveRow = false;
+      st->asmFilled = 0;
+      if (!st->rs->feed(st->rowBuf, st->asmY)) {
+        st->stopped = true;  // consumer stopped (pass-through stop or row stop)
+        return 0;
+      }
+    }
   }
   return 1;
 }
@@ -687,9 +757,10 @@ BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
 
   JpegDecSource src;
   JpegDecHandle handle;
-  handle.jpeg = jpegDecOpen(entry, reader, &src, progDecDrawRow);
+  handle.jpeg = jpegDecOpen(entry, reader, &src, progDecDrawRow, &handle.allocFail);
   if (handle.jpeg == nullptr) {
-    return src.ioError ? BookStatus::IoError : BookStatus::OutOfMemory;
+    if (src.ioError) return BookStatus::IoError;
+    return handle.allocFail ? BookStatus::OutOfMemory : BookStatus::ParseError;
   }
   JPEGDEC& jpeg = *handle.jpeg;
 
@@ -721,6 +792,10 @@ BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
 
   ProgDrawState drawState;
   drawState.rs = &rs;
+  drawState.rowBuf = static_cast<uint8_t*>(scratch.alloc(blocksW, 1));
+  if (drawState.rowBuf == nullptr) {
+    return BookStatus::OutOfMemory;
+  }
   jpeg.setUserPointer(&drawState);
   const int rc = jpeg.decode(0, 0, JPEG_SCALE_EIGHTH);
   if (src.ioError) return BookStatus::IoError;
