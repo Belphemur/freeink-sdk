@@ -297,14 +297,24 @@ bool ZipEntryReader::seek(uint32_t pos) {
     return true;
   }
   if (pos > inflateOutputLimit_) return false;
-  // Rewind the inflate state to the fresh-open condition, then re-walk the
-  // stream discarding output until `pos`.
+  uint8_t sink[256];
+  if (pos >= produced_) {
+    // Forward seek: keep the current inflate state and stream-discard the
+    // gap. A restart here would re-inflate the whole stream from offset 0
+    // on every jump (JPEGDEC's header scans seek forward repeatedly).
+    while (produced_ < pos) {
+      const uint32_t want = pos - produced_ < sizeof(sink) ? pos - produced_ : sizeof(sink);
+      if (readDeflated(sink, want) <= 0) return false;  // stream error or ended early
+    }
+    return true;
+  }
+  // Backward seek: rewind the inflate state to the fresh-open condition,
+  // then re-walk the stream discarding output until `pos`.
   produced_ = 0;
   inPos_ = inAvail_ = compConsumed_ = 0;
   windowPos_ = pendingPos_ = pendingLen_ = 0;
   done_ = false;
   tinfl_init(static_cast<tinfl_decompressor*>(decompressor_));
-  uint8_t sink[256];
   while (produced_ < pos) {
     const uint32_t want = pos - produced_ < sizeof(sink) ? pos - produced_ : sizeof(sink);
     if (readDeflated(sink, want) <= 0) return false;  // stream error or ended early

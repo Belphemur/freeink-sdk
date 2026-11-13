@@ -37,6 +37,18 @@ int checksFailed = 0;
     }                                                             \
   } while (0)
 
+#define CHECK_EQ(a, b)                                                                                       \
+  do {                                                                                                       \
+    ++checksRun;                                                                                             \
+    const auto va = (a);                                                                                     \
+    const auto vb = (b);                                                                                     \
+    if (!(va == vb)) {                                                                                       \
+      ++checksFailed;                                                                                        \
+      std::printf("FAIL %s:%d  %s == %s  (%ld != %ld)\n", __FILE__, __LINE__, #a, #b, static_cast<long>(va),  \
+                  static_cast<long>(vb));                                                                    \
+    }                                                                                                        \
+  } while (0)
+
 class HostFileSource : public BookSource {
  public:
   ~HostFileSource() override {
@@ -318,7 +330,192 @@ struct Case {
   uint32_t maxProduced;
 };
 
+// --- valid stream for the seek test ------------------------------------------
+
+// 4096 distinct printable literals in one fixed-Huffman block: long enough
+// that a forward seek has a real gap to cross.
+std::vector<uint8_t> literalRun() {
+  BitWriter w;
+  w.put(1, 1);  // BFINAL
+  w.put(1, 2);  // BTYPE 01: fixed Huffman
+  for (int i = 0; i < 4096; ++i) {
+    w.huff(0x30 + 33 + (i % 91), 8);  // literal, code = 0x30 + value
+  }
+  w.huff(0, 7);  // end-of-block
+  w.flush();
+  return w.bytes;
+}
+
+// Records readAt offsets so the test can tell a re-walk from a continued
+// decode: the deflate path reads the compressed stream with a monotonically
+// advancing offset; a full restart re-reads from the entry start.
+struct CountingSource : HostFileSource {
+  bool track = false;
+  uint64_t minOffset = UINT64_MAX;
+  uint64_t maxOffset = 0;
+  uint32_t reads = 0;
+  int32_t readAt(uint64_t offset, void* dst, uint32_t len) override {
+    if (track) {
+      ++reads;
+      if (offset < minOffset) minOffset = offset;
+      if (offset + len > maxOffset) maxOffset = offset + len;
+    }
+    return HostFileSource::readAt(offset, dst, len);
+  }
+};
+
 }  // namespace
+
+// Forward seek in a deflated entry must continue the current inflate state
+// (read-forward-and-discard), not restart it from offset 0: a restart
+// re-reads the compressed stream from the entry's first byte, which the
+// offset trace catches, and must still leave byte-correct content.
+void testForwardSeek(const char* fixturesDir) {
+  char path[512];
+  std::snprintf(path, sizeof(path), "%s/deflate_literal-run.zip", fixturesDir);
+  const std::vector<uint8_t> stream = literalRun();
+  const uint32_t uncomp = 4096;
+  if (!writeDeflateZip(path, stream, static_cast<uint32_t>(stream.size()), uncomp)) {
+    ++checksRun;
+    ++checksFailed;
+    std::printf("FAIL cannot write fixture %s\n", path);
+    return;
+  }
+
+  static uint8_t scratchBuf[256 * 1024];
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+
+  // Reference: one clean full read.
+  static uint8_t reference[4096];
+  {
+    CountingSource source;
+    if (!source.open(path)) {
+      ++checksRun;
+      ++checksFailed;
+      std::printf("FAIL forward-seek: cannot open fixture\n");
+      return;
+    }
+    ZipCatalog catalog;
+    if (catalog.open(source, scratch) != BookStatus::Ok) {
+      ++checksRun;
+      ++checksFailed;
+      std::printf("FAIL forward-seek: catalog open\n");
+      return;
+    }
+    const ZipEntry* entry = catalog.find("target.bin");
+    if (entry == nullptr) {
+      ++checksRun;
+      ++checksFailed;
+      std::printf("FAIL forward-seek: entry missing\n");
+      return;
+    }
+    ZipEntryReader reader;
+    if (reader.open(source, *entry, scratch) != BookStatus::Ok) {
+      ++checksRun;
+      ++checksFailed;
+      std::printf("FAIL forward-seek: reader open\n");
+      return;
+    }
+    uint32_t got = 0;
+    while (got < uncomp) {
+      const int32_t n = reader.read(reference + got, uncomp - got);
+      if (n <= 0) break;
+      got += static_cast<uint32_t>(n);
+    }
+    CHECK(got == uncomp);
+  }
+
+  CountingSource source;
+  if (!source.open(path)) {
+    ++checksRun;
+    ++checksFailed;
+    std::printf("FAIL forward-seek: cannot open fixture\n");
+    return;
+  }
+  ZipCatalog catalog;
+  if (catalog.open(source, scratch) != BookStatus::Ok) {
+    ++checksRun;
+    ++checksFailed;
+    std::printf("FAIL forward-seek: catalog open\n");
+    return;
+  }
+  const ZipEntry* entry = catalog.find("target.bin");
+  CHECK(entry != nullptr);
+  if (entry == nullptr) return;
+  ZipEntryReader reader;
+  CHECK(reader.open(source, *entry, scratch) == BookStatus::Ok);
+
+  static uint8_t chunk[512];
+  // Read 512 bytes, then trace everything the reader touches from here on.
+  uint32_t got = 0;
+  while (got < 512) {
+    const int32_t n = reader.read(chunk, sizeof(chunk));
+    if (n <= 0) break;
+    got += static_cast<uint32_t>(n);
+  }
+  CHECK(got == 512);
+  // Anchor the decode position with a tracked read large enough to force a
+  // compressed-buffer refill: the deflate path is now reading at this
+  // compressed offset or beyond it, and a full restart would re-read from
+  // the entry's first compressed byte, below it.
+  source.track = true;
+  static uint8_t anchor[2048];
+  got = 0;
+  while (got < sizeof(anchor)) {
+    const int32_t n = reader.read(anchor + got, sizeof(anchor) - got);
+    if (n <= 0) break;
+    got += static_cast<uint32_t>(n);
+  }
+  CHECK(got == sizeof(anchor));
+  CHECK_EQ(std::memcmp(anchor, reference + 512, sizeof(anchor)), 0);
+  const uint64_t minBefore = source.minOffset;
+  CHECK(minBefore != UINT64_MAX);  // the anchor read did refill the buffer
+  source.minOffset = UINT64_MAX;
+  source.reads = 0;
+
+  // Forward seek across the gap 2560 -> 3000, then read to the end of the
+  // stream: the tail forces the last compressed-buffer refill, so the trace
+  // covers reads after the seek.
+  CHECK(reader.seek(3000));
+  static uint8_t tail[4096];
+  got = 0;
+  while (got < sizeof(tail)) {
+    const int32_t n = reader.read(tail + got, sizeof(tail) - got);
+    if (n <= 0) break;
+    got += static_cast<uint32_t>(n);
+  }
+  CHECK(got == uncomp - 3000);
+  CHECK_EQ(std::memcmp(tail, reference + 3000, got), 0);  // content correct
+  // No restart: the seek's reads continue the inflate state, never re-read
+  // the compressed stream from its start.
+  CHECK(source.reads > 0);
+  CHECK(source.minOffset >= minBefore);
+
+  // Backward seek still resets and re-walks: content must stay correct.
+  CHECK(reader.seek(100));
+  got = 0;
+  while (got < 64) {
+    const int32_t n = reader.read(chunk + got, 64 - got);
+    if (n <= 0) break;
+    got += static_cast<uint32_t>(n);
+  }
+  CHECK(got == 64);
+  CHECK_EQ(std::memcmp(chunk, reference + 100, 64), 0);
+
+  // Forward again, then to the end: reads past the produced position must
+  // keep working and end cleanly.
+  CHECK(reader.seek(2048));
+  got = 0;
+  while (got < 32) {
+    const int32_t n = reader.read(chunk + got, 32 - got);
+    if (n <= 0) break;
+    got += static_cast<uint32_t>(n);
+  }
+  CHECK(got == 32);
+  CHECK_EQ(std::memcmp(chunk, reference + 2048, 32), 0);
+  CHECK(reader.seek(uncomp));
+  CHECK_EQ(reader.read(chunk, sizeof(chunk)), 0);  // clean end
+}
 
 int main(int argc, char** argv) {
   if (argc < 2) {
@@ -394,6 +591,8 @@ int main(int argc, char** argv) {
     std::printf("  %-27s produced %u/%u B, clean %s\n", c.name, r.produced, c.uncompSize,
                 r.errored ? "error" : "end");
   }
+
+  testForwardSeek(fixturesDir);
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;
