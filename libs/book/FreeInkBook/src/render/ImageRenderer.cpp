@@ -2,10 +2,27 @@
 
 #include "render/ImageRenderer.h"
 
+#include <new>
+#include <stdlib.h>
 #include <string.h>
 
 #include <pngle.h>
-#include <tjpgd.h>
+
+// JPEG front end: JPEGDEC (third_party/jpegdec — a git submodule pinned to
+// upstream tag 1.8.5; provenance in the SDK .gitmodules). TJpgDec was
+// removed — every JPEG path (baseline full decode, progressive DC-only
+// fallback) runs through JPEGDEC; the full-fidelity progressive decode stays
+// in libs/assets/ProgressiveJpeg. A consumer that strips the vendored
+// library loses JPEG rendering but the rest of the renderer still compiles.
+#if __has_include("JPEGDEC.h")
+// JPEGDEC's host builds select the stdlib branch with -D__LINUX__ (its own
+// Makefile does the same); without it the header wants Arduino.h.
+#if !defined(ARDUINO) && !defined(__MACH__) && !defined(ESP_PLATFORM) && !defined(__LINUX__)
+#define __LINUX__ 1
+#endif
+#include "JPEGDEC.h"
+#define TJFB_HAVE_JPEGDEC 1
+#endif
 
 #include "epub/ImageProbe.h"
 #if __has_include("ProgressiveJpeg.h")
@@ -208,15 +225,80 @@ BookStatus renderPng(BookSource& source, const ZipEntry& entry, const PageImage&
 
 // --- JPEG --------------------------------------------------------------------
 
+#if TJFB_HAVE_JPEGDEC
+
+// JPEGDEC keeps its decode state (huffman/quant tables, MCU buffers, 2 KiB
+// stream buffer) inside the JPEGDEC object — ~17 KB — and allocates nothing.
+// That is far larger than anything the arena held for TJpgDec, so it lives on
+// the heap (PSRAM-preferred on ESP32, same allocator pattern as
+// ProgressiveJpeg's coefficient store), never on the caller arena: a caller
+// arena too small for a decode band must still afford the decoder itself.
+void* allocJpegDecMem(size_t bytes) {
+#if __has_include(<esp_heap_caps.h>)
+  void* p = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (p != nullptr) return p;
+  return heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
+#else
+  return malloc(bytes);
+#endif
+}
+
+void freeJpegDecMem(void* p) {
+#if __has_include(<esp_heap_caps.h>)
+  heap_caps_free(p);
+#else
+  free(p);
+#endif
+}
+
+// RAII guard: the heap JPEGDEC object must be freed on every exit path.
+struct JpegDecHandle {
+  JPEGDEC* jpeg = nullptr;
+  ~JpegDecHandle() {
+    if (jpeg != nullptr) freeJpegDecMem(jpeg);
+  }
+};
+
+struct JpegDecSource {
+  ZipEntryReader* reader = nullptr;
+  bool ioError = false;
+};
+
+int32_t jpegDecRead(JPEGFILE* pFile, uint8_t* pBuf, int32_t iLen) {
+  auto* st = static_cast<JpegDecSource*>(pFile->fHandle);
+  if (iLen <= 0) return 0;
+  const int32_t n = st->reader->read(pBuf, static_cast<uint32_t>(iLen));
+  if (n < 0) {
+    st->ioError = true;
+    return 0;
+  }
+  pFile->iPos += n;
+  return n;
+}
+
+// JPEGDEC's header scan overflows its 2 KiB buffer past large marker
+// segments (EXIF/ICC) and calls seek forward; stored entries are random
+// access, deflated entries rewind the inflate state and re-walk.
+int32_t jpegDecSeek(JPEGFILE* pFile, int32_t iPosition) {
+  auto* st = static_cast<JpegDecSource*>(pFile->fHandle);
+  if (iPosition < 0) iPosition = 0;
+  if (iPosition >= pFile->iSize) iPosition = pFile->iSize - 1;
+  if (!st->reader->seek(static_cast<uint32_t>(iPosition))) {
+    st->ioError = true;
+    return pFile->iPos;
+  }
+  pFile->iPos = iPosition;
+  return iPosition;
+}
+
+void jpegDecClose(void*) {}
+
 struct JpegState {
   RowScaler scaler;
-  ZipEntryReader* reader = nullptr;
-  uint8_t* skipBuf = nullptr;
   uint8_t* band = nullptr;      // srcW × kBandRows grayscale
   uint16_t bandW = 0;
   uint32_t bandTop = 0;         // source y of band row 0
   uint32_t bandFilled = 0;      // rows known to be complete (top-based)
-  bool ioError = false;
   bool dimsSent = false;
   bool scaleReduced = false;  // arena forced a step below the preferred scale
   SourceDimsFn dimsFn = nullptr;
@@ -240,85 +322,98 @@ struct JpegState {
   }
 };
 
-size_t jpegInput(JDEC* jd, uint8_t* buf, size_t len) {
-  JpegState* state = static_cast<JpegState*>(jd->device);
-  size_t total = 0;
-  while (total < len) {
-    uint8_t* dst = buf != nullptr ? buf + total : state->skipBuf;
-    const uint32_t want =
-        buf != nullptr ? static_cast<uint32_t>(len - total)
-                       : static_cast<uint32_t>((len - total) < 1024 ? (len - total) : 1024);
-    const int32_t n = state->reader->read(dst, want);
-    if (n < 0) {
-      state->ioError = true;
-      return 0;
-    }
-    if (n == 0) break;
-    total += static_cast<size_t>(n);
-  }
-  return total;
-}
-
-int jpegOutput(JDEC* jd, void* bitmap, JRECT* rect) {
-  JpegState* state = static_cast<JpegState*>(jd->device);
+// Grayscale output blocks arrive left→right within a band, bands top→bottom.
+// The pixel buffer holds dense 8-bit rows: stride = pDraw->iWidth (the MCU
+// group pitch), valid columns = pDraw->iWidthUsed (the right edge is
+// trimmed). When a new band starts, all rows of the previous band are
+// complete. Returning 0 stops the decode at this band boundary.
+int jpegDecDrawToBand(JPEGDRAW* pDraw) {
+  auto* state = static_cast<JpegState*>(pDraw->pUser);
   if (state->scaler.stopped) return 0;
-  // Blocks arrive left→right within a band, bands top→bottom. When a new
-  // band starts, all rows of the previous band are complete.
-  if (static_cast<uint32_t>(rect->top) >= state->bandFilled) {
+  if (pDraw->iHeight <= 0 || pDraw->iWidthUsed <= 0) return 1;
+  const uint32_t top = static_cast<uint32_t>(pDraw->y);
+  const uint32_t bottom = top + static_cast<uint32_t>(pDraw->iHeight) - 1;
+  const uint16_t left = static_cast<uint16_t>(pDraw->x);
+  const uint16_t rw = static_cast<uint16_t>(pDraw->iWidthUsed);
+  const uint16_t stride = static_cast<uint16_t>(pDraw->iWidth);
+  if (top >= state->bandFilled) {
     state->flushBandRows(state->bandFilled);
-    state->bandFilled = rect->bottom + 1;
+    state->bandFilled = bottom + 1;
   }
-  const uint8_t* src = static_cast<const uint8_t*>(bitmap);
-  const uint16_t rw = static_cast<uint16_t>(rect->right - rect->left + 1);
-  for (uint16_t y = rect->top; y <= rect->bottom; ++y) {
-    uint8_t* dst = state->band + (y % JpegState::kBandRows) * state->bandW + rect->left;
+  const uint8_t* src = reinterpret_cast<const uint8_t*>(pDraw->pPixels);
+  for (uint32_t y = top; y <= bottom; ++y) {
+    uint8_t* dst = state->band + (y % JpegState::kBandRows) * state->bandW + left;
     memcpy(dst, src, rw);
-    src += rw;
+    src += stride;
   }
   return 1;
+}
+
+// Opens the heap JPEGDEC object over `reader`. Returns nullptr with
+// *outSource.ioError set on a stream failure; the handle's destructor frees.
+JPEGDEC* jpegDecOpen(const ZipEntry& entry, ZipEntryReader& reader, JpegDecSource* outSource,
+                     JPEG_DRAW_CALLBACK* drawFn) {
+  outSource->reader = &reader;
+  void* mem = allocJpegDecMem(sizeof(JPEGDEC));
+  if (mem == nullptr) return nullptr;
+  JPEGDEC* jpeg = new (mem) JPEGDEC();
+  if (jpeg->open(outSource, static_cast<int>(entry.uncompressedSize), jpegDecClose, jpegDecRead, jpegDecSeek,
+                 drawFn) != 1) {
+    freeJpegDecMem(jpeg);
+    return nullptr;
+  }
+  // 8-bit luma output, Y-only for color sources (BT.601-consistent luma, no
+  // chroma conversion — same as the removed TJpgDec grayscale format).
+  jpeg->setPixelType(EIGHT_BIT_GRAYSCALE);
+  return jpeg;
 }
 
 BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage& image,
                       Arena& scratch, ImageRowFn rowFn, void* user, bool passThrough,
                       SourceDimsFn dimsFn, void* dimsUser) {
-  JpegState state;
-  state.skipBuf = static_cast<uint8_t*>(scratch.alloc(1024, 1));
-  void* work = scratch.alloc(8 * 1024, alignof(max_align_t));
   ZipEntryReader reader;
   BookStatus status = reader.open(source, entry, scratch);
   if (status != BookStatus::Ok) return status;
-  state.reader = &reader;
-  if (state.skipBuf == nullptr || work == nullptr) return BookStatus::OutOfMemory;
 
-  JDEC jd;
-  if (jd_prepare(&jd, jpegInput, work, 8 * 1024, &state) != JDR_OK) {
-    return state.ioError ? BookStatus::IoError : BookStatus::ParseError;
+  JpegDecSource src;
+  JpegDecHandle handle;
+  handle.jpeg = jpegDecOpen(entry, reader, &src, jpegDecDrawToBand);
+  if (handle.jpeg == nullptr) {
+    return src.ioError ? BookStatus::IoError : BookStatus::OutOfMemory;
   }
+  JPEGDEC& jpeg = *handle.jpeg;
 
-  // Use TJpgDec's power-of-two downscale to get close to the target size
-  // cheaply; the RowScaler handles the remainder. A half-scale decode that
-  // lands within 1.5x of the target forces the scaler to re-resample a
-  // 1.0-1.1x reduction — every 1.5px ink line lands on the blocky power-of-
-  // two grid and comes out stair-stepped (the 2026-11-10 fidelity soak's
-  // "Lego" blocks). Only step the scale when the halved dims still leave a
-  // 1.5x margin on both axes; else decode at full resolution.
+  // Use JPEGDEC's power-of-two downscale (JPEG_SCALE_HALF/QUARTER/EIGHTH) to
+  // get close to the target size cheaply; the RowScaler handles the
+  // remainder. A half-scale decode that lands within 1.5x of the target
+  // forces the scaler to re-resample a 1.0-1.1x reduction — every 1.5px ink
+  // line lands on the blocky power-of-two grid and comes out stair-stepped
+  // (the 2026-11-10 fidelity soak's "Lego" blocks). Only step the scale when
+  // the halved dims still leave a 1.5x margin on both axes; else decode at
+  // full resolution.
+  const int fullW = jpeg.getWidth();
+  const int fullH = jpeg.getHeight();
   uint8_t scale = 0;
-  while (scale < 3 && (jd.width >> (scale + 1)) >= (image.width * 3) / 2 &&
-         (jd.height >> (scale + 1)) >= (image.height * 3) / 2) {
+  while (scale < 3 && (fullW >> (scale + 1)) >= (image.width * 3) / 2 &&
+         (fullH >> (scale + 1)) >= (image.height * 3) / 2) {
     ++scale;
   }
   const uint8_t preferredScale = scale;
   // The fidelity-preferred scale keeps the widest band (srcW * kBandRows);
   // a caller arena that cannot hold it must not lose the page. Step to a
   // smaller decode that still covers the placement (the pre-1.5x pick) and
-  // only report OutOfMemory when even that does not fit.
+  // only report OutOfMemory when even that does not fit. JPEGDEC's scaled
+  // dims are ceil((full >> scale) — size the band for those.
+  static const int kScaleOption[4] = {0, JPEG_SCALE_HALF, JPEG_SCALE_QUARTER, JPEG_SCALE_EIGHTH};
   const size_t bandMark = scratch.mark();
   uint16_t srcW = 0;
   uint16_t srcH = 0;
+  JpegState state;
   for (;; ++scale) {
     if (scale > 3) return BookStatus::OutOfMemory;
-    srcW = static_cast<uint16_t>(jd.width >> scale);
-    srcH = static_cast<uint16_t>(jd.height >> scale);
+    const int adjust = (1 << scale) - 1;
+    srcW = static_cast<uint16_t>((fullW + adjust) >> scale);
+    srcH = static_cast<uint16_t>((fullH + adjust) >> scale);
     if (srcW == 0 || srcH == 0) return BookStatus::Unsupported;
     // A retried scale may only shrink while it still fills the placement.
     if (scale > 0 && (srcW < image.width || srcH < image.height)) {
@@ -342,127 +437,44 @@ BookStatus renderJpeg(BookSource& source, const ZipEntry& entry, const PageImage
   // it so the consumer can refuse to cache a reduced-detail decode.
   state.scaleReduced = scale > preferredScale;
   if (passThrough) state.reportDims();  // consumer may stop the stream right here
+  jpeg.setUserPointer(&state);
 
-  const JRESULT jr = jd_decomp(&jd, jpegOutput, scale);
-  if (state.ioError) return BookStatus::IoError;
-  if (jr != JDR_OK && !state.scaler.stopped) return BookStatus::ParseError;
+  const int rc = jpeg.decode(0, 0, kScaleOption[scale]);
+  if (src.ioError) return BookStatus::IoError;
+  // DecodeJPEG returns 1 on a completed (or draw-aborted) decode, 0 on a
+  // decode error. An aborted draw set scaler.stopped via the row callback.
+  if (rc == 0 && !state.scaler.stopped) return BookStatus::ParseError;
   if (!state.scaler.stopped) state.flushBandRows(srcH);
   return BookStatus::Ok;
 }
 
+#else  // !TJFB_HAVE_JPEGDEC
+
+BookStatus renderJpeg(BookSource&, const ZipEntry&, const PageImage&, Arena&, ImageRowFn, void*, bool,
+                      SourceDimsFn, void*) {
+  return BookStatus::Unsupported;
+}
+
+#endif  // TJFB_HAVE_JPEGDEC
 
 // --- progressive JPEG ----------------------------------------------------------
 //
-// When the ProgressiveJpeg decoder is linked (the app ships it as a libdep;
-// optional per install), pass-through (renderSourceRows, the
-// app-side-scaler path) decodes full-fidelity luma from ALL scans — the
-// coefficient store is ~2 B/pixel, a fit for the 8 MB PSRAM decode budget —
-// and hands the unscaled source rows to the app scaler. Anything the full
-// decoder cannot start (store too big, parse/feature miss) falls back to the
-// old DC-only first-scan rendering below so the placement still paints; the
+// The full-fidelity decoder (libs/assets/ProgressiveJpeg, optional per
+// install) pass-through path decodes luma from ALL scans — the coefficient
+// store is ~2 B/pixel, a fit for the 8 MB PSRAM decode budget — and hands
+// the unscaled source rows to the app scaler. Anything the full decoder
+// cannot start (store too big, parse/feature miss) falls back to the
+// DC-only first-scan rendering below so the placement still paints; the
 // PageRenderer path (`render`, passThrough=false) keeps the DC-only contract
 // unchanged.
 //
-// The DC-only decoder below decodes only the FIRST scan of a progressive
-// JPEG (block DCT averages = a correct 1/8-scale picture, chroma DC values
-// entropy-decoded to keep the bitstream in sync but never used — output is
-// luma only) — the fallback and the PageRenderer contract.
-
-struct ProgHuff {
-  uint8_t counts[17] = {0};     // codes per length 1..16
-  uint16_t firstCode[17] = {0};
-  uint16_t firstIndex[17] = {0};
-  uint8_t symbols[256] = {0};
-  bool ready = false;
-};
-
-struct ProgJpeg {
-  ZipEntryReader* reader = nullptr;
-  uint8_t buf[512];
-  uint32_t bufLen = 0;
-  uint32_t bufPos = 0;
-  bool ioError = false;
-
-  uint32_t bitBuf = 0;
-  int bitCount = 0;
-  int pendingMarker = 0;  // marker seen inside entropy data (RSTn/EOI)
-
-  int rawByte() {
-    if (bufPos >= bufLen) {
-      const int32_t n = reader->read(buf, sizeof(buf));
-      if (n <= 0) {
-        if (n < 0) ioError = true;
-        return -1;
-      }
-      bufLen = static_cast<uint32_t>(n);
-      bufPos = 0;
-    }
-    return buf[bufPos++];
-  }
-
-  // One entropy-coded bit; FF00 unstuffed, markers latch into pendingMarker.
-  int nextBit() {
-    if (bitCount == 0) {
-      int b = rawByte();
-      if (b < 0) return -1;
-      if (b == 0xFF) {
-        int m = rawByte();
-        while (m == 0xFF) m = rawByte();
-        if (m < 0) return -1;
-        if (m != 0x00) {
-          pendingMarker = m;
-          return -1;
-        }
-        b = 0xFF;
-      }
-      bitBuf = static_cast<uint32_t>(b);
-      bitCount = 8;
-    }
-    --bitCount;
-    return static_cast<int>((bitBuf >> bitCount) & 1u);
-  }
-
-  int decodeHuff(const ProgHuff& t) {
-    uint32_t code = 0;
-    for (int len = 1; len <= 16; ++len) {
-      const int b = nextBit();
-      if (b < 0) return -1;
-      code = (code << 1) | static_cast<uint32_t>(b);
-      if (t.counts[len] != 0 && code < static_cast<uint32_t>(t.firstCode[len]) + t.counts[len]) {
-        return t.symbols[t.firstIndex[len] + (code - t.firstCode[len])];
-      }
-    }
-    return -1;
-  }
-
-  // JPEG RECEIVE+EXTEND for an s-bit DC difference.
-  int32_t receiveExtend(int s, bool* ok) {
-    int32_t v = 0;
-    for (int i = 0; i < s; ++i) {
-      const int b = nextBit();
-      if (b < 0) {
-        *ok = false;
-        return 0;
-      }
-      v = (v << 1) | b;
-    }
-    if (s > 0 && v < (1 << (s - 1))) v -= (1 << s) - 1;
-    return v;
-  }
-};
-
-void buildProgHuff(ProgHuff& t) {
-  uint16_t code = 0;
-  uint16_t index = 0;
-  for (int len = 1; len <= 16; ++len) {
-    t.firstCode[len] = code;
-    t.firstIndex[len] = index;
-    code = static_cast<uint16_t>(code + t.counts[len]);
-    index = static_cast<uint16_t>(index + t.counts[len]);
-    code = static_cast<uint16_t>(code << 1);
-  }
-  t.ready = true;
-}
+// The DC-only fallback decodes the first scan through JPEGDEC: a
+// progressive stream (0xc2) makes JPEGDEC decode the DC values only and
+// force its JPEG_SCALE_EIGHTH output — one pixel per 8×8 block, exactly the
+// old hand-written DC decoder's block-average picture (chroma is decoded to
+// keep the bitstream in sync and discarded — output is luma only), without
+// keeping a hand-rolled entropy decoder in the tree. Scaled dims are
+// ceil(w/8) × ceil(h/8), matching the block grid the old path reported.
 
 // Streaming bilinear resampler (both directions) for the small DC image.
 struct ProgResample {
@@ -639,6 +651,32 @@ BookStatus renderJpegProgressiveFull(BookSource& source, const ZipEntry& entry,
 }
 #endif  // TJFB_HAVE_PROGRESSIVE_FULL
 
+#if TJFB_HAVE_JPEGDEC
+
+// Streaming DC-row state for the fallback: JPEGDEC emits the 1/8 image in
+// MCU groups (a group can span several block rows); each group's rows are
+// dense 8-bit rows of iWidthUsed valid columns, iWidth-strided.
+struct ProgDrawState {
+  ProgResample* rs = nullptr;
+  bool stopped = false;
+};
+
+int progDecDrawRow(JPEGDRAW* pDraw) {
+  auto* st = static_cast<ProgDrawState*>(pDraw->pUser);
+  if (st->stopped) return 0;
+  if (pDraw->iHeight <= 0 || pDraw->iWidthUsed <= 0) return 1;
+  const uint16_t stride = static_cast<uint16_t>(pDraw->iWidth);
+  const uint8_t* src = reinterpret_cast<const uint8_t*>(pDraw->pPixels);
+  for (int r = 0; r < pDraw->iHeight; ++r) {
+    if (!st->rs->feed(src, static_cast<uint32_t>(pDraw->y) + static_cast<uint32_t>(r))) {
+      st->stopped = true;  // consumer stopped (pass-through stop or row stop)
+      return 0;
+    }
+    src += stride;
+  }
+  return 1;
+}
+
 BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
                                  const PageImage& image, Arena& scratch, ImageRowFn rowFn,
                                  void* user, bool passThrough, SourceDimsFn dimsFn,
@@ -647,157 +685,19 @@ BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
   BookStatus status = reader.open(source, entry, scratch);
   if (status != BookStatus::Ok) return status;
 
-  ProgJpeg pj;
-  pj.reader = &reader;
-
-  // Header bytes come through the same buffered reader, pre-bitstream.
-  auto rd = [&](uint8_t* dst, uint32_t n) -> bool {
-    for (uint32_t i = 0; i < n; ++i) {
-      const int b = pj.rawByte();
-      if (b < 0) return false;
-      dst[i] = static_cast<uint8_t>(b);
-    }
-    return true;
-  };
-
-  uint8_t hdr[2];
-  if (!rd(hdr, 2) || hdr[0] != 0xFF || hdr[1] != 0xD8) return BookStatus::ParseError;
-
-  ProgHuff* dcTables = static_cast<ProgHuff*>(scratch.alloc(sizeof(ProgHuff) * 4,
-                                                            alignof(ProgHuff)));
-  if (dcTables == nullptr) return BookStatus::OutOfMemory;
-  for (int i = 0; i < 4; ++i) dcTables[i] = ProgHuff{};
-
-  uint16_t width = 0, height = 0, restartInterval = 0;
-  uint16_t dcQuant[4] = {1, 1, 1, 1};  // DC quantizer per DQT table id
-  struct Comp {
-    uint8_t id = 0, h = 1, v = 1, tq = 0, td = 0;
-  } comps[4];
-  uint8_t ncomp = 0;
-  uint8_t scanComp[4] = {0};  // indices into comps, in scan order
-  uint8_t ns = 0;
-  uint8_t al = 0;
-
-  for (;;) {  // segment loop up to SOS
-    int m = pj.rawByte();
-    while (m == 0xFF) m = pj.rawByte();
-    if (m < 0) return pj.ioError ? BookStatus::IoError : BookStatus::ParseError;
-    if (m == 0xD8 || (m >= 0xD0 && m <= 0xD7) || m == 0x01) continue;
-    uint8_t lenB[2];
-    if (!rd(lenB, 2)) return BookStatus::ParseError;
-    uint32_t segLen = (static_cast<uint32_t>(lenB[0]) << 8 | lenB[1]);
-    if (segLen < 2) return BookStatus::ParseError;
-    segLen -= 2;
-    if (m == 0xDB) {  // DQT — only the DC entry matters
-      while (segLen > 0) {
-        uint8_t pqtq;
-        if (!rd(&pqtq, 1)) return BookStatus::ParseError;
-        const uint8_t pq = pqtq >> 4, tq = pqtq & 0x0F;
-        const uint32_t bytes = pq ? 128 : 64;
-        if (segLen < 1 + bytes || tq > 3) return BookStatus::ParseError;
-        uint8_t q0[2];
-        if (!rd(q0, pq ? 2 : 1)) return BookStatus::ParseError;
-        dcQuant[tq] = pq ? static_cast<uint16_t>(q0[0] << 8 | q0[1]) : q0[0];
-        for (uint32_t i = pq ? 2u : 1u; i < bytes; ++i) {
-          uint8_t skip;
-          if (!rd(&skip, 1)) return BookStatus::ParseError;
-        }
-        segLen -= 1 + bytes;
-      }
-    } else if (m == 0xC4) {  // DHT
-      while (segLen > 0) {
-        uint8_t tcth;
-        if (!rd(&tcth, 1)) return BookStatus::ParseError;
-        const uint8_t tc = tcth >> 4, th = tcth & 0x0F;
-        uint8_t counts[16];
-        if (segLen < 17 || !rd(counts, 16)) return BookStatus::ParseError;
-        uint32_t total = 0;
-        for (int i = 0; i < 16; ++i) total += counts[i];
-        if (total > 256 || segLen < 17 + total) return BookStatus::ParseError;
-        if (tc == 0 && th < 4) {
-          ProgHuff& t = dcTables[th];
-          for (int i = 0; i < 16; ++i) t.counts[i + 1] = counts[i];
-          if (!rd(t.symbols, total)) return BookStatus::ParseError;
-          buildProgHuff(t);
-        } else {
-          uint8_t skip;
-          for (uint32_t i = 0; i < total; ++i) {
-            if (!rd(&skip, 1)) return BookStatus::ParseError;
-          }
-        }
-        segLen -= 17 + total;
-      }
-    } else if (m == 0xC2) {  // SOF2
-      uint8_t sof[6];
-      if (!rd(sof, 6)) return BookStatus::ParseError;
-      height = static_cast<uint16_t>(sof[1] << 8 | sof[2]);
-      width = static_cast<uint16_t>(sof[3] << 8 | sof[4]);
-      ncomp = sof[5];
-      if (ncomp == 0 || ncomp > 4 || segLen != 6u + ncomp * 3u) return BookStatus::ParseError;
-      for (uint8_t c = 0; c < ncomp; ++c) {
-        uint8_t cc[3];
-        if (!rd(cc, 3)) return BookStatus::ParseError;
-        comps[c].id = cc[0];
-        comps[c].h = cc[1] >> 4;
-        comps[c].v = cc[1] & 0x0F;
-        comps[c].tq = cc[2] & 0x03;
-        if (comps[c].h == 0 || comps[c].v == 0) return BookStatus::ParseError;
-      }
-    } else if (m == 0xC0 || m == 0xC1) {
-      return BookStatus::ParseError;  // baseline mislabeled — not our path
-    } else if (m == 0xDD) {  // DRI
-      uint8_t d[2];
-      if (segLen != 2 || !rd(d, 2)) return BookStatus::ParseError;
-      restartInterval = static_cast<uint16_t>(d[0] << 8 | d[1]);
-    } else if (m == 0xDA) {  // SOS — first scan
-      uint8_t nsB;
-      if (!rd(&nsB, 1)) return BookStatus::ParseError;
-      ns = nsB;
-      if (ns == 0 || ns > 4 || segLen != 1u + ns * 2u + 3u) return BookStatus::ParseError;
-      for (uint8_t i = 0; i < ns; ++i) {
-        uint8_t sc[2];
-        if (!rd(sc, 2)) return BookStatus::ParseError;
-        uint8_t idx = 0xFF;
-        for (uint8_t c = 0; c < ncomp; ++c) {
-          if (comps[c].id == sc[0]) idx = c;
-        }
-        if (idx == 0xFF) return BookStatus::ParseError;
-        comps[idx].td = sc[1] >> 4;
-        scanComp[i] = idx;
-      }
-      uint8_t prog[3];
-      if (!rd(prog, 3)) return BookStatus::ParseError;
-      // First scan of a valid progressive stream is DC (Ss=Se=0, Ah=0).
-      if (prog[0] != 0 || prog[1] != 0 || (prog[2] >> 4) != 0) return BookStatus::Unsupported;
-      al = prog[2] & 0x0F;
-      break;
-    } else if (m == 0xD9) {
-      return BookStatus::ParseError;
-    } else {
-      uint8_t skip;
-      for (uint32_t i = 0; i < segLen; ++i) {
-        if (!rd(&skip, 1)) return BookStatus::ParseError;
-      }
-    }
+  JpegDecSource src;
+  JpegDecHandle handle;
+  handle.jpeg = jpegDecOpen(entry, reader, &src, progDecDrawRow);
+  if (handle.jpeg == nullptr) {
+    return src.ioError ? BookStatus::IoError : BookStatus::OutOfMemory;
   }
-  if (width == 0 || height == 0) return BookStatus::ParseError;
+  JPEGDEC& jpeg = *handle.jpeg;
 
-  // Luma must carry the max sampling factors or its DC grid is not 1/8 scale.
-  uint8_t hmax = 1, vmax = 1;
-  for (uint8_t c = 0; c < ncomp; ++c) {
-    if (comps[c].h > hmax) hmax = comps[c].h;
-    if (comps[c].v > vmax) vmax = comps[c].v;
-  }
-  const Comp& y = comps[0];
-  if (y.h != hmax || y.v != vmax) return BookStatus::Unsupported;
-  const bool interleaved = ns > 1;
-  if (!interleaved && scanComp[0] != 0) return BookStatus::Unsupported;  // first scan not luma
-
-  const uint16_t blocksW = static_cast<uint16_t>((width + 7) / 8);
-  const uint16_t blocksH = static_cast<uint16_t>((height + 7) / 8);
-  const uint16_t mcusX = static_cast<uint16_t>((width + 8 * hmax - 1) / (8 * hmax));
-  const uint16_t mcusY = static_cast<uint16_t>((height + 8 * vmax - 1) / (8 * vmax));
-  const uint16_t padBlocksW = interleaved ? static_cast<uint16_t>(mcusX * y.h) : blocksW;
+  // A progressive stream (0xc2) forces JPEGDEC's EIGHTH scale — the decoded
+  // image is the DC-only block grid, ceil(w/8) × ceil(h/8).
+  const uint16_t blocksW = static_cast<uint16_t>((jpeg.getWidth() + 7) >> 3);
+  const uint16_t blocksH = static_cast<uint16_t>((jpeg.getHeight() + 7) >> 3);
+  if (blocksW == 0 || blocksH == 0) return BookStatus::Unsupported;
 
   ProgResample rs;
   rs.srcW = blocksW;
@@ -810,9 +710,7 @@ BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
   rs.prevRow = static_cast<uint8_t*>(scratch.alloc(image.width, 1));
   rs.currRow = static_cast<uint8_t*>(scratch.alloc(image.width, 1));
   rs.outRow = static_cast<uint8_t*>(scratch.alloc(image.width, 1));
-  uint8_t* rowBuf = static_cast<uint8_t*>(scratch.alloc(static_cast<uint32_t>(padBlocksW) * y.v, 1));
-  if (rs.prevRow == nullptr || rs.currRow == nullptr || rs.outRow == nullptr ||
-      rowBuf == nullptr) {
+  if (rs.prevRow == nullptr || rs.currRow == nullptr || rs.outRow == nullptr) {
     return BookStatus::OutOfMemory;
   }
   // Pass-through: report the streamed dims once (each row is one DC-block
@@ -821,72 +719,24 @@ BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
     return BookStatus::Ok;  // consumer stopped before any row
   }
 
-  int32_t pred[4] = {0, 0, 0, 0};
-  uint32_t sinceRestart = 0;
-  const uint16_t q0 = dcQuant[y.tq];
-  uint32_t emittedBlockRows = 0;
-
-  const uint32_t rows = interleaved ? mcusY : blocksH;
-  const uint32_t cols = interleaved ? mcusX : blocksW;
-  for (uint32_t r = 0; r < rows; ++r) {
-    for (uint32_t c = 0; c < cols; ++c) {
-      if (restartInterval != 0 && sinceRestart == restartInterval) {
-        pj.bitCount = 0;  // byte-align
-        int mk = pj.pendingMarker;
-        pj.pendingMarker = 0;
-        if (mk == 0) {
-          int b = pj.rawByte();
-          while (b == 0xFF) b = pj.rawByte();
-          mk = b;
-        }
-        if (mk < 0xD0 || mk > 0xD7) return BookStatus::ParseError;
-        pred[0] = pred[1] = pred[2] = pred[3] = 0;
-        sinceRestart = 0;
-      }
-      const uint8_t nsc = interleaved ? ns : 1;
-      for (uint8_t sci = 0; sci < nsc; ++sci) {
-        const uint8_t ci = scanComp[sci];
-        const Comp& comp = comps[ci];
-        if (!dcTables[comp.td].ready) return BookStatus::ParseError;
-        const uint8_t bh = interleaved ? comp.h : 1;
-        const uint8_t bv = interleaved ? comp.v : 1;
-        for (uint8_t by = 0; by < bv; ++by) {
-          for (uint8_t bx = 0; bx < bh; ++bx) {
-            const int t = pj.decodeHuff(dcTables[comp.td]);
-            if (t < 0 || t > 15) {
-              return pj.ioError ? BookStatus::IoError : BookStatus::ParseError;
-            }
-            bool ok = true;
-            const int32_t diff = pj.receiveExtend(t, &ok);
-            if (!ok) return pj.ioError ? BookStatus::IoError : BookStatus::ParseError;
-            pred[ci] += diff;
-            if (ci == 0) {  // luma: DC * quant is 8x the block average (level-shifted)
-              const int32_t dc = (pred[ci] << al) * static_cast<int32_t>(q0);
-              int32_t gray = 128 + dc / 8;
-              if (gray < 0) gray = 0;
-              if (gray > 255) gray = 255;
-              const uint32_t px = interleaved ? c * y.h + bx : c;
-              if (px < padBlocksW) {
-                rowBuf[static_cast<uint32_t>(by) * padBlocksW + px] =
-                    static_cast<uint8_t>(gray);
-              }
-            }
-          }
-        }
-      }
-      ++sinceRestart;
-    }
-    const uint8_t rowsHere = interleaved ? y.v : 1;
-    for (uint8_t by = 0; by < rowsHere && emittedBlockRows < blocksH; ++by) {
-      if (!rs.feed(rowBuf + static_cast<uint32_t>(by) * padBlocksW, emittedBlockRows)) {
-        return BookStatus::Ok;  // consumer stopped
-      }
-      ++emittedBlockRows;
-    }
-  }
-  rs.finish();
+  ProgDrawState drawState;
+  drawState.rs = &rs;
+  jpeg.setUserPointer(&drawState);
+  const int rc = jpeg.decode(0, 0, JPEG_SCALE_EIGHTH);
+  if (src.ioError) return BookStatus::IoError;
+  if (rc == 0 && !drawState.stopped) return BookStatus::ParseError;
+  if (!drawState.stopped) rs.finish();
   return BookStatus::Ok;
 }
+
+#else  // !TJFB_HAVE_JPEGDEC
+
+BookStatus renderJpegProgressive(BookSource&, const ZipEntry&, const PageImage&, Arena&, ImageRowFn, void*,
+                                 bool, SourceDimsFn, void*) {
+  return BookStatus::Unsupported;
+}
+
+#endif  // TJFB_HAVE_JPEGDEC
 
 }  // namespace
 

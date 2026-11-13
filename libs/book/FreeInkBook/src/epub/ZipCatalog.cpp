@@ -289,6 +289,29 @@ int32_t ZipEntryReader::read(void* dst, uint32_t len) {
                                         : readDeflated(static_cast<uint8_t*>(dst), len);
 }
 
+bool ZipEntryReader::seek(uint32_t pos) {
+  if (!opened_) return false;
+  if (entry_.method == kMethodStored) {
+    if (pos > entry_.uncompressedSize) return false;
+    produced_ = pos;  // readStored re-derives the absolute source offset
+    return true;
+  }
+  if (pos > inflateOutputLimit_) return false;
+  // Rewind the inflate state to the fresh-open condition, then re-walk the
+  // stream discarding output until `pos`.
+  produced_ = 0;
+  inPos_ = inAvail_ = compConsumed_ = 0;
+  windowPos_ = pendingPos_ = pendingLen_ = 0;
+  done_ = false;
+  tinfl_init(static_cast<tinfl_decompressor*>(decompressor_));
+  uint8_t sink[256];
+  while (produced_ < pos) {
+    const uint32_t want = pos - produced_ < sizeof(sink) ? pos - produced_ : sizeof(sink);
+    if (readDeflated(sink, want) <= 0) return false;  // stream error or ended early
+  }
+  return true;
+}
+
 int32_t ZipEntryReader::readStored(uint8_t* dst, uint32_t len) {
   const uint32_t remaining = entry_.uncompressedSize - produced_;
   const uint32_t want = remaining < len ? remaining : len;
