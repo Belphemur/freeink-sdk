@@ -9,6 +9,15 @@
 #define FREEINK_PJ_HEAP_CAPS 1
 #endif
 
+// Logging: the firmware's Logging.h facility when the consumer provides it;
+// silent fallback otherwise (same convention as InputManager).
+#if __has_include(<Logging.h>)
+#include <Logging.h>
+#define PJ_LOG_WRN(...) LOG_WRN("PJPG", __VA_ARGS__)
+#else
+#define PJ_LOG_WRN(...) ((void)0)
+#endif
+
 namespace freeink {
 
 namespace {
@@ -31,6 +40,24 @@ void* allocStore(size_t bytes) {
 }
 
 void freeStore(void* p) {
+#if FREEINK_PJ_HEAP_CAPS
+  heap_caps_free(p);
+#else
+  free(p);
+#endif
+}
+
+// Internal-RAM twin of the store pool: the emit strip's fallback when the
+// store pool cannot serve it (host targets: the same plain heap).
+void* allocInternal(size_t bytes) {
+#if FREEINK_PJ_HEAP_CAPS
+  return heap_caps_calloc(1, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#else
+  return calloc(1, bytes);
+#endif
+}
+
+void freeInternal(void* p) {
 #if FREEINK_PJ_HEAP_CAPS
   heap_caps_free(p);
 #else
@@ -109,6 +136,9 @@ struct ProgressiveJpeg::Reader {
   uint32_t bits = 0;
   int bitCount = 0;
   int marker = 0;  // marker met inside entropy data; bits read as 0 after it
+  PollFn poll = nullptr;
+  void* pollUser = nullptr;
+  bool pollStop = false;
 
   int raw() {
     if (pos >= len) {
@@ -146,7 +176,7 @@ struct ProgressiveJpeg::Reader {
     marker = 0;
   }
 
-  int bit() {
+  int nextBit() {
     if (bitCount == 0) {
       int b = 0;
       if (!marker) {
@@ -173,7 +203,7 @@ struct ProgressiveJpeg::Reader {
 
   int32_t get(int n) {
     int32_t v = 0;
-    for (int i = 0; i < n; ++i) v = (v << 1) | bit();
+    for (int i = 0; i < n; ++i) v = (v << 1) | nextBit();
     return v;
   }
 
@@ -182,13 +212,22 @@ struct ProgressiveJpeg::Reader {
   int huff(const Huff& h) {
     int32_t code = 0;
     for (int len = 1; len <= 16; ++len) {
-      code = (code << 1) | bit();
+      code = (code << 1) | nextBit();
       if (code <= h.maxCode[len]) {
         const int32_t i = h.valPtr[len] + code - h.minCode[len];
         return i >= 0 && i < 256 ? h.symbols[i] : -1;
       }
     }
     return -1;
+  }
+
+  bool stop() {
+    if (pollStop) return true;
+    if (poll != nullptr && poll(pollUser)) {
+      pollStop = true;
+      return true;
+    }
+    return false;
   }
 
   // Discards entropy data up to the next marker other than RSTn; 0 at end of data.
@@ -240,6 +279,7 @@ ProgressiveJpeg::~ProgressiveJpeg() { release(); }
 void ProgressiveJpeg::release() {
   if (_coef) freeStore(_coef);
   _coef = nullptr;
+  _ncomp = 0;
 }
 
 size_t ProgressiveJpeg::storeBytes(uint16_t w, uint16_t h, uint8_t hmax, uint8_t vmax) {
@@ -257,15 +297,23 @@ ProgressiveJpeg::Status ProgressiveJpeg::begin(ReadFn read, void* ctx) {
 }
 
 ProgressiveJpeg::Status ProgressiveJpeg::decode(ReadFn read, void* ctx, RowFn rowFn, void* user) {
+  return decode(read, ctx, rowFn, user, nullptr, nullptr);
+}
+
+ProgressiveJpeg::Status ProgressiveJpeg::decode(ReadFn read, void* ctx, RowFn rowFn, void* user, PollFn poll,
+                                                void* pollUser) {
   if (!_coef) return Status::Unsupported;
   memset(_coef, 0, static_cast<size_t>(_blocksW) * _blocksH * 64 * sizeof(int16_t));
   Reader r(read, ctx);
+  r.poll = poll;
+  r.pollUser = pollUser;
   const Status status = parse(r, false);
-  return status == Status::Ok ? emit(rowFn, user) : status;
+  return status == Status::Ok ? emit(rowFn, user, poll, pollUser) : status;
 }
 
 ProgressiveJpeg::Status ProgressiveJpeg::parse(Reader& r, bool headerOnly) {
   uint8_t soi[2];
+  if (r.stop()) return Status::Stopped;
   if (!r.bytes(soi, 2) || soi[0] != 0xFF || soi[1] != 0xD8) return r.ioError ? Status::IoError : Status::ParseError;
 
   Huff dc[4], ac[4];
@@ -276,6 +324,7 @@ ProgressiveJpeg::Status ProgressiveJpeg::parse(Reader& r, bool headerOnly) {
   int pending = 0;
 
   for (;;) {
+    if (r.stop()) return Status::Stopped;
     int m = pending;
     pending = 0;
     if (!m) {
@@ -344,6 +393,7 @@ ProgressiveJpeg::Status ProgressiveJpeg::parse(Reader& r, bool headerOnly) {
       }
       // Luma at full resolution is what the store holds.
       if (comps[0].h != hmax || comps[0].v != vmax) return Status::Unsupported;
+      _ncomp = ncomp;
       for (uint8_t c = 0; c < ncomp; ++c) {
         comps[c].blocksW = static_cast<uint16_t>(((w * comps[c].h + hmax - 1) / hmax + 7) / 8);
         comps[c].blocksH = static_cast<uint16_t>(((h * comps[c].v + vmax - 1) / vmax + 7) / 8);
@@ -389,12 +439,18 @@ ProgressiveJpeg::Status ProgressiveJpeg::parse(Reader& r, bool headerOnly) {
       r.startEntropy();
       if (idx[0] == 0 || ns > 1) scan(r, comps, ns, idx, ss ? ac[ta[0]] : dc[td[0]], dc, td, ss, se, ah, al,
                                       restartInterval, mcusX, mcusY);
+      if (r.stop()) return Status::Stopped;
       pending = r.nextMarker();
       if (!pending) break;
     } else if (!r.skip(len)) {
       return Status::ParseError;
     }
   }
+  // A read callback failure inside a scan reaches the marker loop as "no
+  // next marker" and used to fall through to Ok (frame seen) — the caller
+  // would then emit partial coefficient rows and could cache them. A
+  // truncated STREAM (eof, no ioError) still decodes what arrived by design.
+  if (r.ioError) return Status::IoError;
   return frame ? Status::Ok : Status::ParseError;
 }
 
@@ -414,6 +470,7 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
   const int32_t p1 = 1 << al;
 
   for (uint32_t uy = 0; uy < unitsH; ++uy) {
+    if (r.stop()) return;
     for (uint32_t ux = 0; ux < unitsW; ++ux) {
       if (restartInterval && sinceRestart == restartInterval) {
         if (!r.restart()) return;
@@ -441,7 +498,7 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
                 if (t < 0 || t > 15) return;
                 pred[i] += Reader::extend(r.get(t), t);
                 blk[0] = static_cast<int16_t>(pred[i] * p1);
-              } else if (r.bit()) {
+              } else if (r.nextBit()) {
                 blk[0] = static_cast<int16_t>(blk[0] | p1);
               }
               continue;
@@ -473,7 +530,7 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
             // AC refinement: one correction bit per nonzero coefficient in the
             // band, new coefficients placed after `run` zero ones.
             auto refine = [&](int16_t& coef) {
-              if (r.bit() && (coef & p1) == 0) coef = static_cast<int16_t>(coef + (coef > 0 ? p1 : -p1));
+              if (r.nextBit() && (coef & p1) == 0) coef = static_cast<int16_t>(coef + (coef > 0 ? p1 : -p1));
             };
             int k = ss;
             if (eobrun) {
@@ -496,7 +553,7 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
                 }
               } else {
                 if (s != 1) return;
-                value = r.bit() ? p1 : -p1;
+                value = r.nextBit() ? p1 : -p1;
               }
               while (k <= se) {
                 int16_t& coef = blk[k++];
@@ -518,13 +575,33 @@ void ProgressiveJpeg::scan(Reader& r, const Comp* comps, uint8_t ns, const uint8
   }
 }
 
-ProgressiveJpeg::Status ProgressiveJpeg::emit(RowFn rowFn, void* user) {
+ProgressiveJpeg::Status ProgressiveJpeg::emit(RowFn rowFn, void* user, PollFn poll, void* pollUser) {
   const uint32_t stride = static_cast<uint32_t>(_blocksW) * 8;
-  uint8_t* strip = static_cast<uint8_t*>(malloc(stride * 8));
-  if (!strip) return Status::OutOfMemory;
+  // The emit strip lives in the same store pool as the coefficient store: an
+  // internal-heap malloc of stride*8 (11+ KB on a 1400-wide frame) can fail
+  // under internal-DRAM fragmentation while the PSRAM-backed decode is fine,
+  // which would needlessly drop the page to the DC-only fallback. The store
+  // pool itself can also be full (the coefficient store still holds it), so
+  // fall back to internal RAM before giving up — a strip served from either
+  // pool keeps the full decode.
+  bool stripFromStore = true;
+  uint8_t* strip = static_cast<uint8_t*>(allocStore(stride * 8));
+  if (!strip) {
+    stripFromStore = false;
+    strip = static_cast<uint8_t*>(allocInternal(stride * 8));
+  }
+  if (!strip) {
+    PJ_LOG_WRN("emit strip %lu KiB alloc failed (store + internal) - DC fallback",
+               static_cast<unsigned long>(stride * 8 / 1024));
+    return Status::OutOfMemory;
+  }
   Status status = Status::Ok;
   const uint16_t* qt = _qt[_lumaTq];
   for (uint32_t by = 0; by * 8 < _height && status == Status::Ok; ++by) {
+    if (poll != nullptr && poll(pollUser)) {
+      status = Status::Stopped;
+      break;
+    }
     for (uint32_t bx = 0; bx < _blocksW; ++bx)
       idctBlock(_coef + (static_cast<size_t>(by) * _blocksW + bx) * 64, qt, strip + bx * 8, stride);
     for (uint32_t y = 0; y < 8 && by * 8 + y < _height; ++y) {
@@ -534,7 +611,11 @@ ProgressiveJpeg::Status ProgressiveJpeg::emit(RowFn rowFn, void* user) {
       }
     }
   }
-  free(strip);
+  if (stripFromStore) {
+    freeStore(strip);
+  } else {
+    freeInternal(strip);
+  }
   return status;
 }
 

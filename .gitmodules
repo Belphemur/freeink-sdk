@@ -7,3 +7,11 @@
 [submodule "libs/font/FreeInkFont/third_party/freetype"]
 	path = libs/font/FreeInkFont/third_party/freetype
 	url = https://github.com/freetype/freetype.git
+# JPEGDEC: pinned to upstream release tag 1.8.5
+# (0e879642e5e68624687f9ade16d799a091298ec8), vendored like FreeType as a git
+# submodule. FreeInkBook's ImageRenderer decodes every JPEG path through it;
+# the firmware consumes the same copy via symlink:// (platformio.ini), so
+# there is exactly one JPEGDEC implementation in the binary.
+[submodule "libs/book/FreeInkBook/third_party/jpegdec"]
+	path = libs/book/FreeInkBook/third_party/jpegdec
+	url = https://github.com/bitbank2/JPEGDEC.git

@@ -1917,7 +1917,9 @@ void testProbeGifBmp() {
   CHECK_EQ(opened.scratch.used(), 0u);
 }
 
-// Progressive JPEG (SOF2): TJpgDec cannot decode it, so the renderer's
+// Progressive JPEG (SOF2): the JPEGDEC DC-fallback path decodes the first
+// scan (block averages = a correct 1/8-scale image) and bilinear-resamples to
+// the placement box. Coarse, never blank.
 // DC-only path decodes the first scan (block averages = a correct 1/8-scale
 // image) and bilinear-resamples to the placement box. Coarse, never blank.
 void testProgressiveJpeg() {
@@ -1953,6 +1955,198 @@ void testProgressiveJpeg() {
   CHECK(cap.pixels[10 * 64 + 52] < 100);
   CHECK(cap.pixels[40 * 64 + 52] > 160);
   CHECK(cap.pixels[24 * 64 + 4] < cap.pixels[24 * 64 + 27]);
+}
+
+// Baseline JPEG pre-scale: the fidelity 1.5x rule picks the widest band
+// (srcW * kBandRows); when a caller arena cannot hold it, the renderer must
+// step to a smaller power-of-two decode that still covers the placement
+// instead of losing the page to OutOfMemory (review 2026-11-11).
+void testJpegScaleArenaRetry() {
+  OpenedBook opened;
+  // stored512.epub: every entry STORED, so the render needs no 32 KB
+  // inflate window and a tiny scratch arena is meaningful.
+  CHECK(opened.open("stored512.epub"));
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/images/pattern_512.jpg");
+  if (entry == nullptr) {
+    std::printf("  (512px JPEG fixture absent — no converter; skipped)\n");
+    return;
+  }
+  ImageInfo info;
+  CHECK_EQ(static_cast<int>(probeImage(opened.source, *entry, opened.scratch, &info)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK_EQ(static_cast<int>(info.kind), static_cast<int>(ImageInfo::Kind::Jpeg));
+  CHECK(!info.progressive);
+  CHECK_EQ(info.width, 512);
+  CHECK_EQ(info.height, 512);
+
+  struct DimsCapture {
+    uint16_t w = 0, h = 0;
+    bool reduced = false;
+    static bool onDims(void* user, uint16_t srcW, uint16_t srcH, bool scaleReduced) {
+      static_cast<DimsCapture*>(user)->w = srcW;
+      static_cast<DimsCapture*>(user)->h = srcH;
+      static_cast<DimsCapture*>(user)->reduced = scaleReduced;
+      return true;
+    }
+  } dims;
+  static GrayCapture cap;
+
+  // Roomy arena: the fidelity pick survives — 512x512 into 128x128 keeps
+  // scale 1 (256x256 decode; halving again would drop the 1.5x margin).
+  {
+    cap = GrayCapture{};
+    dims = DimsCapture{};
+    const size_t marked = opened.scratch.mark();
+    CHECK_EQ(static_cast<int>(ImageRenderer::renderSourceRows(
+                 opened.source, opened.book.zip(), "OEBPS/images/pattern_512.jpg", 128, 128,
+                 opened.scratch, DimsCapture::onDims, &dims, GrayCapture::onRow, &cap)),
+             static_cast<int>(BookStatus::Ok));
+    opened.scratch.release(marked);
+    CHECK_EQ(dims.w, 256);
+    CHECK_EQ(dims.h, 256);
+    CHECK(!dims.reduced);  // the preferred pick must not report a reduction
+    CHECK_EQ(cap.width, 256);
+    CHECK_EQ(cap.rows, 256);  // the scale-1 decode emits 256 rows
+  }
+
+  // Tight arena: the JPEGDEC decoder itself lives on the heap, so the caller
+  // arena holds only the decode band (srcW*16) plus scaler state (dstW*7).
+  // 4 KiB fits the scale-2 band (128*16 = 2 KiB) but not the scale-0 band
+  // (512*16 = 8 KiB) nor the scale-1 band (256*16 = 4 KiB), so the render
+  // steps to scale 2 and still renders. Pre-JPEGDEC (TJpgDec) this returned
+  // OutOfMemory.
+  static uint8_t tinyBuf[4 * 1024];
+  {
+    Arena tiny(tinyBuf, sizeof(tinyBuf));
+    cap = GrayCapture{};
+    dims = DimsCapture{};
+    CHECK_EQ(static_cast<int>(ImageRenderer::renderSourceRows(
+                 opened.source, opened.book.zip(), "OEBPS/images/pattern_512.jpg", 128, 128,
+                 tiny, DimsCapture::onDims, &dims, GrayCapture::onRow, &cap)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK_EQ(dims.w, 128);
+    CHECK_EQ(dims.h, 128);
+    CHECK(dims.reduced);  // the arena-driven step-down must be reported
+    CHECK_EQ(cap.width, 128);
+    CHECK_EQ(cap.rows, 128);  // the retried scale-2 decode emits 128 rows
+    CHECK(tiny.highWater() <= sizeof(tinyBuf));
+  }
+}
+
+// Front-end parity: the committed real-fixture JPEG pages decode through the
+// JPEGDEC front end at full resolution with top→bottom row order, and the
+// sampled luma matches the TJpgDec-era reference probe (captured before the
+// swap on the same fixtures). One documented delta: JPEGDEC 1.8.5 renders
+// 00006's row-274 last sample column 249 vs the reference's 254 — a
+// near-white paper pixel one IDCT rounding step apart; every other sampled
+// byte is identical. dstW/dstH = source dims pins the full-res decode
+// (scale 0; progressive 00004 goes through the full-fidelity ProgressiveJpeg
+// path, never the 1/8 DC thumbnail).
+namespace jpegfix {
+struct Expect {
+  const char* href;
+  uint16_t w;
+  uint16_t h;
+  bool progressive;
+  // Sampled luma at columns {0,1,3,7,15,31,63,127}, rows {0,137,274,411,511}.
+  uint8_t sample[5][8];
+};
+const Expect kExpect[3] = {
+    {"OEBPS/images/00004.jpeg", 577, 1400, true,
+     {{130, 126, 133, 135, 129, 144, 130, 121},
+      {123, 124, 126, 127, 123, 133, 130, 124},
+      {172, 171, 164, 158, 150, 151, 150, 172},
+      {184, 184, 183, 186, 187, 191, 144, 55},
+      {180, 180, 172, 178, 128, 172, 150, 224}}},
+    {"OEBPS/images/00005.jpeg", 934, 1400, false,
+     {{168, 168, 168, 168, 174, 170, 172, 178},
+      {182, 182, 182, 182, 178, 179, 184, 208},
+      {196, 196, 196, 196, 196, 205, 217, 254},
+      {225, 225, 225, 225, 225, 231, 243, 223},
+      {230, 230, 230, 230, 235, 244, 248, 201}}},
+    {"OEBPS/images/00006.jpeg", 965, 1400, false,
+     {{254, 254, 254, 254, 254, 254, 254, 254},
+      {254, 254, 254, 254, 254, 254, 254, 254},
+      {254, 254, 254, 254, 254, 254, 254, 249},
+      {254, 254, 254, 254, 254, 254, 254, 254},
+      {254, 254, 254, 254, 254, 254, 254, 254}}},
+};
+const uint32_t kSampleY[5] = {0, 137, 274, 411, 511};
+const uint32_t kSampleX[8] = {0, 1, 3, 7, 15, 31, 63, 127};
+
+struct Cap {
+  uint32_t rows = 0;
+  uint16_t prevY = 0;
+  bool firstRow = true;
+  bool ordered = true;
+  uint8_t sample[5][8] = {};
+  static bool onDims(void* user, uint16_t w, uint16_t h, bool reduced) {
+    auto* self = static_cast<Cap*>(user);
+    self->rows = 0;  // dims callback precedes the first row
+    self->dimsW = w;
+    self->dimsH = h;
+    self->reduced = reduced;
+    return true;
+  }
+  uint16_t dimsW = 0;
+  uint16_t dimsH = 0;
+  bool reduced = false;
+  static bool onRow(void* user, uint16_t y, const uint8_t* gray, uint16_t width) {
+    auto* self = static_cast<Cap*>(user);
+    if (!self->firstRow && y != self->prevY + 1) self->ordered = false;
+    self->firstRow = false;
+    self->prevY = y;
+    self->rows++;
+    for (int r = 0; r < 5; ++r) {
+      if (kSampleY[r] != y) continue;
+      for (int c = 0; c < 8; ++c) {
+        self->sample[r][c] = kSampleX[c] < width ? gray[kSampleX[c]] : gray[width - 1];
+      }
+    }
+    return true;
+  }
+};
+}  // namespace jpegfix
+
+void testJpegFixtureParity() {
+  static HostFileSource source;
+  if (!source.open(fixture("images.epub"))) {
+    std::printf("  (fixture JPEG pages absent — skipped)\n");
+    return;
+  }
+  static uint8_t parityScratchBuf[512 * 1024];
+  Arena scratch{parityScratchBuf, sizeof(parityScratchBuf)};
+  const size_t marked = scratch.mark();
+  ZipCatalog zip;
+  CHECK_EQ(static_cast<int>(zip.open(source, scratch)), static_cast<int>(BookStatus::Ok));
+  for (const auto& expect : jpegfix::kExpect) {
+    const ZipEntry* entry = zip.find(expect.href);
+    CHECK(entry != nullptr);
+    if (entry == nullptr) continue;
+    ImageInfo info;
+    CHECK_EQ(static_cast<int>(probeImage(source, *entry, scratch, &info)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK_EQ(static_cast<int>(info.kind), static_cast<int>(ImageInfo::Kind::Jpeg));
+    CHECK_EQ(info.progressive, expect.progressive);
+    CHECK_EQ(info.width, expect.w);
+    CHECK_EQ(info.height, expect.h);
+    jpegfix::Cap cap;
+    CHECK_EQ(static_cast<int>(ImageRenderer::renderSourceRows(
+                 source, zip, expect.href, expect.w, expect.h, scratch, jpegfix::Cap::onDims, &cap,
+                 jpegfix::Cap::onRow, &cap)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK(!cap.reduced);  // full-res decode, never the 1/8 DC thumbnail
+    CHECK_EQ(cap.dimsW, expect.w);
+    CHECK_EQ(cap.dimsH, expect.h);
+    CHECK_EQ(cap.rows, expect.h);
+    CHECK(cap.ordered);  // strict top→bottom row order
+    for (int r = 0; r < 5; ++r) {
+      for (int c = 0; c < 8; ++c) {
+        CHECK_EQ(static_cast<int>(cap.sample[r][c]), static_cast<int>(expect.sample[r][c]));
+      }
+    }
+  }
+  scratch.release(marked);
 }
 
 // Hebrew fixture chapter (ch7): RTL paragraphs with an embedded Latin word,
@@ -2781,6 +2975,8 @@ int main(int argc, char** argv) {
   testImages();
   testProbeGifBmp();
   testProgressiveJpeg();
+  testJpegScaleArenaRetry();
+  testJpegFixtureParity();
   testImagePrescanMemory();
   testCjk();
   testPlainText();

@@ -9,7 +9,8 @@
     }
   ],
   "dependencies": {
-    "FreeInkFont": "*"
+    "FreeInkFont": "*",
+    "ProgressiveJpeg": "*"
   },
   "platforms": "*",
   "frameworks": "*",
@@ -20,7 +21,7 @@
       "-I third_party/miniz/include",
       "-I third_party/libunibreak",
       "-I third_party/pngle",
-      "-I third_party/tjpgd",
+      "-I third_party/jpegdec/src",
       "-I third_party/stb",
       "-I ../../font/FreeInkFont/include",
       "-I ../../font/FreeInkFont/third_party/stb"
