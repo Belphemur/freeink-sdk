@@ -35,8 +35,13 @@ sh libs/book/ContentProtection/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run_metalio.sh
 sh libs/hardware/InputManager/test/host/run_gt911_suppressed_lift.sh
+sh libs/hardware/InputManager/test/host/run_papermono.sh
 sh libs/hardware/HapticManager/test/host/run.sh
 ```
+
+The Paper Mono input suite disables touch and models PMIC click reports. It checks
+that delayed polling does not lengthen clicks and that two-button Power chords
+retain their hold duration, including clicks that overlap a chord.
 
 The book suite also needs `zip`. It uses `sips` or ImageMagick's `convert` for
 JPEG fixtures and optionally Pillow for progressive JPEG fixtures; the related
@@ -214,3 +219,15 @@ sh libs/network/JsonSax/test/host/run.sh
 
 Checks optional bounded string prefixes, unchanged default overflow handling,
 continued parsing after long strings, and rejection of oversized keys under ASan/UBSan.
+
+## OPDS authentication
+
+```sh
+sh libs/network/Opds/test/host/run.sh
+```
+
+Requires host Expat headers and library. Runs the production OPDS client and
+parsers with a scripted transport under ASan/UBSan. Covers public Atom browsing
+with protected acquisitions, Basic challenge headers and OPDS documents, rejected
+credentials, OAuth login/refresh, and cross-origin challenge rejection. Device
+tests must still verify the consumer's download retry, cancellation, and heap.

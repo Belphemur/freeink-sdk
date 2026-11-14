@@ -398,13 +398,19 @@
 #endif
 
 // Place the facade framebuffer(s) in PSRAM (heap, MALLOC_CAP_SPIRAM) instead of
-// static DRAM .bss. Default on for M5Paper v1.1: the classic ESP32 has tight
-// internal DRAM but 8MB PSRAM, and the 63KB 540x960 framebuffer does not fit in
-// .bss alongside the firmware. Every other device keeps the static DRAM array.
+// internal DRAM on every build with PSRAM (BOARD_HAS_PSRAM). M5Paper v1.1, Paper
+// Mono and Picco always have it: M5Paper's 63KB 540x960 framebuffer does not fit
+// in the classic ESP32's internal DRAM alongside the firmware. Allocation falls
+// back to internal DRAM when PSRAM is unavailable. Every bus reads the
+// framebuffer with the CPU, so no transfer DMAs from PSRAM.
 // (The prebuilt Arduino-ESP32 libs disable BSS-in-PSRAM, so this is a runtime
 // heap allocation, not EXT_RAM_BSS_ATTR.)
 #ifndef FREEINK_FB_PSRAM
-#define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO)
+#if defined(BOARD_HAS_PSRAM) || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PICCO
+#define FREEINK_FB_PSRAM 1
+#else
+#define FREEINK_FB_PSRAM 0
+#endif
 #endif
 
 // SD transport. Silkscreen (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
@@ -1577,9 +1583,10 @@ constexpr BoardProfile EEGO_A4 = {
     11,      // batteryChargeStatus
     1.559f,  // divider
     PIN_UNASSIGNED,
-    // GSLX680: pollGslx680 applies the stock factory calibration and returns
-    // panel-native x=0..767, y=0..551, so the range here is the identity.
-    {TouchController::Gslx680, 2, 1, PIN_UNASSIGNED, 3, 0x40, 0, 767, 0, 551, false, 0, false, false,
+    // GSLX680: pollGslx680 maps the digitizer linearly to panel-native
+    // x=0..767, y=0..551; this range then trims and rescales it, least-squares
+    // fitted from hardware taps on known targets (residuals within ~7px).
+    {TouchController::Gslx680, 2, 1, PIN_UNASSIGNED, 3, 0x40, 12, 779, 28, 553, false, 0, false, false,
      PIN_UNASSIGNED, false, false, false, true, true},  // powerEnable, swapXY, flipX, flipY, hasHomeKey, pwrEnActiveHigh
     // The frontlight is an LM3630A driven via the i2cFrontlight field below, not
     // this LEDC/PWM FrontlightConfig — the frontlit variant's light is I2C only.

@@ -10,7 +10,8 @@
 // previous frame in the high bit, the new frame in the low bit; the LUT picks
 // the transition. Init list, LUTs and bit packing are from the stock firmware
 // (build 2912). Grayscale is the stock overlay AA mode (slot-5 LUT): the LSB
-// and MSB masks are packed as the low/high bit of each pixel. Images use the panel's dedicated
+// and MSB masks are packed as the low/high bit of each pixel, with dark pixels
+// (both masks) sent as LSB-only. Images use the panel's dedicated
 // slot-4 waveform with the two complete image planes.
 //
 // The newer Seeed Sticky carries the same controller with OTP waveforms: its
@@ -38,6 +39,10 @@ class Ssd2677Driver : public PanelDriver {
   }
   PanelGeometry geometry() const override;
 
+  void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
+  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
+  // BOOX 2959 runs the reader AA overlay after inverted pages too.
+  bool grayscaleWhileInverted() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void powerOffBetweenFrames(EpdBus& bus) override;
@@ -53,7 +58,11 @@ class Ssd2677Driver : public PanelDriver {
       return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Combined, false, false, false};
     return {};
   }
-  void requestResync(uint8_t) override { _absoluteGray = false; }
+  void requestResync(uint8_t) override {
+    _absoluteGray = false;
+    _grayPending = false;
+    if (BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky) _needsInitialFull = true;
+  }
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
@@ -62,15 +71,21 @@ class Ssd2677Driver : public PanelDriver {
  private:
   void initPanel(EpdBus& bus);
   void latchOtpWaveform(EpdBus& bus, uint8_t code);
-  void sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo);
+  // exclusive: clear the high bit wherever the low bit is set.
+  void sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo, bool exclusive = false);
   bool ensureLsb();
   void powerOn(EpdBus& bus);
   void powerAndRefresh(EpdBus& bus, bool turnOff);
   void refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff);
 
+  bool _readerRefresh = false;
+  bool _afterReader = false;  // last frame presented a book page
+  bool _darkBackground = false;  // facade renders inverted frames
   bool _needsPowerOn = true;
   bool _needsInitialFull = true;
   uint8_t _latchedWaveform = 0;  // Sticky: OTP waveform code currently latched (0 = none)
+  bool _grayPending = false;
+  bool _grayMaskReady = false;
   bool _absoluteGray = false;  // the current gray pass began as a complete image
   uint8_t* _lsb = nullptr;  // retained LSB mask: the renderer reuses its buffer for the MSB pass
   uint8_t* _old = nullptr;  // retained old plane (last displayed frame); host is single-buffer
