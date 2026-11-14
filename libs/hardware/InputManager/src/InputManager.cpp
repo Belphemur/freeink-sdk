@@ -1714,6 +1714,23 @@ uint8_t InputManager::serviceTouch() {
   // release edge consumed) and a new contact beginning in this same call is
   // delivered normally.
   if (!touchPressed && !touchReleasedEvent) {
+    // Soak finding 2: a suppressed contact's LIFT must not leak to
+    // the next consumer. Async builds raise the Released one-shot as a DURABLE
+    // bit — consumeTouchFrame() delivers it with a plain exchange, independent
+    // of this latch — so an activity pushed mid-contact (the definition game
+    // behind a long-press lookup, a clip selector opened from a long-press)
+    // received the lift on its earliest frame, after this latch had cleared,
+    // and its unsuppressed tap classifier turned the lift into a page turn.
+    // The suppressor owned every edge of that contact — it consumed the
+    // long-press while the finger was still down and the lift has no other
+    // owner — so drop the pending press/release one-shots in the same pass the
+    // latch clears. A new contact polls AFTER this block, so its edges are
+    // raised fresh. The "consumed before the clear" races keep the existing
+    // latch gate in the tap/swipe getters (a suppressed snapshot refuses the
+    // classification), so no double-source leak remains.
+    if (touchSuppressed) {
+      touchOneShots_.fetch_and(~(kEvTouchPressed | kEvTouchReleased), std::memory_order_relaxed);
+    }
     touchSuppressed = false;
     touchLongPressFired = false;
     resetMultiTouchGesture();
