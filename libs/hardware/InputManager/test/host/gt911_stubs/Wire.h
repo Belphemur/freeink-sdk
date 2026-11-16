@@ -39,6 +39,10 @@ struct WireStub {
   unsigned statusReadAttempts = 0;
   unsigned statusClears = 0;  // successful writes of 0 to 0x814E
   unsigned statusClearAttempts = 0;
+  // Register written by every completed write transaction (size >= 3, i.e. a
+  // register-pointer + data transfer), in issue order: lets a test assert the
+  // sleep/gesture command ORDER (0x8046 slot before the 0x8040 commit).
+  std::vector<uint16_t> writeLog;
 
   // --- Wire surface ---------------------------------------------------------
   uint8_t txAddr = 0;
@@ -61,6 +65,7 @@ struct WireStub {
     return n;
   }
   int endTransmission(bool stop = true) {
+    if (tx.size() >= 3) writeLog.push_back(static_cast<uint16_t>(tx[0] << 8 | tx[1]));
     if (tx.size() >= 2) {
       const uint16_t reg = static_cast<uint16_t>(tx[0] << 8 | tx[1]);
       if (tx.size() == 2) {
@@ -148,6 +153,7 @@ struct WireStub {
   // Low-level mode holds INT LOW while 0x814E has anything pending.
   void syncInt() { gpioLevels[INT_PIN] = (activeMode == 2 && mem[STATUS] != 0) ? LOW : HIGH; }
   void resetCounters() {
+    writeLog.clear();
     configWriteTxns = applies = configReads = statusReadAttempts = statusClears = statusClearAttempts = 0;
   }
 };
