@@ -276,6 +276,14 @@ bool piccoWaitInt(int8_t irq, unsigned long timeoutMs);
 #endif
 
 bool InputManager::prepareForDeepSleep() {
+#if FREEINK_TOUCH_GT911
+  // Deep-sleep boundary (design 2026-11-16-gt911-gesture-touch-wake.md §2.3):
+  // never leave a gesture-park ISR armed across the rail cut — the INT pad
+  // floats while its rail drops, and a stale edge armed on it is a spurious
+  // wake source. The rail cut itself parks/powers the controller; the app
+  // has no bus traffic left to do here.
+  gt911DisarmParkWakeEdge();
+#endif
 #if FREEINK_DEVICE_EEGO_A4
   if (const auto& t = BoardConfig::ACTIVE.touch; t.controller == BoardConfig::TouchController::Gslx680) {
     waitForTouchInit();  // a charger-only boot can sleep while the controller still boots
@@ -2857,6 +2865,12 @@ void InputManager::beginGt911() {
   gt911Asleep.store(false, std::memory_order_release); // re-probe starts awake
   gt911TouchCmd.store(0, std::memory_order_release);   // re-probe drops any in-flight request
   gt911SleepEnteredAt = 0;
+  // The reset dance invalidates any parked state and its ISR: the controller
+  // reloads its table and starts awake. Drop the gesture-park edge capture
+  // and the park-mode record with it; the unsupported latch survives (design
+  // §2.3) — it describes the module's diode-to-INT circuit, not the chip.
+  gt911DisarmParkWakeEdge();
+  gt911ParkMode.store(Gt911ParkMode::Sleep, std::memory_order_release);
 #if FREEINK_GT911_INT_WAKE
   // Earned again on every begin: the reset dance above reloads the
   // controller's own table, so a result from an earlier begin() says nothing
@@ -3544,6 +3558,17 @@ bool InputManager::setTouchSleep(const bool asleep) {
   return runGt911TouchCmd(GT911_TOUCH_CMD_SLEEP);
 }
 
+bool InputManager::setTouchSleepGesture() {
+  if (gt911Addr == 0) {
+    return false; // no GT911 on this board: nothing to park
+  }
+  // Once the fallback latch is set the gesture path is dead for this boot
+  // (design §2.3): route the request to the Sleep-mode park instead, so the
+  // caller keeps one API and the trunk never sees a dead combination.
+  return runGt911TouchCmd(gt911GestureUnsupported ? GT911_TOUCH_CMD_SLEEP
+                                                  : GT911_TOUCH_CMD_SLEEP_GESTURE);
+}
+
 bool InputManager::wakeTouch() {
   if (gt911Addr == 0) {
     return false;
@@ -3582,7 +3607,7 @@ bool InputManager::runGt911TouchCmd(const uint8_t requestedCmd) {
       // Settled — this request, or a later concurrent one (latest wins, whose
       // setted state subsumes this caller's intent). gt911Asleep is the only
       // truth; report it either way.
-      return requestedCmd == GT911_TOUCH_CMD_SLEEP ? isTouchAsleep() : !isTouchAsleep();
+      return requestedCmd == GT911_TOUCH_CMD_WAKE ? !isTouchAsleep() : isTouchAsleep();
     }
     if (millis() - start >= GT911_TOUCH_CMD_TIMEOUT_MS) {
       break;
@@ -3597,7 +3622,7 @@ bool InputManager::runGt911TouchCmd(const uint8_t requestedCmd) {
   uint8_t expected = requestedCmd;
   gt911TouchCmd.compare_exchange_strong(expected, 0, std::memory_order_release, std::memory_order_acquire);
   GT911_LOG_INF("GT911 sleep/wake request unserviced (no poll owner)");
-  return requestedCmd == GT911_TOUCH_CMD_SLEEP ? isTouchAsleep() : !isTouchAsleep();
+  return requestedCmd == GT911_TOUCH_CMD_WAKE ? !isTouchAsleep() : isTouchAsleep();
 }
 
 void InputManager::serviceGt911TouchCmd() {
@@ -3609,6 +3634,8 @@ void InputManager::serviceGt911TouchCmd() {
     enterGt911Sleep();
   } else if (cmd == GT911_TOUCH_CMD_WAKE) {
     exitGt911Sleep();
+  } else if (cmd == GT911_TOUCH_CMD_SLEEP_GESTURE) {
+    enterGt911Gesture();
   }
   // Consume only the command we executed — a newer request posted while the
   // sequence ran must survive (latest-request-wins), not be erased here.
@@ -3688,11 +3715,115 @@ void InputManager::enterGt911Sleep() {
   }
 }
 
+// Gesture-park INT edge capture (design 2026-11-16-gt911-gesture-touch-wake.md
+// §2.2). While the controller is gesture-parked, an edge ISR on the INT pin
+// posts the atomic latch only — no Wire, no allocation, no logging (ISR-safety
+// rule). The app idle trunk drains the latch and runs the unchanged wake
+// handshake through the funnel. One ISR serves all instances: the trampoline
+// dispatches to the single instance that armed the pin (the poll owner at
+// park time), so two InputManager instances can never cross-drive a latch.
+namespace {
+std::atomic<InputManager*> s_parkWakeIsrTarget{nullptr};
+}  // namespace
+
+void IRAM_ATTR InputManager_gt911ParkWakeIsr() {
+  if (InputManager* in = s_parkWakeIsrTarget.load(std::memory_order_acquire)) {
+    in->latchParkWakeEdge();
+  }
+}
+
+void InputManager::gt911ArmParkWakeEdge() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.irq < 0) {
+    return;
+  }
+  // Release the pin from the entry dance's OUTPUT LOW first: the controller's
+  // wake pulse must be visible. The profile polarity says which edge carries
+  // it (active-low: the line idles HIGH on its pull-up and pulses LOW).
+  pinMode(t.irq, t.irqActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
+  gt911WakeEdge.store(false, std::memory_order_release);  // drop a stale latch
+  s_parkWakeIsrTarget.store(this, std::memory_order_release);
+  attachInterrupt(digitalPinToInterrupt(t.irq), InputManager_gt911ParkWakeIsr,
+                  t.irqActiveLow ? FALLING : RISING);
+}
+
+void InputManager::gt911DisarmParkWakeEdge() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  s_parkWakeIsrTarget.store(nullptr, std::memory_order_release);
+  if (t.irq >= 0) {
+    detachInterrupt(digitalPinToInterrupt(t.irq));
+  }
+}
+
 bool InputManager::exitGt911Sleep() {
   if (!gt911Asleep.load(std::memory_order_acquire)) {
     return true; // already awake
   }
   return gt911WakeHandshake();
+}
+
+// Gesture-mode park entry (datasheet Rev.09 §8.1): write 8 to the gesture
+// config slot 0x8046, then commit command 8 to 0x8040. Same INT-LOW + commit
+// discipline and the same fail-safe rule as enterGt911Sleep(): a SENT commit
+// parks unconditionally; the 0x814E probe that follows is a diagnostic only.
+void InputManager::enterGt911Gesture() {
+  if (gt911Asleep.load(std::memory_order_acquire)) {
+    return;  // already parked (Sleep or Gesture): nothing to send
+  }
+  // Same order-of-operations guard as Sleep entry: never park under an active
+  // contact (finger or home key) — its release would be invisible.
+  if (touchPressed || touchHomeKeyDown) {
+    GT911_LOG_INF("GT911 gesture park skipped: contact active");
+    gt911Asleep.store(false, std::memory_order_release);
+    return;
+  }
+  const auto& t = BoardConfig::ACTIVE.touch;
+
+  gt911SleepEnteredAt = 0;  // the 58 ms window (§8.1.d) belongs to Sleep entry
+  if (t.irq >= 0) {
+    pinMode(t.irq, OUTPUT);
+    digitalWrite(t.irq, LOW);
+    delay(5);
+  }
+  // 0x8046 is the gesture-config slot; the commit at 0x8040 is what enters
+  // gesture mode. Some firmware builds ignore the slot and honor only the
+  // commit — the slot write failing is not a park failure, so only the
+  // commit's ACK decides "sent" (design §2.1, must-verify-on-hardware note).
+  Wire.beginTransmission(gt911Addr);
+  Wire.write(0x80);
+  Wire.write(0x46);
+  Wire.write(0x08);
+  const bool slotSent = Wire.endTransmission() == 0;
+  Wire.beginTransmission(gt911Addr);
+  Wire.write(0x80);
+  Wire.write(0x40);
+  Wire.write(0x08);
+  const bool sent = Wire.endTransmission() == 0;
+
+  if (sent) {
+    gt911Asleep.store(true, std::memory_order_release);
+    gt911ParkMode.store(Gt911ParkMode::Gesture, std::memory_order_release);
+    // While parked the SoC must SEE the controller's wake pulse: stop driving
+    // the pin and arm the edge ISR on the profile polarity.
+    gt911ArmParkWakeEdge();
+    // Diagnostic probe, same discipline as Sleep entry.
+    Wire.beginTransmission(gt911Addr);
+    Wire.write(0x81);
+    Wire.write(0x4E);
+    const uint8_t probeStatus = Wire.endTransmission();
+    if (probeStatus == 2) {
+      GT911_LOG_INF("GT911 gesture park entered (bus silent until wake)%s",
+                    slotSent ? "" : "; 0x8046 slot refused");
+    } else {
+      GT911_LOG_INF("GT911 gesture park entered; probe code %u%s",
+                    static_cast<unsigned>(probeStatus), slotSent ? "" : "; 0x8046 slot refused");
+    }
+    return;
+  }
+  GT911_LOG_INF("GT911 gesture park command NACKed; staying awake");
+  if (t.irq >= 0) {
+    pinMode(t.irq, INPUT);  // controller is awake: stop contending on INT
+  }
 }
 
 // INT-high wake handshake (datasheet §8.1.d). exitGt911Sleep() guards it with
@@ -3725,6 +3856,15 @@ bool InputManager::gt911WakeHandshake() {
     if (gt911ReadReg(0x814E, &status, 1)) {
       gt911Asleep.store(false, std::memory_order_release);
       gt911SleepEnteredAt = 0;
+      // Leaving a gesture park: the edge ISR is armed for the parked state
+      // only. A wake that ACKs also proves the path works — clear the
+      // consecutive-failure count but keep the unsupported latch (it
+      // describes the module's diode-to-INT circuit, not this wake).
+      if (gt911ParkMode.load(std::memory_order_acquire) == Gt911ParkMode::Gesture) {
+        gt911DisarmParkWakeEdge();
+        gt911ParkMode.store(Gt911ParkMode::Sleep, std::memory_order_release);
+      }
+      gt911GestureWakeFails = 0;
 #if FREEINK_GT911_INT_WAKE
       const bool cleared = gt911ClearStatus(); // stale frame latched across sleep
       // Only a confirmed clear re-arms the level wake: a failed clear leaves
@@ -3750,6 +3890,27 @@ bool InputManager::gt911WakeHandshake() {
   // Could not confirm wake: stay parked so pollGt911 keeps skipping the dead
   // bus; the caller retries wakeTouch() on its next activity event.
   GT911_LOG_ERR("GT911 wake timeout: no ACK within 200 ms");
+  // Gesture-park fallback (design 2026-11-16-gt911-gesture-touch-wake.md §2.3):
+  // a stuck/inverted INT line (no diode-to-INT circuit) makes the parked ISR
+  // fire with a controller that never ACKs. Repeat the handshake N times,
+  // then latch the gesture path unsupported for this boot, disarm the ISR,
+  // and re-park in Sleep mode so the trunk never regresses to "touch dead
+  // until reset": an unreachable controller falls back to the existing
+  // self-heal ladder, a reachable one parks Sleep and wakes by button as
+  // before this feature.
+  if (gt911ParkMode.load(std::memory_order_acquire) == Gt911ParkMode::Gesture) {
+    if (++gt911GestureWakeFails >= GT911_GESTURE_WAKE_FAILS && !gt911GestureUnsupported) {
+      gt911GestureUnsupported = true;
+      gt911DisarmParkWakeEdge();
+      gt911ParkMode.store(Gt911ParkMode::Sleep, std::memory_order_release);
+      GT911_LOG_ERR("GT911 gesture wake unsupported (no ACK in %u handshakes); re-parking in Sleep mode",
+                    static_cast<unsigned>(GT911_GESTURE_WAKE_FAILS));
+      // Clear the parked state first: enterGt911Sleep() early-returns while
+      // asleep, and the re-park decision below needs the awake path.
+      gt911Asleep.store(false, std::memory_order_release);
+      enterGt911Sleep();
+    }
+  }
   return false;
 }
 
@@ -3830,6 +3991,12 @@ bool InputManager::setTouchSleep(const bool asleep) {
 
 bool InputManager::wakeTouch() { return false; }
 
+bool InputManager::setTouchSleepGesture() { return false; }
+
+void InputManager::gt911ArmParkWakeEdge() {}
+
+void InputManager::gt911DisarmParkWakeEdge() {}
+
 #endif // FREEINK_TOUCH_GT911
 
 #else // !FREEINK_CAP_TOUCH: no touch on this build — the toggle stays a no-op
@@ -3840,5 +4007,11 @@ bool InputManager::setTouchSleep(const bool asleep) {
 }
 
 bool InputManager::wakeTouch() { return false; }
+
+bool InputManager::setTouchSleepGesture() { return false; }
+
+void InputManager::gt911ArmParkWakeEdge() {}
+
+void InputManager::gt911DisarmParkWakeEdge() {}
 
 #endif // FREEINK_CAP_TOUCH

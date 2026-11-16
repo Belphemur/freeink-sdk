@@ -313,6 +313,44 @@ class InputManager {
     return gt911Asleep.load(std::memory_order_acquire);
   }
 
+  // GT911 Gesture mode park (datasheet Rev.09 §8.1): parks the controller so
+  // it keeps gesture scanning and pulses INT on a swipe/double-tap/letter
+  // gesture (INT pulse > 250 µs). The host observes the pulse through an
+  // edge ISR posted to an atomic latch (no Wire, no allocation in the ISR);
+  // the app idle trunk drains the latch and runs the UNCHANGED wake
+  // handshake (wakeTouch()). Gesture-mode entry writes 8 to 0x8046, then to
+  // 0x8040; the 0x8046 slot must still be verified on hardware — some
+  // firmware builds ignore it and honor only the 0x8040 commit (design
+  // docs/design/2026-11-16-gt911-gesture-touch-wake.md §2.1). Gesture-mode
+  // current draw is not specified in Rev.09: default OFF in the app until
+  // bench-measured.
+  //
+  // Same fail-safe park rule as Sleep mode: once the 0x8040 command write
+  // ACKs the controller is parked, unconditionally. If the parked wake latch
+  // keeps firing but the wake handshake finds no ACK
+  // (GT911_GESTURE_WAKE_FAILS consecutive attempts), the gesture path is
+  // latched unsupported for this boot and later requests re-park in Sleep
+  // mode — never regressing to "touch dead until reset" (design §2.3). The
+  // latch survives a re-probe: it describes the module's diode-to-INT
+  // circuit, not the controller's current state.
+  enum class Gt911ParkMode : uint8_t { Sleep, Gesture };
+  // Park in Gesture mode (or Sleep mode once the unsupported latch is set).
+  // Same threading contract as setTouchSleep(); no-op (false) without a
+  // resolved GT911.
+  bool setTouchSleepGesture();
+  // Park mode the controller was last parked in (Sleep once awake).
+  Gt911ParkMode touchParkMode() const {
+    return gt911ParkMode.load(std::memory_order_acquire);
+  }
+  // Parked-touch wake edge: set by the INT ISR while gesture-parked, cleared
+  // by the app. ISR-safe latch only — all Wire work stays in the funnel.
+  bool wasTouchWakeEdgePending() const {
+    return gt911WakeEdge.load(std::memory_order_acquire);
+  }
+  void clearTouchWakeEdge() { gt911WakeEdge.store(false, std::memory_order_release); }
+  // ISR-side latch setter; called only from the park wake ISR.
+  void latchParkWakeEdge() { gt911WakeEdge.store(true, std::memory_order_release); }
+
   // --- Optional background polling -------------------------------------------
   // Spawns a FreeRTOS task that samples the buttons every pollMs and latches
   // each edge into an internal queue. This decouples input from rendering: on
@@ -649,9 +687,16 @@ class InputManager {
   // Shared funnel for setTouchSleep/wakeTouch (see the public threading
   // comment): posts the request, runs it inline on the poll owner, and
   // resolves the outcome from gt911Asleep.
+  static constexpr uint8_t GT911_TOUCH_CMD_SLEEP_GESTURE = 3;
   bool runGt911TouchCmd(uint8_t requestedCmd);
   void enterGt911Sleep();
+  void enterGt911Gesture();
   bool exitGt911Sleep();
+  // Gesture-park INT edge capture (design 2026-11-16 §2.2): the ISR posts the
+  // atomic latch only — no Wire, no allocation, no logging. The trampoline
+  // and the instance pointer it dispatches to are file-static in the .cpp.
+  void gt911ArmParkWakeEdge();
+  void gt911DisarmParkWakeEdge();
   // INT-high wake handshake; also the self-heal ladder's recovery step.
   bool gt911WakeHandshake();
   // Self-heal ladder (design 2026-11-09-gt911-park-recovery.md §3.2): heals a
@@ -760,6 +805,15 @@ class InputManager {
   unsigned long gt911ReprobeAt = 0;  // earliest next rate-limited beginGt911() re-probe;
                                      // valid only while gt911WakeBlocked is set
   bool gt911WakeBlocked = false;     // wake handshake failed; ladder moves on to re-probe
+  std::atomic<Gt911ParkMode> gt911ParkMode{
+      Gt911ParkMode::Sleep};  // mode the controller was last parked in
+  std::atomic<bool> gt911WakeEdge{
+      false};  // INT edge latched by the gesture-park ISR (drained by the app)
+  uint8_t gt911GestureWakeFails = 0;  // consecutive failed gesture-park wake handshakes
+  bool gt911GestureUnsupported = false;  // fallback latch: gesture wake never ACKs here
+  // Failed gesture-park wake handshakes before the unsupported latch fires
+  // (design 2026-11-16 §2.3: repeat the handshake N times, then re-park Sleep).
+  static constexpr uint8_t GT911_GESTURE_WAKE_FAILS = 3;
   unsigned long touchReleaseAt = 0;
   bool touchPressed = false;
   bool touchPressedEvent = false;

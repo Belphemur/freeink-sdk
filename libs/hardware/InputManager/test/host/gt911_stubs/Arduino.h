@@ -9,7 +9,8 @@
 #include <cstring>
 #include <initializer_list>
 #define IRAM_ATTR
-constexpr int HIGH = 1, LOW = 0, INPUT = 1, OUTPUT = 3, INPUT_PULLUP = 5, INPUT_PULLDOWN = 6, FALLING = 2, ADC_11db = 3;
+constexpr int HIGH = 1, LOW = 0, INPUT = 1, OUTPUT = 3, INPUT_PULLUP = 5, INPUT_PULLDOWN = 6, FALLING = 2,
+               RISING = 3, ADC_11db = 3;
 inline unsigned long fakeNow = 1000;
 inline int gpioLevels[49] = {};
 inline int gpioModes[49] = {};
@@ -28,8 +29,18 @@ inline void analogSetAttenuation(int) {}
 inline int analogReadMilliVolts(int) { return 3300; }
 inline int analogRead(int) { return 4095; }
 inline int digitalPinToInterrupt(int p) { return p; }
-inline void attachInterrupt(int, void (*)(), int) {}
-inline void detachInterrupt(int) {}
+// Park-wake ISR recording (gesture-park edge capture): the test reads the
+// mode/armed state and fires the handler to model the controller's INT pulse.
+inline void (*gpioIsrHandlers[49])() = {};
+inline int gpioIsrModes[49] = {};
+inline void attachInterrupt(int p, void (*h)(), int mode) {
+  gpioIsrHandlers[p] = h;
+  gpioIsrModes[p] = mode;
+}
+inline void detachInterrupt(int p) { gpioIsrHandlers[p] = nullptr; }
+inline void fireGpioIsr(int p) {
+  if (gpioIsrHandlers[p]) gpioIsrHandlers[p]();
+}
 struct SerialStub {
   explicit operator bool() const { return false; }
 };

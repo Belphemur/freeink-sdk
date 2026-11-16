@@ -446,12 +446,163 @@ void testFlagOffLeavesConfigAlone() {
   Wire.busDead = false;
 }
 #endif
+
+// --- gesture-mode park (design 2026-11-16-gt911-gesture-touch-wake.md) ------
+
+// The public park API posts through the sleep/wake funnel, which executes
+// inline only on the poll owner: stamp begin()'s owner with a non-null cookie.
+int gt911PollOwner;
+void parkTestSetup() { fakeCurrentTask = &gt911PollOwner; }
+
+// Entry writes 8 to the 0x8046 gesture slot BEFORE the 0x8040 commit; a sent
+// commit parks unconditionally (fail-safe park rule); the wake-edge ISR arms
+// on the profile's active-low polarity and the pin stops being driven.
+void testGestureParkEntry() {
+  parkTestSetup();
+  Wire.loadFactory(1);
+  InputManager in;
+  boot(in);
+  Wire.writeLog.clear();
+
+  assert(in.setTouchSleepGesture());
+  assert(in.isTouchAsleep());
+  assert(in.touchParkMode() == InputManager::Gt911ParkMode::Gesture);
+  assert(Wire.writeLog.size() >= 2);
+  const uint16_t slot = Wire.writeLog[Wire.writeLog.size() - 2];
+  const uint16_t commit = Wire.writeLog[Wire.writeLog.size() - 1];
+  assert(slot == 0x8046 && commit == 0x8040);
+  assert(Wire.mem[0x8046] == 8 && Wire.mem[0x8040] == 8);
+  // ISR armed on the polarity edge; the pin is an input with a pull-up so the
+  // controller's pulse is visible.
+  assert(gpioIsrHandlers[INT_PIN] != nullptr);
+  assert(gpioIsrModes[INT_PIN] == FALLING);
+  assert(gpioModes[INT_PIN] == INPUT_PULLUP);
+  // A second gesture request while parked is a no-op (no re-send).
+  const size_t writesBefore = Wire.writeLog.size();
+  assert(in.setTouchSleepGesture());
+  assert(Wire.writeLog.size() == writesBefore);
+}
+
+// Parked state without a probe proof: an anomaly probe still parks; a NACKed
+// commit (nothing was sent) stays awake and never arms the ISR.
+void testGestureParkFailSafe() {
+  parkTestSetup();
+  Wire.loadFactory(1);
+  InputManager in;
+  boot(in);
+
+  Wire.forceProbeStatus = 4;  // anomaly: diagnostic only
+  assert(in.setTouchSleepGesture());
+  assert(in.isTouchAsleep() && in.touchParkMode() == InputManager::Gt911ParkMode::Gesture);
+  Wire.forceProbeStatus = -1;
+
+  // Wake up again for the NACK case.
+  assert(in.exitGt911Sleep());
+  assert(!in.isTouchAsleep() && gpioIsrHandlers[INT_PIN] == nullptr);
+
+  Wire.busDead = true;
+  assert(!in.setTouchSleepGesture());
+  assert(!in.isTouchAsleep() && gpioIsrHandlers[INT_PIN] == nullptr);
+  assert(gpioModes[INT_PIN] == INPUT);  // awake: stop contending on INT
+  Wire.busDead = false;
+}
+
+// The ISR posts the latch only; the app drains it and runs the unchanged wake
+// handshake, which disarms the ISR and clears the park mode on success.
+void testGestureWakeLatchAndWake() {
+  parkTestSetup();
+  Wire.loadFactory(1);
+  InputManager in;
+  boot(in);
+  assert(in.setTouchSleepGesture());
+  assert(!in.wasTouchWakeEdgePending());
+
+  fireGpioIsr(INT_PIN);  // the controller's >250 µs wake pulse
+  assert(in.wasTouchWakeEdgePending());
+  // pollGt911 must NOT drain the latch: it stays until the app clears it.
+  poll(in);
+  assert(in.wasTouchWakeEdgePending());
+
+  in.clearTouchWakeEdge();
+  assert(!in.wasTouchWakeEdgePending());
+  assert(in.exitGt911Sleep());
+  assert(!in.isTouchAsleep() && in.touchParkMode() == InputManager::Gt911ParkMode::Sleep);
+  assert(gpioIsrHandlers[INT_PIN] == nullptr);
+}
+
+// Fallback (design §2.3): a stuck INT line fires the ISR but the wake
+// handshake never finds an ACK. N=3 consecutive failures latch "gesture
+// unsupported" for this boot, disarm the ISR, and re-park in Sleep mode.
+void testGestureUnsupportedFallback() {
+  parkTestSetup();
+  Wire.loadFactory(1);
+  InputManager in;
+  boot(in);
+  assert(in.setTouchSleepGesture());
+  Wire.failReads = true;  // the handshake's status reads never complete
+
+  for (int i = 0; i < InputManager::GT911_GESTURE_WAKE_FAILS - 1; ++i) {
+    assert(!in.exitGt911Sleep());
+    assert(!in.gt911GestureUnsupported);
+    assert(gpioIsrHandlers[INT_PIN] != nullptr);  // still trying gesture
+  }
+  // The 3rd failure logs the wake timeout AND the one fallback line (the
+  // re-park's own sleep-entry line overwrites lastLog, so pin the count).
+  const unsigned errsBefore = loggedErrors;
+  assert(!in.exitGt911Sleep());
+  assert(loggedErrors == errsBefore + 2);
+  assert(in.gt911GestureUnsupported);
+  assert(in.touchParkMode() == InputManager::Gt911ParkMode::Sleep);
+  assert(gpioIsrHandlers[INT_PIN] == nullptr);  // edge capture withdrawn
+  // Writes still ACK, so the re-park's sleep command landed: the controller
+  // is parked in Sleep mode, not left "awake" on a dead bus.
+  assert(in.isTouchAsleep());
+  assert(Wire.writeLog.back() == 0x8040 && Wire.mem[0x8040] == 0x05);
+
+  // A later gesture request parks Sleep mode directly (no gesture attempt).
+  Wire.failReads = false;
+  assert(in.exitGt911Sleep());
+  Wire.writeLog.clear();
+  assert(in.setTouchSleepGesture());
+  assert(in.isTouchAsleep() && in.touchParkMode() == InputManager::Gt911ParkMode::Sleep);
+  assert(gpioIsrHandlers[INT_PIN] == nullptr);
+  assert(Wire.mem[0x8040] == 0x05);  // sleep command, not the gesture commit
+  for (const uint16_t reg : Wire.writeLog) assert(reg != 0x8046);
+}
+
+// A begin() re-probe (chip reset) and the deep-sleep boundary both drop the
+// gesture edge capture; the unsupported latch survives the re-probe.
+void testGestureDisarmOnReprobeAndDeepSleep() {
+  parkTestSetup();
+  Wire.loadFactory(1);
+  InputManager in;
+  boot(in);
+  assert(in.setTouchSleepGesture());
+  assert(gpioIsrHandlers[INT_PIN] != nullptr);
+
+  // Re-probe: the reset dance reloads the controller, park state is gone.
+  boot(in);
+  assert(gpioIsrHandlers[INT_PIN] == nullptr);
+  assert(in.touchParkMode() == InputManager::Gt911ParkMode::Sleep);
+
+  // Deep-sleep boundary: never leave the ISR armed across the rail cut.
+  assert(in.setTouchSleepGesture());
+  assert(gpioIsrHandlers[INT_PIN] != nullptr);
+  assert(in.prepareForDeepSleep());
+  assert(gpioIsrHandlers[INT_PIN] == nullptr);
+}
+
 }  // namespace
 
 int main() {
   testSentSleepCommandParksRegardlessOfProbe();
   testPollSelfHealLadder();
   testFailedReprobeRetriesUntilTheChipReturns();
+  testGestureParkEntry();
+  testGestureParkFailSafe();
+  testGestureWakeLatchAndWake();
+  testGestureUnsupportedFallback();
+  testGestureDisarmOnReprobeAndDeepSleep();
 #if FREEINK_GT911_INT_WAKE
   testHandshakeLiftsFaultOnlyOnCleanClear();
   testPatchAppliedOncePerBootWhenDroppedOnReset();
