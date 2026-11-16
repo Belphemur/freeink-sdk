@@ -59,15 +59,24 @@ both states while the changing records drive one way only, so every pixel takes
 a flashing record and the previous screen does not carry into the new one. Each B/W paint then
 copies the displayed frame into the old plane for the next differential update.
 Anti-aliased (overlay) pages use stock V1.0.3's reader "Gray3" path. The B/W
-base is stashed undisplayed; with its gray masks it becomes one three-level
-frame (white / middle / black), sent as a per-pixel transition from the
-previous Gray3 frame in a single refresh: unchanged white and middle pixels
-hold, black is re-driven, and only changed pixels are cleared or nudged. A
+base is stashed undisplayed; with its gray masks it becomes one frame, sent
+as a per-pixel transition from the previous Gray3 frame: unchanged white and
+gray pixels hold, black is re-driven, and only changed pixels are cleared or
+nudged. Stock's waveform has one gray level, 5 black frames from white. Here
+light gray drives `A4_UC8279C_GRAY3_LIGHT_FRAMES` instead, and a short second
+refresh, not from stock, gives the dark-gray pixels
+`A4_UC8279C_GRAY3_DARK_EXTRA_FRAMES` more, so a page has white, light, dark
+and black. A gray pixel that was darker before (black, or dark turning light) is
+cleared in the first refresh and driven from white in the second. A
 cleanup request (non-FAST base) shows the page with black and white swapped,
 then the page itself. After a B/W screen or four-gray image there is no
-Gray3 history: the next page shows its base with a normal B/W refresh, which
-fully clears the previous screen, and its grays follow as a Gray3 transition
-from that base.
+Gray3 history: the next page shows its base with a full B/W refresh, which
+clears the previous screen (after a fast one it showed in the black areas of
+the gray pages that followed). That base goes out with its gray pixels
+white, so both grays are then driven from white in a single refresh (black,
+just driven by the base, holds, and its code selects a dark-from-white record
+instead). A base the caller already displayed with gray pixels black is shown
+once more with them white first.
 
 Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
 sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,
@@ -89,8 +98,10 @@ screens as ghosts.
 `controllerIdle()` ends the hold between frames, as stock V1.0.3 does: 500 ms
 after a refresh, with nothing further pending, stock sends POWER_OFF (logged
 "EPD reader idle POF") and enters light sleep; the next refresh powers the
-panel on again. `controllerIdle()` sends that POWER_OFF and the controller keeps
-its registers and RAM, so the next paint is a normal differential update. A
+panel on again. `controllerIdle()` sends that POWER_OFF once 500 ms have passed
+since the last refresh (it returns without acting before that, so a host can
+call it on every idle loop), and the controller keeps its registers and RAM,
+so the next paint is a normal differential update. A
 panel left powered on a static screen fuzzed and showed earlier screens.
 Whether a static image stays clean once powered off this way needs hardware
 validation.
