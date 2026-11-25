@@ -1403,7 +1403,8 @@ constexpr BoardProfile LILYGO_T5S3 = {
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    {39, 40, 400000, 0x55, 0x6B},  // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40
+    // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40, 1500 mAh cell.
+    {39, 40, 400000, 0x55, 0x6B, 0, GaugeType::Bq27220, 1500},
     NO_MIC,
     // Battery-backed RTC on the shared main I2C bus. The vendor schematic
     // (hardware/T5 E-paper S3 Pro V1.0 24-12-24.pdf, page 3 / U3) shows a
@@ -2158,7 +2159,7 @@ constexpr BoardProfile ONEPAGE = {
     480,
     // Display SPI: SCLK 22, MOSI 23, CS 25, DC 8, RST 27, BUSY 29, powerEnable PIN_UNASSIGNED
     {22, 23, 25, 8, 27, 29, PIN_UNASSIGNED},
-    20000000,  // displaySpiHz: 20MHz
+    20000000,  // displaySpiHz: SSD1677 write limit (SD transactions remain at 20 MHz)
     // MicroSD (shared SPI bus): SCLK 22, MISO 24, MOSI 23, CS 26, powerEnable 27
     {22, 24, 23, 26, 27, false, 20000000, true},
     // Input: 4-key front ADC ladder on GPIO4 + 3 side GPIO keys (UP=6, DOWN=9, POWER=2)
@@ -2182,7 +2183,16 @@ constexpr BoardProfile ONEPAGE = {
     {PIN_UNASSIGNED, PIN_UNASSIGNED, 10, true},
     0,               // displayControllerVariant
     {0, 0, 0, 0},    // viewableInsets: full 800x480 panel frame
-    false};          // batteryChargeStatusActiveHigh: false (low = USB present)
+    false,           // batteryChargeStatusActiveHigh: low = USB present
+    NO_I2C_FRONTLIGHT,
+    {},      // haptic: none
+    0,       // headerOffsetY
+    0,       // cornerRadius
+    0,       // tabBarOffsetY
+    100,     // tabBarHeightPct
+    100,     // tabBarWidthPct
+    0,       // wifiMaxTxPower: radio default
+    false};  // usbDetectActiveHigh: GPIO11 is low while a cable is attached
 
 static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
               "OnePage framebuffer must be 48,000 bytes (800/8 x 480)");

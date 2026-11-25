@@ -73,6 +73,8 @@ struct Ssd1677Config {
   // halfRefreshTemp written) instead of the OTP sequences; nullptr keeps OTP.
   const unsigned char* fullLut = nullptr;
   const unsigned char* halfLut = nullptr;
+  // Clean retained panel content on first paint, including turnOff requests.
+  bool initialHalfRefresh = false;
   const unsigned char* readerFastLut = nullptr;  // FAST while reading; nullptr uses fastLut (stock YRD/OPM use OTP)
   // 110-byte one-pass reader text waveform (LUT0 black, LUT1 held white, LUT2
   // gray, LUT3 white), activated with 0xCC. Supplying one enables the combined
@@ -138,6 +140,8 @@ class Ssd1677Driver : public PanelDriver {
                                 uint16_t numRows) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+  bool canUpdateGrayscaleWindow() const override { return _textAa.canUpdateWindow(); }
+  bool displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   bool displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,
                                        uint16_t w, uint16_t h) override;
 
@@ -192,8 +196,8 @@ class Ssd1677Driver : public PanelDriver {
   bool _pendingPowerOff = false;
   // First paint after begin() (boot or deep-sleep wake) must be a full refresh to
   // clear whatever is physically on the panel (e.g. the black boot screen) and set
-  // a clean differential baseline. Only armed for boards whose self-powering fast
-  // sequence makes _isScreenOn useless as a cold-start signal (fullSeqOverride set).
+  // a clean differential baseline. Also applies when an incremental board opts
+  // into an initial HALF, since turnOff requests carry no cold-start signal.
   bool _needsInitialFull = false;
 };
 
