@@ -389,8 +389,13 @@ FT_BEGIN_HEADER
    *   in your 'psnames' module.  The Type~1 driver will not be able to
    *   synthesize a Unicode charmap out of the glyphs found in the fonts.
    */
-/* FreeInkFont: the AGL is the bulk of psnames' ~64KB; it goes with it. */
-#if FREEINK_FONT_ENABLE_PSNAMES || FREEINK_FONT_ENABLE_CFF
+/* FreeInkFont: the AGL is the bulk of psnames' ~64KB (a 55,997-byte table).
+ * It only serves glyph-NAME lookups and synthesizing a Unicode cmap for fonts
+ * that ship without one, so it follows FREEINK_FONT_ENABLE_PSNAMES alone.
+ * CFF still links psnames for the CFF standard strings, but OpenType CFF
+ * fonts carry their own cmap, and cff_face_init tolerates the missing AGL
+ * (Unimplemented_Feature) when it would otherwise synthesize one. */
+#if FREEINK_FONT_ENABLE_PSNAMES
 #define FT_CONFIG_OPTION_ADOBE_GLYPH_LIST
 #endif
 
@@ -405,7 +410,8 @@ FT_BEGIN_HEADER
    *
    *   Note that the 'FOND' resource isn't checked.
    */
-#define FT_CONFIG_OPTION_MAC_FONTS
+/* FreeInkFont: off, resource-fork fonts never reach the device. */
+/* #define FT_CONFIG_OPTION_MAC_FONTS */
 
 
   /**************************************************************************
@@ -594,7 +600,8 @@ FT_BEGIN_HEADER
    *
    *   More details on the hooks can be found in file `otsvg.h`.
    */
-#define FT_CONFIG_OPTION_SVG
+/* FreeInkFont: off, no SVG renderer is registered. */
+/* #define FT_CONFIG_OPTION_SVG */
 
 
   /**************************************************************************
@@ -625,7 +632,8 @@ FT_BEGIN_HEADER
    * embedded bitmaps in all formats using the 'sfnt' module (namely
    * TrueType~& OpenType).
    */
-#define TT_CONFIG_OPTION_EMBEDDED_BITMAPS
+/* FreeInkFont: off, FtFont always loads with FT_LOAD_NO_BITMAP. */
+/* #define TT_CONFIG_OPTION_EMBEDDED_BITMAPS */
 
 
   /**************************************************************************
@@ -634,7 +642,8 @@ FT_BEGIN_HEADER
    * outlines (from the 'COLR'/'CPAL' tables) in all formats using the 'sfnt'
    * module (namely TrueType~& OpenType).
    */
-#define TT_CONFIG_OPTION_COLOR_LAYERS
+/* FreeInkFont: off, glyphs render as coverage only, never in color. */
+/* #define TT_CONFIG_OPTION_COLOR_LAYERS */
 
 
   /**************************************************************************
@@ -649,7 +658,11 @@ FT_BEGIN_HEADER
    *
    * (By default, the module uses 'psnames' to extract glyph names.)
    */
+/* FreeInkFont: only with psnames, whose cmap synthesis in ttcmap.c calls
+ * tt_face_get_ps_name. Nothing else looks glyphs up by name. */
+#ifdef FT_CONFIG_OPTION_POSTSCRIPT_NAMES
 #define TT_CONFIG_OPTION_POSTSCRIPT_NAMES
+#endif
 
 
   /**************************************************************************
@@ -837,7 +850,8 @@ FT_BEGIN_HEADER
    *
    * for more details.
    */
-#define TT_CONFIG_OPTION_BDF
+/* FreeInkFont: off, BDF properties are never queried. */
+/* #define TT_CONFIG_OPTION_BDF */
 
 
   /**************************************************************************
